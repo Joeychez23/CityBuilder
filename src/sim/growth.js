@@ -13,7 +13,7 @@ export function demandFor(state, def) {
   switch (def.key) {
     case 'res_low': return d.resLow;
     case 'res_row': case 'res_med': return d.resMed;
-    case 'res_high': case 'res_mixed': case 'res_lowrent': return d.resHigh;
+    case 'res_high': case 'res_tower': case 'res_mixed': case 'res_lowrent': return d.resHigh;
     default:
       if (def.cat === 'spec') return d.ind * 0.8 + 0.1;
       return d[def.cat];
@@ -118,7 +118,7 @@ function spawnPlot(state, p) {
 }
 
 function trySpawn(state, def, x, y, rot) {
-  const lots = [...def.lots].sort(() => rng.next() - 0.5);
+  const lots = [...[...def.lots].sort(() => rng.next() - 0.5), ...(def.fallbackLots || [])];
   for (const [w, d] of lots) {
     // try the lot with this cell at either end along the road
     for (const shift of [0, -(w - 1)]) {

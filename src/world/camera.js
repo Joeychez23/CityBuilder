@@ -6,6 +6,8 @@
 //    a little glide when you let go
 //  - WASD / arrows pan, Q / E rotate, Z / X zoom, T / G tilt (Shift = faster)
 //  - double click flies to that spot; Home flies back to the town centre
+//  - touch: one finger pans (with no tool active), two fingers pan, pinch to zoom and twist
+//    to rotate, three fingers drag up and down to tilt; a double tap flies there
 // Every move eases toward its goal, the focus stays on the map, and the camera never
 // dips into a hillside.
 import * as THREE from 'three';
@@ -100,15 +102,103 @@ export function createCameraRig(view, canvas) {
     zoomBy(Math.exp(clamp(dy, -250, 250) * speed), e.clientX, e.clientY);
   }, { passive: false });
 
+  // ------------------------------------------------------------------ touch gestures
+  // Fingers on the map, by pointer id. With two or more down it's a gesture: the spot between
+  // the fingers stays under them while they pinch (zoom) and twist (rotate) around it.
+  const touches = new Map();
+  let gesture = null, lastTap = null;
+  rig.touches = () => touches.size;
+  const fingers = () => [...touches.values()];
+  const middle = () => { const f = fingers(); return { x: f.reduce((a, t) => a + t.x, 0) / f.length, y: f.reduce((a, t) => a + t.y, 0) / f.length }; };
+  const spread = () => { const [a, b] = fingers(); return { d: Math.hypot(b.x - a.x, b.y - a.y), ang: Math.atan2(b.y - a.y, b.x - a.x) }; };
+  function startGesture() {
+    drag = null;
+    glide.x = glide.z = 0;
+    Object.assign(cur, { x: goal.x, z: goal.z, dist: goal.dist, yaw: goal.yaw });
+    place();
+    const m = middle();
+    gesture = { n: touches.size, m, h: cur.y, grab: onPlane(m.x, m.y, cur.y), ...spread() };
+  }
+  function moveGesture() {
+    const m = middle();
+    if (gesture.n >= 3) {
+      goal.pitch = clamp(goal.pitch + (m.y - gesture.m.y) * 0.006, MIN_PITCH, MAX_PITCH);
+      gesture.m = m;
+      return;
+    }
+    const G = gesture.grab, now = onPlane(m.x, m.y, gesture.h);
+    if (!G || !now) return;
+    // pan: the grabbed spot follows the fingers
+    goal.x += G.x - now.x; goal.z += G.z - now.z;
+    // pinch: zoom about the grabbed spot (it stays put on screen)
+    const { d, ang } = spread();
+    if (gesture.d > 12 && d > 12) {
+      const k = clamp(goal.dist * (gesture.d / d), MIN_DIST, MAX_DIST) / goal.dist;
+      goal.x = G.x + (goal.x - G.x) * k; goal.z = G.z + (goal.z - G.z) * k;
+      goal.dist *= k;
+      if (rig.settings.tiltWithZoom) goal.pitch += (autoPitch(goal.dist) - goal.pitch) * Math.min(1, Math.abs(Math.log(k)) * 2);
+    }
+    // twist: turn about the grabbed spot
+    const a = Math.atan2(Math.sin(ang - gesture.ang), Math.cos(ang - gesture.ang));
+    if (a) {
+      const dx = goal.x - G.x, dz = goal.z - G.z, c = Math.cos(a), s = Math.sin(a);
+      goal.yaw += a;
+      goal.x = G.x + dx * c + dz * s; goal.z = G.z + dz * c - dx * s;
+    }
+    gesture.d = d; gesture.ang = ang; gesture.m = m;
+    clampGoal();
+    Object.assign(cur, { x: goal.x, z: goal.z, dist: goal.dist, yaw: goal.yaw });
+    place();
+  }
+  canvas.addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'touch') return;
+    touches.set(e.pointerId, { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, t: performance.now() });
+    if (touches.size >= 2) startGesture();
+    try { canvas.setPointerCapture(e.pointerId); } catch { /* the finger already lifted */ }
+  });
+  window.addEventListener('pointermove', (e) => {
+    const f = e.pointerType === 'touch' && touches.get(e.pointerId);
+    if (!f) return;
+    f.x = e.clientX; f.y = e.clientY;
+    if (gesture) moveGesture();
+  });
+  const liftFinger = (e) => {
+    const f = e.pointerType === 'touch' && touches.get(e.pointerId);
+    if (!f) return;
+    touches.delete(e.pointerId);
+    if (gesture) {
+      if (touches.size >= 2) startGesture();
+      else if (touches.size === 1 && rig.leftPans(e)) {
+        // back to one finger: it carries on panning from where it is
+        gesture = null;
+        const [t] = fingers();
+        drag = { mode: 'pan', button: 0, id: [...touches.keys()][0], sx: t.x, sy: t.y, lx: t.x, ly: t.y, moved: true, h: cur.y, grab: onPlane(t.x, t.y, cur.y), t: performance.now(), trail: [] };
+      } else gesture = null; // the last finger left doesn't build anything (see tools.js)
+      lastTap = null;
+      return;
+    }
+    // a double tap flies there (like a double click)
+    const now = performance.now();
+    if (now - f.t < 300 && Math.hypot(e.clientX - f.sx, e.clientY - f.sy) < 10) {
+      if (lastTap && now - lastTap.t < 350 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 30) {
+        lastTap = null;
+        const p = pick(e.clientX, e.clientY);
+        if (p && rig.onDoubleClick?.(p)) rig.flyTo(p.x, p.z, { dist: Math.min(goal.dist, 70) });
+      } else lastTap = { t: now, x: e.clientX, y: e.clientY };
+    }
+  };
+  window.addEventListener('pointerup', liftFinger);
+  window.addEventListener('pointercancel', liftFinger);
+
   // ------------------------------------------------------------------ dragging
   canvas.addEventListener('pointerdown', (e) => {
-    if (drag) return;
+    if (drag || gesture) return;
     const pan = e.button === 1 || (e.button === 0 && rig.leftPans(e));
     const rotate = e.button === 2;
     if (!pan && !rotate) return;
     if (e.button === 1) e.preventDefault();
     const h = cur.y;
-    drag = { mode: rotate ? 'rotate' : 'pan', button: e.button, sx: e.clientX, sy: e.clientY, lx: e.clientX, ly: e.clientY, moved: false, h,
+    drag = { mode: rotate ? 'rotate' : 'pan', button: e.button, id: e.pointerId, sx: e.clientX, sy: e.clientY, lx: e.clientX, ly: e.clientY, moved: false, h,
       grab: onPlane(e.clientX, e.clientY, h), t: performance.now(), trail: [] };
     glide.x = glide.z = 0;
     if (e.button === 0) rig.justPanned = false;
@@ -117,7 +207,7 @@ export function createCameraRig(view, canvas) {
   window.addEventListener('pointermove', (e) => {
     mouse.x = e.clientX; mouse.y = e.clientY;
     mouse.inside = e.target === canvas;
-    if (!drag) return;
+    if (!drag || (e.pointerType === 'touch' && e.pointerId !== drag.id)) return;
     const dx = e.clientX - drag.lx, dy = e.clientY - drag.ly;
     if (!drag.moved && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) > 5) drag.moved = true;
     drag.lx = e.clientX; drag.ly = e.clientY;
@@ -141,7 +231,7 @@ export function createCameraRig(view, canvas) {
     while (drag.trail.length > 2 && t - drag.trail[0][0] > 120) drag.trail.shift();
   });
   window.addEventListener('pointerup', (e) => {
-    if (!drag || e.button !== drag.button) return;
+    if (!drag || e.button !== drag.button || (e.pointerType === 'touch' && e.pointerId !== drag.id)) return;
     const d = drag;
     drag = null;
     if (d.mode === 'pan') {
@@ -165,7 +255,7 @@ export function createCameraRig(view, canvas) {
     if (!p || !rig.onDoubleClick?.(p)) return;
     rig.flyTo(p.x, p.z, { dist: Math.min(goal.dist, 70) });
   });
-  window.addEventListener('blur', () => { drag = null; });
+  window.addEventListener('blur', () => { drag = null; gesture = null; touches.clear(); });
 
   function clampGoal() {
     goal.x = clamp(goal.x, 0, N);

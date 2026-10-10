@@ -9,6 +9,7 @@ import { updateCapacity } from '../sim/growth.js';
 import { startConstruction } from '../sim/construction.js';
 import { N, idx, forRadius } from '../core/grid.js';
 import { bus } from '../core/events.js';
+import { ZONES } from '../data/zones.js';
 
 // Numbers the unlock conditions look at
 function cityStats(state, ctx) {
@@ -16,7 +17,7 @@ function cityStats(state, ctx) {
   for (let i = 0; i < state.zone.length; i++) {
     const z = state.zone[i];
     if (!z) continue;
-    const key = ['', 'res_low', 'res_row', 'res_med', 'res_high', 'res_mixed', 'res_lowrent'][z];
+    const key = ZONES[z]?.cat === 'res' ? ZONES[z].key : null;
     if (key) zoneCells[key] = (zoneCells[key] || 0) + 1;
   }
   const catCount = { res: 0, com: 0, ind: 0, off: 0 };

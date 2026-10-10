@@ -3,9 +3,10 @@
 import { registerPanel, row } from '../ui/panels.js';
 import { registerSystem, formatDate } from '../sim/simulation.js';
 import { pack, SAVE_KEY } from '../sim/save.js';
-import { EDU_NAMES } from '../data/zones.js';
+import { EDU_NAMES, ZONES } from '../data/zones.js';
 import { ageGroup, AGE } from '../sim/citizens.js';
 import { bus } from '../core/events.js';
+import { DIFFICULTIES, DIFFICULTY_KEYS, difficultyOf, difficultyRows } from '../data/difficulty.js';
 
 function download(name, href) {
   const a = document.createElement('a');
@@ -38,6 +39,8 @@ registerPanel({
       <div class="section-title">City</div>
       <label class="row"><span class="k">Name</span><input type="text" value="${s.cityName}" data-name></label>
       ${row('Map', `${s.mapName} (${s.climate})`)}${row('Today', formatDate(s.time.day, true))}
+      <label class="row"><span class="k">Difficulty</span><select data-diff>${DIFFICULTY_KEYS.map((k) => `<option value="${k}" ${DIFFICULTIES[k] === difficultyOf(s) ? 'selected' : ''}>${DIFFICULTIES[k].name}</option>`).join('')}</select></label>
+      <div class="muted" style="font-size:11px;margin:-2px 0 4px">${difficultyOf(s).blurb} ${difficultyRows(difficultyOf(s)).slice(1).map(([k, v]) => `${k} ${v}`).join(' · ')}${difficultyOf(s) === DIFFICULTIES.normal ? '' : '.'} Changing it doesn't touch the money you have.</div>
       <div class="section-title">Save</div>
       <div class="grid2"><button class="btn primary" data-a="save">💾 Save in browser</button><button class="btn" data-a="export">⬇ Export to file</button>
       <button class="btn" data-a="account" style="grid-column:span 2">👤 Account & cloud saves</button></div>
@@ -54,8 +57,14 @@ registerPanel({
       <div class="section-title">More</div>
       <div class="grid2"><button class="btn" data-a="photo">📷 Photo mode (P)</button><button class="btn" data-a="guide">📘 Beginner's guide</button>
       <button class="btn" data-a="editor">🛠 Editors & mods</button><button class="btn" data-a="menu">🏠 Main menu</button></div>
-      <div class="muted" style="font-size:11px;margin-top:8px">Camera: wheel zooms toward the cursor · left drag (no tool) or middle drag pans · right drag rotates & tilts · double click flies there · WASD/arrows pan · Q/E rotate · Z/X zoom · T/G tilt · Home: back to town · Shift: faster<br>Tools: right click or Esc cancels · R rotates a building · Space pause · 1–3 speed · V resources · P photo mode</div>`;
+      <div class="muted" style="font-size:11px;margin-top:8px">Camera: wheel zooms toward the cursor · left drag (no tool) or middle drag pans · right drag rotates & tilts · double click flies there · WASD/arrows pan · Q/E rotate · Z/X zoom · T/G tilt · Home: back to town · Shift: faster<br>Tools: right click or Esc cancels · R rotates a building · Space pause · 1–3 speed · V resources · P photo mode</div>
+      ${document.body.classList.contains('touch') ? '<div class="muted" style="font-size:11px;margin-top:6px">Touch: one finger pans (or uses the tool in hand) · two fingers pan, pinch to zoom and twist to rotate · three fingers up and down tilt · double tap flies there · hold a button to see what it does · ✕ Cancel (bottom right) stops a tool</div>' : ''}`;
     body.querySelector('[data-name]').onchange = (e) => { s.cityName = e.target.value || s.cityName; };
+    body.querySelector('[data-diff]').onchange = (e) => {
+      s.options.difficulty = e.target.value;
+      app.toast(`Difficulty: ${DIFFICULTIES[e.target.value].name}`, 'info');
+      rerender();
+    };
     body.querySelector('[data-a="save"]').onclick = () => saveLocal(app);
     body.querySelector('[data-a="export"]').onclick = async () => {
       const text = await pack(s);
@@ -79,8 +88,8 @@ export const UI_SIZES = [[0.8, 'Small'], [0.9, 'Medium'], [1, 'Large'], [1.15, '
 // ---------------------------------------------------------------- beginner's guide
 const GUIDE = [
   { t: 'Connect a road to the highway', tip: 'Roads → Small Road. Drag from the end of the highway into your land.', done: (s, ctx) => { let n = 0; for (let i = 0; i < s.road.length; i++) if (s.road[i] && s.road[i] !== 6 && ctx.net.roadOutside[ctx.net.roadComp[i]]) n++; return n > 5; } },
-  { t: 'Zone residential land', tip: 'Zoning → Low Density Housing, then click next to your road (Fill mode).', done: (s) => [...s.zone].some((z) => z >= 1 && z <= 6) },
-  { t: 'Zone commercial and industrial land', tip: 'Shops need customers, factories need workers. Keep industry a few blocks from homes: factory noise upsets residents.', done: (s) => [...s.zone].some((z) => z === 7 || z === 8) && [...s.zone].some((z) => z === 9) },
+  { t: 'Zone residential land', tip: 'Zoning → Low Density Housing, then click next to your road (Fill mode).', done: (s) => [...s.zone].some((z) => ZONES[z]?.cat === 'res') },
+  { t: 'Zone commercial and industrial land', tip: 'Shops need customers, factories need workers. Keep industry a few blocks from homes: factory noise upsets residents.', done: (s) => [...s.zone].some((z) => ZONES[z]?.cat === 'com') && [...s.zone].some((z) => ZONES[z]?.cat === 'ind') },
   { t: 'Get electricity to your roads', tip: 'Build a power plant next to a road (it feeds the roads it touches; roads carry power to every building beside them), or run a Power Line from the outside power line (pylons at the map edge) and end it on one of your roads: a Power Connector is added there. Map → ⚡ Power grid shows what is connected.', done: (s, ctx) => (ctx.elecNets || []).some((n) => n.hasSource && n.demand > 0) },
   { t: 'Supply water and handle sewage', tip: 'Water → a pump next to clean water, and a sewage outlet downstream of it. Sewage drifts with the current (the placement preview shades where it goes); sewage upstream of a pump upsets everyone who drinks that water.', done: (s) => [...s.buildings.values()].some((b) => b.def.water) && [...s.buildings.values()].some((b) => b.def.sewage) },
   { t: 'Build a landfill', tip: 'Garbage → Landfill, then drag out an area next to a road: the bigger it is, the more it holds and the more garbage trucks it sends out. When it gets full, drag more area along its side.', done: (s) => [...s.buildings.values()].some((b) => b.def.garbageRate) },

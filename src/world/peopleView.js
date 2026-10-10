@@ -23,7 +23,7 @@ import { roadPathPoints } from '../sim/roadsegs.js';
 
 const CAP = 1600;
 const FACING_RY = [Math.PI / 2, 0, -Math.PI / 2, Math.PI]; // as buildings are turned (world/buildingsView.js)
-const PARK_CAP = 2000;
+const PARK_CAP = 12000;
 const SHIRTS = ['#e8e4da', '#2f55ff', '#ffd300', '#d24a3a', '#3fa45b', '#1b1c1e', '#8a5ad8', '#f08a3c', '#5bb8d6', '#c9c2b0'];
 const CAR_COLORS = ['#d9d9d9', '#3a3d42', '#b8302a', '#2f5ba8', '#e6e2d6', '#6b7b8c', '#2e6b46', '#c9a227', '#7a2f5a'];
 const walkable = (state) => (i) => state.road[i] > 0 || state.path[i] > 0;
@@ -211,7 +211,8 @@ export function createPeopleView(app) {
   // floor of a garage. A full lot is full of cars all day.
   const STALLS = {
     parking: { levels: [0.07], rows: [-0.66, 0.66], from: -0.84, n: 8 },
-    garage: { levels: [0.25, 0.63, 1.18, 1.73], rows: [-1.0, -0.48, 0.48, 1.0], from: -1.2, n: 11 },
+    garage: { levels: [0.25, 0.63, 1.18, 1.73, 2.28, 2.83], rows: [-1.0, -0.48, 0.48, 1.0], from: -1.2, n: 11 },
+    garage_large: { levels: [0.25, 0.63, 1.18, 1.73, 2.28, 2.83, 3.38, 3.93], rows: [-1.5, -0.98, -0.26, 0.26, 0.98, 1.5], from: -1.68, n: 15 },
   };
   function drawParked() {
     const h = hourOf(state);

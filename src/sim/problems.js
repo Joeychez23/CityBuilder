@@ -25,6 +25,9 @@ export const ISSUE_TEXT = {
 // Most urgent first: a building shows up to three icons above it
 const ISSUE_ORDER = ['fire', 'noroad', 'power', 'water', 'sewage', 'garbage', 'parking', 'full', 'lotfull', 'polluted', 'dead', 'crime', 'staff', 'customers', 'abandoned'];
 
+// The deceased in it have waited most of a morning for a hearse
+const deadWaiting = (b) => (b.dead || 0) >= 1 && (b.deadHours || 0) >= 8;
+
 export function buildingIssues(state, ctx, b) {
   const out = [];
   if (b.cons) return out; // a building site has nothing to complain about yet
@@ -40,7 +43,7 @@ export function buildingIssues(state, ctx, b) {
   const perDay = (b.garbageRate || 0) * 24;
   const g = b.garbage || 0;
   if ((g > 0.8 && g > perDay * 2.5) || (g > 0.4 && (ctx.coverage.garbage?.[centerIdx(b)] || 0) < 0.05)) out.push('garbage');
-  if ((b.dead || 0) > 1) out.push('dead');
+  if (deadWaiting(b)) out.push('dead');
   if ((b.crime || 0) > 65) out.push('crime');
   if (b.def.storage && (b.stored || 0) >= storageCap(b) - 0.5) out.push('full');
   if (b.parkingShort > 0.15 && (b.parkingNeed || 0) >= 1) out.push('parking');
@@ -99,7 +102,7 @@ registerProblems((state, ctx, add) => {
     if (fill >= 0.999) add({ key: `full:${b.id}`, kind: 'bad', icon: '⛔', title: `${what} full`, msg: `${b.name || b.def.name} is full and its trucks have stopped. ${b.def.garbageRate ? 'Drag more landfill area along one of its sides, or lay out a new one.' : 'Build another, or a crematorium.'}`, target: b.id });
     else if (fill >= 0.85) add({ key: `nearly:${b.id}`, kind: 'warn', icon: '⚠️', title: `${what} almost full`, msg: `${b.name || b.def.name} is ${Math.round(fill * 100)}% full.${b.def.garbageRate ? ' Drag more landfill area along one of its sides to make it bigger.' : ''}`, target: b.id });
   }
-  const dead = B.filter((b) => (b.dead || 0) > 1);
+  const dead = B.filter(deadWaiting);
   if (dead.length) add({ key: 'deathcare', kind: 'warn', icon: '⚰️', title: 'Deceased not collected', msg: `${plural(dead.length, 'building')} waiting for a hearse. Build a cemetery or crematorium.`, target: dead[0].id });
   for (const b of B) if (b.onFire) add({ key: `fire:${b.id}`, kind: 'bad', icon: '🔥', title: 'Building on fire', msg: `${b.name || b.def.name} is burning.${(ctx.coverage.fire?.[centerIdx(b)] || 0) < 0.15 ? ' No fire station covers it!' : ' Fire engines are on the way.'}`, target: b.id });
   const crime = B.filter((b) => (b.crime || 0) > 65);

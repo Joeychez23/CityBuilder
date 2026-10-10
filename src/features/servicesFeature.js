@@ -10,6 +10,7 @@ import '../ui/toolsPlop.js';
 import '../ui/toolsLandfill.js';
 import { garbageStep, garbageDaily } from '../sim/garbage.js';
 import { perWeek } from '../sim/economy.js';
+import { parkReach } from '../sim/parking.js';
 import { createSewageView } from '../world/sewageView.js';
 import { emergencyStep, patrolsHourly, ambulancesHourly, dispatch } from '../sim/emergency.js';
 import { crimeHourly } from '../sim/wellbeing.js';
@@ -55,11 +56,13 @@ export function serviceTipRows(d) {
   if (d.water) rows.push(['Water', `${d.water.toLocaleString()} m³ a day`]);
   if (d.sewage) rows.push(['Sewage', `${d.sewage.toLocaleString()} m³ a day`]);
   if (d.patients) rows.push(['Patients', `${d.patients} a day`]);
+  if (d.deathRate) rows.push(['Deceased', `${d.deathRate} a day`]);
+  if (d.rooms) rows.push(['Rooms', `${d.rooms} · ${money(d.roomRate)} a night`]);
   if (d.students) rows.push(['Students', d.students]);
   if (d.engines) rows.push(['Fire engines', d.engines]);
   if (d.cells || d.prison) rows.push(['Cells', d.cells || d.prison]);
   if (d.trucks) rows.push(['Garbage trucks', d.trucks]);
-  if (d.parking) rows.push(['Parking', `${d.parking} cars`]);
+  if (d.parking) rows.push(['Parking', `${d.parking} cars`], ['Walk to work', `up to ${parkReach(d) * 8} m`]);
   if (d.vehicles) rows.push(['Vehicles', d.vehicles]);
   if (d.workers) rows.push(['Workers', d.workers]);
   if (d.pollution) rows.push(['Pollution', Object.keys(d.pollution).join(', ')]);
@@ -106,8 +109,8 @@ export const servicesFeature = {
       registerCategory({
         key, icon: cat.icon, name: cat.name.split(' ')[0], order: cat.order,
         items: () => [...SERVICE_LIST.filter((s) => s.cat === key).map((s) => ({
-          group: cat.name, name: s.name, color: cat.color,
-          meta: s.area ? `Draw an area · ${money(s.perCell)}/cell · ${s.storagePerCell} t/cell` : `${money(s.cost)} · ${money(perWeek(s.upkeep))}/wk${s.power ? ` · ${s.power} MW` : ''}${s.water ? ` · ${s.water.toLocaleString()} m³` : ''}${s.sewage ? ` · ${s.sewage.toLocaleString()} m³` : ''}`,
+          group: s.group || cat.name, name: s.name, color: cat.color,
+          meta: s.area ? `Draw an area · ${money(s.perCell)}/cell · ${s.storagePerCell} t/cell` : `${money(s.cost)} · ${money(perWeek(s.upkeep))}/wk${s.power ? ` · ${s.power} MW` : ''}${s.water ? ` · ${s.water.toLocaleString()} m³` : ''}${s.sewage ? ` · ${s.sewage.toLocaleString()} m³` : ''}${s.rooms ? ` · ${s.rooms} rooms` : ''}`,
           desc: s.desc,
           tipRows: serviceTipRows(s),
           tool: s.area ? { kind: 'landfill', def: s } : { kind: 'plop', def: s },

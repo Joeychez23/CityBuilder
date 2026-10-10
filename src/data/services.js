@@ -87,8 +87,8 @@ const S = [
   { id: 'cemetery', cat: 'health', name: 'Cemetery', cost: 25000, upkeep: 1200, w: 3, d: 3, radius: 36, deathRate: 30, storage: 900, workers: 4, milestone: 1,
     desc: 'Hearses collect the deceased. Fills up over time.',
     shape: [lawn(2.8, 2.8, '#6d9a52'), ...[-0.8, 0, 0.8].flatMap((x) => [-0.6, 0.2].map((z) => plain(x, z, 0.12, 0.05, 0.2, '#bfc2c6'))), ...trees([[-1.1, 1], [1.1, 1]])] },
-  { id: 'crematorium', cat: 'health', name: 'Crematorium', cost: 120000, upkeep: 4000, w: 2, d: 3, radius: 44, deathRate: 80, workers: 8, milestone: 5, devNode: 'health_crematorium',
-    pollution: { air: 0.2 }, desc: 'Processes the deceased without filling up.', shape: [box(0, 0.4, 1.6, 1.8, 1, '#c9c2b6'), cyl(0.5, -0.9, 0.15, 1.8, '#8d857a')] },
+  { id: 'crematorium', cat: 'health', name: 'Crematorium', cost: 90000, upkeep: 3000, w: 2, d: 3, radius: 64, deathRate: 320, workers: 10, milestone: 5, devNode: 'health_crematorium',
+    pollution: { air: 0.2 }, desc: 'Processes the deceased without filling up. One serves a town of about 20,000; its hearses are done by morning.', shape: [box(0, 0.4, 1.6, 1.8, 1, '#c9c2b6'), cyl(0.5, -0.9, 0.15, 1.8, '#8d857a')] },
 
   // ------------------------------------------------------------- fire & rescue
   { id: 'firehouse', cat: 'fire', name: 'Fire House', cost: 40000, upkeep: 2000, w: 2, d: 2, radius: 26, engines: 3, workers: 12, milestone: 1,
@@ -150,6 +150,23 @@ const S = [
     shape: [cyl(0, 0, 2.4, 1.4, '#cfd2d6'), cyl(0, 0, 1.9, 1.45, '#5fae4a'), plain(0, 0, 0.1, 0.1, 0.01, '#fff', 1.45)] },
   { id: 'wheel', cat: 'parks', name: 'Ferris Wheel', cost: 260000, upkeep: 6000, w: 3, d: 2, radius: 18, leisure: 1.2, attract: 15, unique: true, milestone: 9,
     desc: 'An attraction that boosts tourism.', shape: [lawn(2.9, 1.9, '#c9c3b5'), cyl(0, 0, 1.4, 0.15, '#e05a47', 1.6), cyl(0, 0, 0.08, 1.6, '#888')] },
+
+  // Hotels: tourists who can stay the night come on top of the day visitors, spend more in
+  // the shops and pay for their room (see tourismDaily in sim/companies.js). Guests pick the
+  // hotels near parks and landmarks first; a resort also likes a view of the water.
+  { id: 'motel', cat: 'parks', group: 'Hotels', name: 'Motel', cost: 50000, upkeep: 800, w: 2, d: 2, rooms: 40, roomRate: 35, workers: 6, waterUse: 120, milestone: 2,
+    desc: 'Cheap rooms by the road. Tourists who have somewhere to stay come on top of the day visitors, spend more in the shops and pay for their room.',
+    shape: [plain(0, 0, 1.95, 1.95, 0.04, '#6f7174'), box(0, -0.5, 1.8, 0.75, 0.62, '#ead8b4'), plain(0, -0.08, 1.8, 0.12, 0.04, '#8a5a3c', 0.31), roof(0, -0.5, 1.9, 0.85, 0.22, '#9c4f2e', 0.62),
+      ...[-0.6, -0.2, 0.2].map((x) => plain(x, 0.45, 0.03, 0.5, 0.01, '#e8e8e8', 0.04)), cyl(0.82, 0.78, 0.03, 0.9, '#5a5a5a'), plain(0.82, 0.78, 0.06, 0.42, 0.22, '#e8473a', 0.8)] },
+  { id: 'hotel', cat: 'parks', group: 'Hotels', name: 'Hotel', cost: 240000, upkeep: 3500, w: 3, d: 3, rooms: 150, roomRate: 60, workers: 30, waterUse: 450, milestone: 4,
+    desc: 'A city hotel tower. Guests fill it when there are parks and landmarks to see nearby.',
+    shape: [plain(0, 0, 2.9, 2.9, 0.05, '#bdb6aa'), box(0, 0.15, 2.7, 2, 0.7, '#d9cfbf'), plain(0, 1.3, 1.3, 0.5, 0.06, '#7a2633', 0.55),
+      box(0, -0.25, 1.9, 1.3, 4.4, '#9cb8c8', 0.7), plain(0, -0.25, 2, 1.4, 0.15, '#e9e4da', 5.1), plain(0, 0.42, 1.1, 0.05, 0.3, '#f2c94c', 4.7)] },
+  { id: 'resort', cat: 'parks', group: 'Hotels', name: 'Resort Hotel', cost: 900000, upkeep: 10000, w: 4, d: 4, rooms: 280, roomRate: 110, resort: true, workers: 70, waterUse: 900, milestone: 7,
+    desc: 'Luxury rooms around a pool: the dearest stay in town. Best beside the water, parks and landmarks.',
+    shape: [lawn(3.95, 3.95, '#86b862'), box(-0.5, -1.15, 2.8, 1.2, 2.2, '#f2ece0'), plain(-0.5, -1.15, 2.9, 1.3, 0.1, '#c9b48a', 2.2), box(1.35, 0.1, 1.1, 2.4, 1.4, '#f2ece0'), plain(1.35, 0.1, 1.2, 2.5, 0.1, '#c9b48a', 1.4),
+      plain(-0.55, 0.45, 2.1, 1.3, 0.03, '#e7dcc4', 0.06), plain(-0.55, 0.45, 1.7, 0.9, 0.02, '#3cc4e6', 0.08), ...[-1.25, -0.85, -0.45, -0.05].map((x) => plain(x, 1.02, 0.14, 0.24, 0.05, '#ffffff', 0.09)),
+      plain(0.3, 1.75, 1.2, 0.4, 0.02, '#bdb6aa', 0.06), ...trees([[-1.75, 1.6], [-1.75, 0.3], [-0.2, 1.6], [0.95, 1.65]], 0.5)] },
 
   // ------------------------------------------------------------- communications
   { id: 'postoffice', cat: 'comms', name: 'Post Office', cost: 25000, upkeep: 1500, w: 2, d: 2, radius: 28, mail: 900, workers: 8, milestone: 2,

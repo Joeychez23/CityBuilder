@@ -6,6 +6,7 @@ import { N, idx, TILE } from '../core/grid.js';
 import { MAPS_KEY } from '../sim/save.js';
 import { accountStatus, renderAuthForm, renderCityList, esc } from './accountUI.js';
 import { setToken } from '../net/api.js';
+import { DIFFICULTIES, DIFFICULTY_KEYS, difficultyRows } from '../data/difficulty.js';
 
 export function customMaps() {
   try {
@@ -66,6 +67,10 @@ export function showMenu({ onNew, onContinue, onLoadFile, onLoadCloud, hasSave }
       <div class="map-grid" id="maps"></div>
 
       <div class="board-head"><span class="n">02</span><h2>Found your city</h2><span class="connector"></span><span class="spec t-spec">Options</span></div>
+      <div class="menu-difficulty">
+        <div class="md-head"><b>Difficulty</b><div class="md-seg" id="m-diff">${DIFFICULTY_KEYS.map((k) => `<button data-d="${k}" class="${k === 'normal' ? 'on' : ''}">${DIFFICULTIES[k].name}</button>`).join('')}</div></div>
+        <div class="md-info" id="m-diff-info"></div>
+      </div>
       <div class="menu-options">
         <label>City name <input type="text" id="m-name" value="New Harbor" maxlength="24"></label>
         <label><span>Natural disasters<small>Fires, storms, tornadoes</small></span><input type="checkbox" id="m-dis" checked></label>
@@ -89,7 +94,22 @@ export function showMenu({ onNew, onContinue, onLoadFile, onLoadCloud, hasSave }
         <b>WASD</b>/arrows pan · <b>Q/E</b> rotate · <b>Z/X</b> zoom · <b>T/G</b> tilt · <b>Home</b> back to town ·
         <b>Esc</b> or right click cancels a tool · <b>Space</b> pause · <b>1–3</b> speed · <b>R</b> rotate building · <b>V</b> resources · <b>P</b> photo mode
       </div>
+      <div class="menu-keys menu-touch">
+        Touch: <b>one finger</b> pans (or uses the tool in hand) · <b>two fingers</b> pan, pinch to zoom and twist to rotate · <b>three fingers</b> up and down tilt ·
+        <b>double tap</b> flies there · <b>hold</b> a button to see what it does · <b>✕ Cancel</b> (bottom right) stops a tool
+      </div>
     </div>`;
+  let difficulty = 'normal';
+  const diffInfo = () => {
+    const d = DIFFICULTIES[difficulty];
+    el.querySelector('#m-diff-info').innerHTML = `<span>${d.blurb}</span>${difficultyRows(d).map(([k, v]) => `<span class="md-row">${k} <b>${v}</b></span>`).join('')}`;
+  };
+  el.querySelectorAll('#m-diff [data-d]').forEach((b) => (b.onclick = () => {
+    difficulty = b.dataset.d;
+    el.querySelectorAll('#m-diff [data-d]').forEach((x) => x.classList.toggle('on', x === b));
+    diffInfo();
+  }));
+  diffInfo();
   const grid = el.querySelector('#maps');
   const allMaps = [...MAPS, ...customMaps()];
   for (const map of allMaps) {
@@ -113,6 +133,7 @@ export function showMenu({ onNew, onContinue, onLoadFile, onLoadCloud, hasSave }
     el.classList.add('hidden');
     onNew(chosen, {
       cityName: el.querySelector('#m-name').value.trim() || 'New City',
+      difficulty,
       disasters: el.querySelector('#m-dis').checked,
       unlimitedMoney: el.querySelector('#m-money').checked,
       unlockAll: el.querySelector('#m-unlock').checked,

@@ -62,8 +62,15 @@ export function createTools(app) {
     if (!html) { tip.style.display = 'none'; return; }
     tip.innerHTML = html;
     tip.style.display = 'block';
-    // the interface may be zoomed (Interface size setting): place it in its own units
+    // the interface may be zoomed (Interface size setting): place it in its own units; on a
+    // touch screen it goes above the finger, where the hand doesn't cover it
     const z = app.uiScale || 1;
+    if (tools.touch) {
+      const w = tip.offsetWidth * z, h = tip.offsetHeight * z;
+      tip.style.left = `${Math.max(4, Math.min(window.innerWidth - w - 4, x - w / 2)) / z}px`;
+      tip.style.top = `${Math.max(4, y - h - 56) / z}px`;
+      return;
+    }
     tip.style.left = `${(x + 16) / z}px`;
     tip.style.top = `${(y + 16) / z}px`;
   };
@@ -72,20 +79,55 @@ export function createTools(app) {
   // a tool at work (what it spends goes with the change Undo records)
   const work = (fn) => (app.undo ? app.undo.during(fn) : fn());
 
+  // Touch: a finger that lands waits a moment before the tool reacts, so two fingers landing
+  // for a pinch or a twist (see camera.js) don't build anything. The press goes ahead as soon
+  // as the finger moves, lifts (a tap) or stays down a moment; a second finger calls it off.
+  let pending = null;
+  const fingers = () => view.cam.touches?.() || 0;
+  function commit() {
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    const { e, p } = pending;
+    pending = null;
+    press(e, p);
+  }
+  function callOff() {
+    if (pending) { clearTimeout(pending.timer); pending = null; }
+    if (tools.down) { tools.down = false; tools.dragStart = null; app.undo?.end(); }
+    app.preview.clearCells();
+    tools.showTip(null);
+  }
+
   canvas.addEventListener('pointermove', (e) => {
+    const touch = e.pointerType === 'touch';
+    if (touch && fingers() > 1) return;
+    if (!touch) tools.touch = false;
     tools.mouse.x = e.clientX; tools.mouse.y = e.clientY;
+    if (pending && pending.id === e.pointerId && Math.hypot(e.clientX - pending.x, e.clientY - pending.y) > 8) commit();
     const p = pick(e);
     tools.hover = p;
     const h = handlers[tools.current.kind];
     if (!p) { tools.showTip(null); return; }
-    if (tools.down && tools.dragStart) work(() => h?.drag?.(app, tools.current, tools.dragStart, p, e));
-    else h?.hover?.(app, tools.current, p, e);
+    if (tools.down && tools.dragStart) {
+      work(() => h?.drag?.(app, tools.current, tools.dragStart, p, e));
+      // tools that place one thing (a building) follow the finger or the held button
+      if (!h?.drag) h?.hover?.(app, tools.current, p, e);
+    } else h?.hover?.(app, tools.current, p, e);
   });
   canvas.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
+    tools.touch = e.pointerType === 'touch';
     tools.mouse.x = e.clientX; tools.mouse.y = e.clientY;
+    if (tools.touch && fingers() > 1) { callOff(); return; }
     const p = pick(e);
     if (!p) return;
+    if (!tools.touch) { press(e, p); return; }
+    // show what the tool would do under the finger, then wait a moment
+    tools.hover = p;
+    handlers[tools.current.kind]?.hover?.(app, tools.current, p, e);
+    pending = { e, p, id: e.pointerId, x: e.clientX, y: e.clientY, timer: setTimeout(commit, 140) };
+  });
+  function press(e, p) {
     tools.down = true;
     tools.hover = p;
     tools.dragStart = p;
@@ -97,8 +139,9 @@ export function createTools(app) {
       handlers[tools.current.kind]?.down?.(app, tools.current, p, e);
       handlers[tools.current.kind]?.drag?.(app, tools.current, p, p, e);
     });
-  });
+  }
   window.addEventListener('pointerup', (e) => {
+    if (pending && pending.id === e.pointerId) commit(); // a quick tap
     if (e.button !== 0 || !tools.down) return;
     tools.down = false;
     // Where the button came up: barely moving counts as a click on the cell it went down on
@@ -112,7 +155,7 @@ export function createTools(app) {
     tools.dragStart = null;
     app.undo?.end();
   });
-  window.addEventListener('blur', () => { tools.down = false; tools.dragStart = null; app.undo?.end(); });
+  window.addEventListener('blur', () => { callOff(); });
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   canvas.addEventListener('pointerleave', () => tools.showTip(null));
   // Esc or a right click first cancels what the tool is in the middle of (a road you're
@@ -410,7 +453,7 @@ registerTool('road', {
     if (t.mode === 'grid') { this.gridHover(app, t, b, e); return; }
     if (t.mode === 'bridge') { this.hover(app, t, b, e); return; }
     if (this.pointMode(t)) {
-      const from = t.start || [a.cx, a.cy];
+      const from = this.fromFor(t, a, b, e);
       if (!t.start && a.cx === b.cx && a.cy === b.cy) { this.hover(app, t, b, e); return; }
       this.showLine(app, t, from, this.endFor(app, t, b, e, from));
       return;
@@ -424,6 +467,14 @@ registerTool('road', {
   cells(app, t, a, b) {
     return dragCells(a, b).filter(([x, y]) => !app.state.road[idx(x, y)]);
   },
+  // Where this piece starts: the end of the last piece (you keep drawing from it), but on a
+  // touch screen a drag that starts somewhere else is a new road from under the finger
+  fromFor(t, a, b, e) {
+    if (!t.start) return [a.cx, a.cy];
+    const dragged = a.cx !== b.cx || a.cy !== b.cy;
+    if (e?.pointerType === 'touch' && dragged && Math.max(Math.abs(a.cx - t.start[0]), Math.abs(a.cy - t.start[1])) > 2) return [a.cx, a.cy];
+    return t.start;
+  },
   up(app, t, a, b, e) {
     if (t.mode === 'grid') { this.gridClick(app, t, b, e); return; }
     if (t.mode === 'bridge') { bridgeClick(app, t.bridge || (t.bridge = { start: null }), b, 'road', t.type, bridgeName(t)); return; }
@@ -435,7 +486,7 @@ registerTool('road', {
         this.hover(app, t, b, e);
         return;
       }
-      const from = t.start || [a.cx, a.cy];
+      const from = this.fromFor(t, a, b, e);
       const to = this.endFor(app, t, b, e, from);
       if (from[0] === to[0] && from[1] === to[1]) return;
       // across water: road on the land, a bridge of this road type over the water

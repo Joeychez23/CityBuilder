@@ -78,14 +78,20 @@ export function createTerrainView(view, state) {
   res.visible = false;
   view.scene.add(res);
 
-  // Water: a flat grid at sea level, vertex-coloured so water pollution can tint it.
-  const wgeo = new THREE.PlaneGeometry(N, N, N, N);
+  // Water: a flat sheet at sea level, tinted by water pollution through one texel per cell
+  // (centred on the cell, so a polluted cell is polluted right up to the shore)
+  const wgeo = new THREE.PlaneGeometry(N, N);
   wgeo.rotateX(-Math.PI / 2);
   wgeo.translate(N / 2, 0, N / 2);
-  const wcol = new Float32Array(wgeo.attributes.position.count * 3);
-  wgeo.setAttribute('color', new THREE.BufferAttribute(wcol, 3));
+  const wuv = wgeo.attributes.uv;
+  for (let i = 0; i < wuv.count; i++) wuv.setXY(i, wgeo.attributes.position.getX(i) / N, wgeo.attributes.position.getZ(i) / N);
+  const wcol = new Uint8Array(N * N * 4);
+  const waterTex = new THREE.DataTexture(wcol, N, N, THREE.RGBAFormat);
+  waterTex.colorSpace = THREE.SRGBColorSpace;
+  waterTex.magFilter = THREE.LinearFilter;
+  waterTex.minFilter = THREE.LinearFilter;
   const water = new THREE.Mesh(wgeo, new THREE.MeshStandardMaterial({
-    vertexColors: true, transparent: true, opacity: 0.82, roughness: 0.15, metalness: 0.1,
+    map: waterTex, transparent: true, opacity: 0.82, roughness: 0.15, metalness: 0.1,
   }));
   water.position.y = state.seaLevel - 0.05;
   water.receiveShadow = true;
@@ -145,17 +151,32 @@ export function createTerrainView(view, state) {
   // Polluted water turns murky green, then sewage brown; even a little shows
   const clean = C('#2f7fb3'), murky = C('#56704a'), sewage = C('#5c4527'), icy = C('#c7dbe8');
   tv.updateWaterColors = (freeze = 0) => {
-    const p = wgeo.attributes.position;
-    const c = new THREE.Color();
-    for (let i = 0; i < p.count; i++) {
-      const x = Math.floor(p.getX(i)), y = Math.floor(p.getZ(i));
-      let wp = 0;
-      if (x >= 0 && y >= 0 && x < N && y < N) wp = state.waterPoll[idx(x, y)];
-      const t = clamp(Math.sqrt(Math.max(0, wp)) * 1.3, 0, 1);
-      c.copy(clean).lerp(murky, clamp(t * 2, 0, 1)).lerp(sewage, clamp(t * 2 - 1, 0, 1)).lerp(icy, freeze * 0.5);
-      wcol[i * 3] = c.r; wcol[i * 3 + 1] = c.g; wcol[i * 3 + 2] = c.b;
+    const W = state.water, P = state.waterPoll;
+    const c = new THREE.Color(), rgb = { r: 0, g: 0, b: 0 };
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        const i = idx(x, y);
+        let wp = 0;
+        if (W[i]) wp = P[i];
+        else {
+          // land: take on the water around it, so the shoreline (where the texture blends
+          // into this cell) stays the colour of the water rather than fading back to blue
+          let s = 0, n = 0;
+          for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+            const nx = x + dx, ny = y + dy;
+            if (nx < 0 || ny < 0 || nx >= N || ny >= N) continue;
+            const j = idx(nx, ny);
+            if (W[j]) { s += P[j]; n++; }
+          }
+          if (n) wp = s / n;
+        }
+        const t = clamp(Math.sqrt(Math.max(0, wp)) * 1.3, 0, 1);
+        c.copy(clean).lerp(murky, clamp(t * 2, 0, 1)).lerp(sewage, clamp(t * 2 - 1, 0, 1)).lerp(icy, freeze * 0.5);
+        c.getRGB(rgb, THREE.SRGBColorSpace);
+        wcol[i * 4] = rgb.r * 255; wcol[i * 4 + 1] = rgb.g * 255; wcol[i * 4 + 2] = rgb.b * 255; wcol[i * 4 + 3] = 255;
+      }
     }
-    wgeo.attributes.color.needsUpdate = true;
+    waterTex.needsUpdate = true;
   };
 
   tv.updateHeights();

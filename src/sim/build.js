@@ -188,6 +188,7 @@ export function placeLayer(state, layer, cells) {
       if (state.bld[i]) removeBuilding(state, state.bld[i]);
       clearZoneCell(state, i);
       state.tree[i] = 0;
+      state.forestMax[i] = 0; // (or the forest grows back over the track)
     }
   }
   if (layer === 'rail' || layer === 'path') regrade(state, state[layer], plan.ok);

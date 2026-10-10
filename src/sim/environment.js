@@ -1,11 +1,28 @@
 // Pollution (air, ground, noise, water, groundwater), land value, and natural resources
 // regenerating or being damaged.
+//
+// Pollution builds up the longer it lingers: smog settles into the ground, contaminated
+// ground gives off fumes and dust in turn and slowly seeps into the land around it, so a
+// place that has been polluted for weeks keeps getting worse. Industrial, ore and oil land
+// takes the worst of it (spills and waste settle there twice as fast) and is the slowest to
+// recover once the factories go.
 import { N, idx, inBounds, clamp, DIRS } from '../core/grid.js';
 import { ROADS, UPG } from '../data/roads.js';
 import { isService, center } from './services.js';
 import { bus } from '../core/events.js';
+import { ZONE_LIST } from '../data/zones.js';
 
 const NN = N * N;
+// (a new industrial area starts out about half as smoggy as it ends up a month later)
+const SETTLE_FROM = 0.12;  // air pollution above this settles into the ground...
+const SETTLE = 0.0006;     // ...this much of it each hour
+const DIRTY_SETTLE = 2;    // × that on industrial, ore and oil land
+const FUMES = 0.04;        // share of a cell's ground pollution given back to its air each hour
+const SEEP = 40;           // ground pollution spreads to the cells around (smaller = faster)
+const SOIL_KEEP = 0.992;   // ground pollution left after an hour (it heals in about a week)
+const DIRTY_KEEP = 0.9985; // ...and on industrial land (half gone in a week, most in a month)
+const DIRTY = new Uint8Array(256);
+for (const z of ZONE_LIST) if (z.cat === 'ind' || z.key === 'spec_ore' || z.key === 'spec_oil') DIRTY[z.id] = 1;
 const tmp = new Float32Array(NN);
 
 // The box around everything non-zero in a layer, grown by `pad` cells (diffusion only has
@@ -82,12 +99,16 @@ export function pollutionHourly(state, ctx) {
       const cat = b.def.cat;
       const size = (b.x1 - b.x0 + 1) * (b.y1 - b.y0 + 1);
       if (cat === 'ind') {
-        air[i] += 0.03 * size * filters * (b.efficiency ?? 0.5); ground[i] += 0.002 * size * filters; noise[i] += 0.35;
-        const loud = (0.55 + size * 0.06) * (0.5 + 0.5 * Math.min(1, b.efficiency ?? 0.5)) * (b.level > 2 ? 1.15 : 1);
+        const heavy = b.def.pollute || 1; // large industry is dirtier
+        air[i] += 0.018 * size * filters * heavy * (b.efficiency ?? 0.5); noise[i] += 0.35 * heavy;
+        for (let y = b.y0; y <= b.y1; y++) for (let x = b.x0; x <= b.x1; x++) ground[idx(x, y)] += 0.004 * filters * heavy;
+        const loud = (0.55 + size * 0.06) * heavy * (0.5 + 0.5 * Math.min(1, b.efficiency ?? 0.5)) * (b.level > 2 ? 1.15 : 1);
         for (let y = b.y0; y <= b.y1; y++) for (let x = b.x0; x <= b.x1; x++) ind[idx(x, y)] += loud / size * 1.6;
       }
       if (cat === 'spec') {
-        ground[i] += (b.def.key === 'spec_oil' || b.def.key === 'spec_ore' ? 0.004 : 0.001) * size; noise[i] += 0.2;
+        const g = b.def.key === 'spec_oil' || b.def.key === 'spec_ore' ? 0.004 : 0.001;
+        for (let y = b.y0; y <= b.y1; y++) for (let x = b.x0; x <= b.x1; x++) ground[idx(x, y)] += g;
+        noise[i] += 0.2;
         if (b.def.key === 'spec_ore' || b.def.key === 'spec_oil') for (let y = b.y0; y <= b.y1; y++) for (let x = b.x0; x <= b.x1; x++) ind[idx(x, y)] += 0.5 / size * 1.6;
       }
       if (cat === 'com') noise[i] += 0.15 * size * 0.3;
@@ -108,11 +129,15 @@ export function pollutionHourly(state, ctx) {
     noise[i] += n;
     air[i] += vol * 0.0015 * combustionBan * heavyBan * (ctx.electricVehicles ? 0.5 : 1);
   }
-  // --- spread: air drifts with the wind; noise spreads a little and never accumulates
+  // contaminated ground gives off fumes and dust
+  for (let i = 0; i < NN; i++) if (ground[i] > 0.005) air[i] += ground[i] * FUMES;
+  // --- spread: air drifts with the wind; noise spreads a little and never accumulates;
+  // ground pollution seeps slowly into the land around it
   const windDir = ctx.windDir || [1, 0];
   diffuse(air, 4, [windDir[0] * w.wind * 0.6, windDir[1] * w.wind * 0.6]);
   diffuse(noise, 2);
   diffuse(noise, 3);
+  diffuse(ground, SEEP);
   // factory noise carries further (a few blocks)
   const indBox = activeBox(ind, 10);
   for (let k = 0; k < 10; k++) diffuse(ind, 1, [0, 0], null, indBox);
@@ -120,11 +145,15 @@ export function pollutionHourly(state, ctx) {
     ind[i] = clamp(Math.sqrt(ind[i]) * 2.4 - 0.04 - state.tree[i] * 0.05, 0, 1.5);
     noise[i] += ind[i] * 0.5;
   }
+  const zone = state.zone;
   for (let i = 0; i < NN; i++) {
-    // trees soak up some pollution; rain washes the air
+    // trees soak up some pollution; rain washes the air; what's left hanging over a place
+    // settles into its ground
     const tree = state.tree[i] * 0.004;
     air[i] = clamp(air[i] * (0.94 - w.rain * 0.06) - tree, 0, 1.5);
-    ground[i] = clamp(ground[i] * 0.9985 - (state.tree[i] ? 0.0004 : 0), 0, 1.5);
+    const dirty = DIRTY[zone[i]];
+    const settle = Math.max(0, air[i] - SETTLE_FROM) * SETTLE * (dirty ? DIRTY_SETTLE : 1);
+    ground[i] = state.water[i] ? 0 : clamp(ground[i] * (dirty ? DIRTY_KEEP : SOIL_KEEP) + settle - (state.tree[i] ? 0.0004 : 0), 0, 1.5);
     noise[i] = clamp(noise[i] - state.tree[i] * 0.03, 0, 1.5);
   }
 
@@ -210,7 +239,7 @@ export function natureDaily(state) {
     if (state.ground[i] > 0.45 && state.tree[i] && Math.random() < 0.08) { state.tree[i]--; changed = true; }
     if (state.ground[i] > 0.3) state.fertile[i] = Math.max(0, state.fertile[i] - 0.01);
     if (state.burnt[i] > 0) state.burnt[i] = Math.max(0, state.burnt[i] - 0.03);
-    if (state.forestMax[i] && state.tree[i] < 3 && !state.bld[i] && !state.road[i] && state.burnt[i] < 0.2 && state.ground[i] < 0.3 && Math.random() < 0.03) {
+    if (state.forestMax[i] && state.tree[i] < 3 && !state.bld[i] && !state.road[i] && !state.rail[i] && !state.path[i] && state.burnt[i] < 0.2 && state.ground[i] < 0.3 && Math.random() < 0.03) {
       state.tree[i]++;
       changed = true;
     }

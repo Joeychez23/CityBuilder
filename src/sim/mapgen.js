@@ -1,10 +1,10 @@
 // Procedural maps: heightmap by terrain style, water, natural resources, forests,
 // starting tiles and outside connections (highway, rail, sea lane, air).
-import { N, HN, TILE, TILES, idx, hidx, clamp, lerp } from '../core/grid.js';
+import { N, HN, TILE, TILES, idx, hidx, clamp, lerp, inBounds, DIRS } from '../core/grid.js';
 import { makeNoise } from '../core/noise.js';
 import { makeRng } from '../core/rng.js';
 import { gradeCells } from './grade.js';
-import { bridgeWaterRuns } from './bridges.js';
+import { bridgeWaterRuns, bridgeConnection, bridgeLayers } from './bridges.js';
 
 const smooth = (e0, e1, x) => {
   const t = clamp((x - e0) / (e1 - e0), 0, 1);
@@ -188,6 +188,8 @@ export function generateMap(state, map) {
   gradeCells(state, state.road, cellsOf(state.road));
   gradeCells(state, state.rail, cellsOf(state.rail));
   recomputeWater(state);
+  bridgeConnections(state);
+  // (anything left on the water that couldn't be planned still gets a deck)
   bridgeWaterRuns(state, 'road');
   bridgeWaterRuns(state, 'rail');
 }
@@ -246,6 +248,28 @@ export function recomputeWater(state, x0 = 0, y0 = 0, x1 = N - 1, y1 = N - 1) {
   }
 }
 
+// How far in from the map edge the pre-built highway and railway run
+const HIGHWAY_END = START_TILE_MIN * TILE + 4, RAIL_END = START_TILE_MIN * TILE - 2;
+
+// The cells of a pre-built outside connection (the highway or the railway), from the map edge
+// inward, as far as it was laid and is still there
+export function connectionLine(state, c) {
+  const net = c.type === 'road' ? state.road : state.rail;
+  const [sx, sy] = DIRS[(c.dir + 2) % 4];
+  const len = (c.type === 'road' ? HIGHWAY_END : RAIL_END) + 1;
+  const line = [];
+  for (let k = 0, x = c.x, y = c.y; k < len && inBounds(x, y) && net[idx(x, y)]; k++, x += sx, y += sy) line.push([x, y]);
+  return line;
+}
+
+// Bridges where the pre-built highway and railway cross water, planned like the player's own
+// (see bridgeConnection). Returns how many it built.
+export function bridgeConnections(state, opts) {
+  let built = 0;
+  for (const c of state.connections) if (c.type === 'road' || c.type === 'rail') built += bridgeConnection(state, c.type, connectionLine(state, c), opts);
+  return built;
+}
+
 // The outside highway runs in from the west edge, along the centre row, and stops at the
 // edge of the starting area. It follows the lie of the land (a smoothed, not-too-steep
 // profile of it) and the ground beside it is eased onto it over a few cells, so it never
@@ -253,7 +277,7 @@ export function recomputeWater(state, x0 = 0, y0 = 0, x1 = N - 1, y1 = N - 1) {
 function carveHighway(state) {
   const y = CENTER;
   const H = state.height, sea = state.seaLevel;
-  const end = START_TILE_MIN * TILE + 4;
+  const end = HIGHWAY_END;
   // the land's height along the route (water is skipped: the road bridges it)
   const raw = [];
   for (let x = 0; x <= end + 1; x++) {
@@ -327,9 +351,10 @@ function setupConnections(state, map) {
     // A rail stub enters from the north edge; the player links it to a train station.
     const x = CENTER + 10;
     const H = state.height;
-    for (let y = 0; y <= START_TILE_MIN * TILE - 2; y++) {
+    for (let y = 0; y <= RAIL_END; y++) {
       state.rail[idx(x, y)] = 1;
       state.tree[idx(x, y)] = 0;
+      state.forestMax[idx(x, y)] = 0;
       for (const dx of [0, 1]) {
         const i = hidx(x + dx, y);
         H[i] = lerp(H[i], Math.max(H[i], state.seaLevel + 0.6), 0.6);
@@ -428,4 +453,16 @@ export function applyCustomMap(state, custom) {
     }
   }
   recomputeWater(state);
+  // the pre-built highway and railway: graded and bridged again over this map's own land and water
+  for (const c of state.connections) {
+    if (c.type !== 'road' && c.type !== 'rail') continue;
+    const [net, H, dir] = bridgeLayers(state, c.type);
+    const line = connectionLine(state, c);
+    for (const [x, y] of line) { H[idx(x, y)] = 0; dir[idx(x, y)] = 0; }
+    gradeCells(state, net, line);
+  }
+  recomputeWater(state);
+  bridgeConnections(state);
+  bridgeWaterRuns(state, 'road');
+  bridgeWaterRuns(state, 'rail');
 }

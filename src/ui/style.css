@@ -429,8 +429,20 @@ code { background: var(--ink-3); padding: 0 4px; }
 .menu-options label:hover { background: #fff; }
 .menu-options label small { display: block; font-family: var(--font-mono); font-weight: 400; text-transform: none; font-size: 10.5px; color: var(--muted); margin-top: 3px; font-stretch: 100%; }
 .menu-options input[type='text'] { background: var(--board); color: var(--fg); border-bottom-color: var(--fg); width: 140px; }
+.menu-difficulty { margin-top: 18px; background: var(--paper); padding: 12px 14px; }
+.md-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.md-head b { font-family: var(--font-sans); font-stretch: 112%; font-weight: 700; text-transform: uppercase; font-size: 11px; }
+.md-seg { display: flex; gap: 3px; flex-wrap: wrap; flex: 1; }
+.md-seg button { flex: 1; min-width: 96px; height: 38px; border: 0; background: var(--ink); color: var(--paper); font-family: var(--font-sans); font-stretch: 112%; font-weight: 700; text-transform: uppercase; font-size: 11px; cursor: pointer; }
+.md-seg button:hover { background: var(--ink-3); }
+.md-seg button.on { background: var(--yellow); color: var(--ink); }
+.md-info { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 9px; font-size: 11px; color: var(--muted); }
+.md-info > span:first-child { flex-basis: 100%; color: var(--fg); }
+.md-row b { color: var(--fg); font-weight: 600; }
 .menu-actions { display: flex; gap: 3px; flex-wrap: wrap; margin-top: 18px; }
 .menu-actions .btn { height: 52px; padding: 0 22px; font-size: 13px; }
+.menu-touch { display: none; }
+@media (hover: none) and (pointer: coarse) { .menu-touch { display: block; } }
 #menu .btn { background: var(--ink); color: var(--paper); }
 #menu .btn:hover { background: var(--yellow); color: var(--ink); }
 #menu .btn.primary { background: var(--yellow); color: var(--ink); }
@@ -446,3 +458,72 @@ code { background: var(--ink-3); padding: 0 4px; }
 body.photo #ui { display: none; }
 body.photo #photo-bar { display: flex; }
 #photo-bar { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); display: none; gap: 3px; z-index: 40; background: var(--ink); padding: 5px; }
+
+/* ---------- Touch screens and phones ---------- */
+/* The map takes every touch itself (pan, pinch, twist: see world/camera.js) */
+#scene { touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+body.touch #ui { -webkit-user-select: none; user-select: none; }
+body.touch button, body.touch select, body.touch input { touch-action: manipulation; }
+/* With a tool in hand on a touch screen: a button to stop what it's doing (Esc / right click) */
+#touch-cancel { position: absolute; right: 8px; bottom: calc(var(--toolbar-h, 70px) + var(--submenu-h, 0px) + 8px); display: none; z-index: 6;
+  border: 0; background: var(--ink); color: var(--paper); padding: 10px 14px; box-shadow: 0 8px 22px rgba(0, 0, 0, 0.4);
+  font-family: var(--font-sans); font-stretch: 112%; font-weight: 700; text-transform: uppercase; font-size: 11px; }
+#touch-cancel b { color: var(--yellow); margin-right: 5px; }
+body.touch #touch-cancel.open { display: block; }
+body.touch .speed-btns button { padding: 4px 9px; }
+body.touch #left-rail button { height: 40px; }
+
+@media (max-width: 760px) {
+  #hud { padding-top: env(safe-area-inset-top); }
+  .hud-logo { width: 38px; min-height: 38px; font-size: 22px; }
+  #hud .hud-item { padding: 3px 7px; }
+  #hud .hud-item .label i { display: none; }
+  #hud .hud-item .value { font-size: 15px; gap: 5px; }
+  #hud .hud-weather, #hud .hud-xp, #hud .hud-name, #hud [data-open='power'], #hud .hud-happy .sub { display: none; }
+  #hud .segs i { width: 3px; }
+  .hud-bell { min-width: 46px; padding: 0 9px; }
+
+  #left-rail button { width: 38px; }
+
+  /* one row of categories that scrolls sideways, names kept (there are no hover tips) */
+  #toolbar { left: 0; right: 0; transform: none; width: auto; max-width: none; flex-wrap: nowrap; justify-content: flex-start;
+    overflow-x: auto; overflow-y: hidden; scrollbar-width: none; padding-bottom: env(safe-area-inset-bottom); }
+  #toolbar::-webkit-scrollbar { display: none; }
+  #toolbar button, #toolbar.icons button { flex: none; min-width: 54px; padding: 6px 5px 5px; }
+  #toolbar.icons button .lbl { display: block; }
+  #submenu { left: 0; right: 0; transform: none; width: auto; max-width: none; max-height: 42vh; padding: 8px; }
+  #submenu.compact { left: 0; }
+  .card { width: calc(50% - 1px); }
+  #submenu.compact .card { width: 112px; }
+
+  /* windows fill the width beside the rail */
+  #panels { left: 44px; right: 4px; width: auto; gap: 8px; }
+  #tool-options { left: 44px; right: 4px; width: auto; max-height: min(40vh, calc(100vh / var(--z, 1) - var(--hud-h, 64px) - var(--toolbar-h, 70px) - var(--submenu-h, 0px) - 18px)); }
+  #toasts { left: 44px; right: 4px; width: auto; }
+  #layers { left: 44px; right: auto; max-width: calc(100vw / var(--z, 1) - 48px); overflow-x: auto; scrollbar-width: none; }
+  #layers .layers-title { display: none; }
+  #layers button { font-size: 0; gap: 0; padding: 7px 8px; }
+  #layers button span { font-size: 15px; }
+  #legend, #res-legend { left: 44px; right: 4px; width: auto; }
+  #uitip { max-width: calc(100vw - 12px); }
+
+  .menu-box { padding: 20px 14px 40px; }
+  .menu-hero { grid-template-columns: 1fr; }
+  .menu-hero .motto { text-align: left; }
+  .map-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .menu-nav .spec { display: none; }
+  .board-head .n { font-size: 34px; }
+  .board-head h2 { font-size: 17px; }
+  .board-head .connector { display: none; }
+  .map-card .mc-head b { font-size: 18px; }
+  .map-card .desc { font-size: 10.5px; }
+  .menu-keys { display: none; }
+  .menu-keys.menu-touch { display: block; }
+}
+/* phones held sideways: little height, so menus stay short */
+@media (max-height: 500px) {
+  #submenu { max-height: 46vh; }
+  #submenu .card .meta { display: none; }
+  #panels { top: calc(var(--hud-h) + 2px); }
+  #left-rail button { height: 32px; }
+}

@@ -103,8 +103,12 @@ export const INFO_VIEWS = [
   { key: 'leisure', icon: '🌳', name: 'Leisure', legend: ['green', 'Nothing to do', 'Lots of leisure'], heat: coverageHeat('leisure', 'green'),
     building: (s) => (b) => (b.def.leisure ? '#5fd38a' : GREY) },
   { key: 'tourism', icon: '📸', name: 'Tourism', legend: ['heat', 'Unattractive', 'Attractive'], heat: coverageHeat('leisure', 'heat'),
-    building: (s) => (b) => (b.def.attract || b.def.signature ? bRamp('heat', Math.min(1, (b.def.attract || 8) / 20)) : GREY),
-    stats: (s) => row('Attractiveness', s.stats.attractiveness ?? 0) + row('Tourists today', (s.stats.tourists || 0).toLocaleString()) + row('Total visits', s.counters.tourists.toLocaleString()) },
+    building: (s) => (b) => (b.def.rooms ? '#4fc3ff' : b.def.attract || b.def.signature ? bRamp('heat', Math.min(1, (b.def.attract || 8) / 20)) : GREY),
+    stats: (s) => row('Attractiveness', s.stats.attractiveness ?? 0) + row('Tourists today', (s.stats.tourists || 0).toLocaleString())
+      + row('Day visitors', (s.stats.dayVisitors ?? s.stats.tourists ?? 0).toLocaleString())
+      + row('Hotel guests', `${(s.stats.hotelGuests || 0).toLocaleString()} / ${(s.stats.hotelRooms || 0).toLocaleString()} rooms`, (s.stats.hotelWanted || 0) > (s.stats.hotelRooms || 0) * 1.1 ? 'warn' : '')
+      + ((s.stats.hotelWanted || 0) > (s.stats.hotelRooms || 0) ? `<div class="muted">${(s.stats.hotelWanted - (s.stats.hotelRooms || 0)).toLocaleString()} more tourists would stay the night if there were rooms: build hotels (Parks menu).</div>` : '')
+      + row('Total visits', s.counters.tourists.toLocaleString()) },
   { key: 'outside', icon: '🌍', name: 'Outside Connections', legend: ['heat', 'Local', 'Trade'],
     heat: (s) => { const set = new Set(); for (const c of s.connections) for (let d = -2; d <= 2; d++) for (let e = -2; e <= 2; e++) { const x = c.x + d, y = c.y + e; if (x >= 0 && y >= 0 && x < N && y < N) set.add(y * N + x); } return (i) => (set.has(i) ? [255, 200, 60, 220] : null); },
     stats: (s) => s.connections.map((c) => row(c.name, c.type)).join('') + Object.entries(RESOURCES).map(([k, r]) => { const m = s.market[k] || {}; return (m.imported || m.exported) ? row(`${r.icon} ${r.name}`, `↓${Math.round(m.imported || 0)} ↑${Math.round(m.exported || 0)}`) : ''; }).join('') },
@@ -131,8 +135,14 @@ export const INFO_VIEWS = [
   { key: 'wealth', icon: '💰', name: 'Citizen Wealth', legend: ['good', 'Poor', 'Wealthy'], building: zoneOnly('res', (s, c, b) => { let w = 0, n = 0; for (const h of b.households) { const hh = s.households.get(h); if (hh) { w += hh.wealth; n++; } } return n ? bRamp('good', 0.3 + w / n / 30000) : GREY; }) },
   { key: 'jobs', icon: '💼', name: 'Workplace Availability', legend: ['good', 'Full', 'Many open jobs'], building: (s) => (b) => (b.jobs ? bRamp('good', 1 - (b.workerCount ?? b.workers.length) / b.jobs) : GREY),
     stats: (s) => (s.stats.openJobsEdu || []).map((v, k) => row(['Uneducated', 'Poorly educated', 'Educated', 'Well educated', 'Highly educated'][k], `${v} open`)).join('') },
-  { key: 'air', icon: '🌫️', name: 'Air Pollution', legend: ['bad', 'Clean', 'Polluted'], heat: heat((s) => s.air, 'bad', 1.6) },
-  { key: 'ground', icon: '🟤', name: 'Ground Pollution', legend: ['bad', 'Clean', 'Polluted'], heat: heat((s) => s.ground, 'bad', 2) },
+  { key: 'air', icon: '🌫️', name: 'Air Pollution', legend: ['bad', 'Clean', 'Polluted'], heat: heat((s) => s.air, 'bad', 1.6),
+    stats: () => '<div class="muted">Smog keeps getting worse for weeks where it hangs: it settles into the ground, and contaminated ground gives off fumes in turn. Industrial areas are the worst.</div>' },
+  { key: 'ground', icon: '🟤', name: 'Ground Pollution', legend: ['bad', 'Clean', 'Polluted'], heat: heat((s) => s.ground, 'bad', 2),
+    stats: (s) => {
+      let bad = 0;
+      for (let i = 0; i < s.ground.length; i++) if (s.ground[i] > 0.3) bad++;
+      return row('Contaminated land', `${bad.toLocaleString()} cells`) + '<div class="muted">Builds up the longer a place is polluted and slowly spreads to the land around it. Industrial land collects the most and takes weeks to clear once the factories go; trees help.</div>';
+    } },
   { key: 'noise', icon: '🔊', name: 'Noise Pollution', legend: ['bad', 'Quiet', 'Loud'], heat: heat((s) => s.noise, 'bad', 1.4) },
   { key: 'indnoise', icon: '🏭', name: 'Industrial Noise', legend: ['bad', 'Quiet', 'Factories next door'],
     heat: (s, ctx) => (i) => { const v = (ctx.indNoise?.[i] || 0) * 1.3; if (v < 0.03) return null; const c = ramp('bad', v); return [c[0], c[1], c[2], 90 + Math.min(1, v) * 120]; },

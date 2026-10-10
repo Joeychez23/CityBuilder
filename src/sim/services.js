@@ -218,18 +218,25 @@ export const covAt = (ctx, key, b) => (ctx.coverage[key] ? ctx.coverage[key][cen
 
 // ------------------------------------------------------- hourly collection rounds
 // Facilities pick up from the nearest buildings first, up to their hourly capacity.
+// Hearses work through a day's capacity in a few hours (the deceased of a day all turn up
+// at midnight), so they're done by the morning instead of all day.
+const HEARSE_HOURS = 6;
 function collect(state, ctx, filter, rateKey, field, onCollect) {
   const providers = [...state.buildings.values()].filter((b) => isService(b) && b.def[rateKey] && filter(b));
   if (!providers.length) return 0;
   const consumers = [...state.buildings.values()].filter((b) => b[field] > 0.01);
+  const day = state.time.day;
   let total = 0;
   for (const p of providers) {
     const def = p.def;
+    if (p.doneDay !== day) { p.doneDay = day; p.doneYesterday = p.doneToday || 0; p.doneToday = 0; }
     if (def.storage && p.stored >= storageCap(p)) { p.full = true; continue; }
     p.full = false;
     const eff = p.efficiency ?? serviceEfficiency(state, p);
-    let cap = (def[rateKey] / 24) * eff * (rateKey === 'garbageRate' && hasPerk(state, 'garbage_trucks') ? 1.2 : 1);
+    const daily = def[rateKey] * eff * (rateKey === 'garbageRate' && hasPerk(state, 'garbage_trucks') ? 1.2 : 1);
+    let cap = rateKey === 'deathRate' ? Math.min(daily / HEARSE_HOURS, daily - p.doneToday) : daily / 24;
     if (def.storage) cap = Math.min(cap, storageCap(p) - p.stored);
+    if (cap <= 0) { p.load = 0; continue; }
     const [px, py] = center(p);
     const r2 = (def.radius || 999) ** 2;
     const near = consumers
@@ -244,6 +251,7 @@ function collect(state, ctx, filter, rateKey, field, onCollect) {
       got += take;
     }
     p.load = got;
+    p.doneToday += got;
     if (def.storage) {
       p.stored += got;
       // the mound on the site grows in steps you can see
@@ -265,6 +273,11 @@ export function hourlyCollections(state, ctx) {
   ctx.burnedHour = 0;
   collect(state, ctx, () => true, 'mail', 'mailOut');
   collect(state, ctx, () => true, 'deathRate', 'dead');
+  // how long the deceased have been waiting in each building (for the warning and well-being)
+  for (const b of state.buildings.values()) {
+    if ((b.dead || 0) > 0.01) b.deadHours = (b.deadHours || 0) + 1;
+    else if (b.deadHours) b.deadHours = 0;
+  }
   // Imported services quietly handle some of the leftovers, for a fee
   if (imported) {
     let fee = 0;

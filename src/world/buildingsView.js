@@ -9,8 +9,9 @@ import { segIndex } from '../sim/roadsegs.js';
 import { cellHeight } from '../sim/mapgen.js';
 import { bus } from '../core/events.js';
 import { DIRS, idx, inBounds, hidx } from '../core/grid.js';
+import { FLOOR, zoneParts } from './zoneStyles.js';
 
-export const FLOOR = 0.38; // height of one storey in world units (~3 m)
+export { FLOOR };
 
 // Facing direction (towards the road) -> rotation so the building's front (+z) faces it
 const FACING_RY = [Math.PI / 2, 0, -Math.PI / 2, Math.PI];
@@ -53,100 +54,16 @@ export function createBuildingsView(view, state, servicesById) {
     roof: new InstancedPool(scene, unitRoof, new THREE.MeshStandardMaterial({ roughness: 0.8 }), 1024),
     cyl: new InstancedPool(scene, new THREE.CylinderGeometry(0.5, 0.5, 1, 12).translate(0, 0.5, 0), new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0.2 }), 512),
     dome: new InstancedPool(scene, new THREE.SphereGeometry(0.5, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2).scale(1, 2, 1), new THREE.MeshStandardMaterial({ roughness: 0.4, metalness: 0.3 }), 128),
+    // a pyramid 1 × 1 at the base and 1 tall: hipped roofs, sunshades, spoil heaps
+    hip: new InstancedPool(scene, new THREE.ConeGeometry(Math.SQRT1_2, 1, 4, 1).rotateY(Math.PI / 4).translate(0, 0.5, 0), new THREE.MeshStandardMaterial({ roughness: 0.8, flatShading: true }), 512),
   };
 
   const bv = { pools, night, colorFn: null };
   const m = new THREE.Matrix4();
 
   // --- Part generators ---------------------------------------------------------------
-  function zonedParts(b, def) {
-    const r = makeRng(b.seed);
-    const W = b.w, D = b.d;
-    const lvl = b.level || 1;
-    const growth = (def.maxFloors - def.floors) / 4;
-    let floors = Math.round(def.floors + (lvl - 1) * growth * r.range(0.6, 1.1));
-    const wall = r.pick(theme.palette);
-    const roofC = r.pick(theme.roofColors);
-    const P = [];
-    const pitched = theme.roof === 'pitched' || r.chance(0.5);
-    switch (def.key) {
-      case 'res_low': {
-        floors = lvl >= 3 ? 2 : 1;
-        const w = W * r.range(0.6, 0.78), d = D * r.range(0.38, 0.5);
-        P.push({ pool: 'body', x: 0, z: D * 0.12, w, d, h: floors * FLOOR + 0.1, color: wall });
-        P.push({ pool: 'roof', x: 0, z: D * 0.12, w: w + 0.08, d: d + 0.1, h: 0.32, y: floors * FLOOR + 0.1, color: roofC });
-        if (lvl >= 2) P.push({ pool: 'plain', x: W * 0.32, z: -D * 0.2, w: 0.25, d: 0.25, h: 0.2, color: '#7a7f86' }); // shed/garage
-        break;
-      }
-      case 'res_row': {
-        const w = W * 0.96, d = D * 0.55;
-        P.push({ pool: 'body', x: 0, z: D * 0.18, w, d, h: floors * FLOOR, color: wall });
-        P.push({ pool: 'roof', x: 0, z: D * 0.18, w: w + 0.02, d: d + 0.08, h: 0.3, y: floors * FLOOR, color: roofC });
-        break;
-      }
-      case 'res_mixed': {
-        const w = W * 0.9, d = D * 0.75;
-        P.push({ pool: 'body', x: 0, z: D * 0.1, w, d, h: FLOOR * 1.1, color: '#8fb4cf' });
-        P.push({ pool: 'body', x: 0, z: D * 0.05, w: w * 0.92, d: d * 0.9, h: (floors - 1) * FLOOR, y: FLOOR * 1.1, color: wall });
-        P.push({ pool: 'plain', x: 0, z: D * 0.1 + d / 2 + 0.05, w: w * 0.95, d: 0.12, h: 0.06, y: FLOOR * 0.9, color: r.pick(['#d0583f', '#3f8fd0', '#41a35b']) });
-        break;
-      }
-      case 'res_med': case 'res_lowrent': case 'res_high': {
-        const w = W * r.range(0.72, 0.88), d = D * r.range(0.6, 0.78);
-        const tall = def.key === 'res_high';
-        if (tall) P.push({ pool: 'body', x: 0, z: 0, w: W * 0.92, d: D * 0.85, h: FLOOR * 1.4, color: '#b7b2a8' });
-        P.push({ pool: 'body', x: 0, z: D * 0.05, w, d, h: floors * FLOOR, color: def.lowRent ? r.pick(['#b9ad98', '#a7a49b', '#c2b8a3']) : wall });
-        if (!tall && pitched && floors <= 5) P.push({ pool: 'roof', x: 0, z: D * 0.05, w: w + 0.06, d: d + 0.06, h: 0.35, y: floors * FLOOR, color: roofC });
-        else P.push({ pool: 'plain', x: w * 0.2, z: 0, w: w * 0.3, d: d * 0.3, h: 0.25, y: floors * FLOOR, color: '#8b8f96' });
-        break;
-      }
-      case 'com_low': {
-        const w = W * 0.86, d = D * 0.6;
-        P.push({ pool: 'body', x: 0, z: D * 0.15, w, d, h: floors * FLOOR + 0.1, color: r.pick(['#d9d2c4', '#c3d3e0', '#e2cfc0', '#cfd8c2']) });
-        P.push({ pool: 'plain', x: 0, z: D * 0.15 + d / 2 + 0.06, w: w * 0.9, d: 0.14, h: 0.05, y: FLOOR * 0.85, color: r.pick(['#e05a47', '#3f8fd0', '#e7b33b', '#46a35c']) });
-        P.push({ pool: 'plain', x: 0, z: D * 0.15, w: w * 0.9, d: 0.05, h: 0.18, y: floors * FLOOR + 0.1, color: '#f4f1ea' });
-        break;
-      }
-      case 'com_high': case 'off_low': case 'off_high': {
-        const glass = def.cat === 'off' ? r.pick(['#7d9cc4', '#6f8fb3', '#8aa7c9', '#a0b6cf']) : r.pick(['#9fb9d1', '#c8c2b5', '#aebfd0']);
-        const w = W * r.range(0.65, 0.85), d = D * r.range(0.55, 0.75);
-        P.push({ pool: 'body', x: 0, z: 0, w: W * 0.92, d: D * 0.88, h: FLOOR * 1.5, color: '#cfc9bd' });
-        P.push({ pool: 'body', x: 0, z: 0, w, d, h: floors * FLOOR, color: glass });
-        if (floors > 8) P.push({ pool: 'body', x: 0, z: 0, w: w * 0.7, d: d * 0.7, h: floors * FLOOR * 0.25, y: floors * FLOOR, color: glass });
-        break;
-      }
-      case 'ind': {
-        const w = W * 0.85, d = D * 0.6;
-        P.push({ pool: 'plain', x: 0, z: -D * 0.05, w, d, h: floors * FLOOR + 0.2, color: r.pick(['#c9bfa8', '#b8b4ab', '#c7b48f', '#a8adb3']) });
-        P.push({ pool: 'roof', x: 0, z: -D * 0.05, w: w + 0.06, d: d + 0.06, h: 0.18, y: floors * FLOOR + 0.2, color: '#7b7f86' });
-        P.push({ pool: 'cyl', x: W * 0.3, z: D * 0.3, w: 0.18, d: 0.18, h: 1.2 + lvl * 0.15, color: '#8d6e5a' }); // chimney
-        if (r.chance(0.6)) P.push({ pool: 'cyl', x: -W * 0.28, z: D * 0.32, w: 0.5, d: 0.5, h: 0.5, color: '#d8d6d0' });
-        break;
-      }
-      case 'spec_farm':
-        P.push({ pool: 'body', x: -W * 0.25, z: D * 0.25, w: 0.9, d: 0.6, h: 0.45, color: '#a3423a' });
-        P.push({ pool: 'roof', x: -W * 0.25, z: D * 0.25, w: 0.95, d: 0.68, h: 0.3, y: 0.45, color: '#5d5f63' });
-        P.push({ pool: 'cyl', x: W * 0.05, z: D * 0.3, w: 0.35, d: 0.35, h: 0.9, color: '#c9ccd1' });
-        break;
-      case 'spec_forest':
-        P.push({ pool: 'plain', x: 0, z: D * 0.25, w: 1.2, d: 0.6, h: 0.4, color: '#7d6a4f' });
-        for (let k = 0; k < 4; k++) P.push({ pool: 'plain', x: -0.9 + k * 0.5, z: -D * 0.15, w: 0.2, d: 1.4, h: 0.2, color: '#8a6440' }); // log piles
-        break;
-      case 'spec_ore':
-        P.push({ pool: 'plain', x: 0, z: D * 0.2, w: 1.4, d: 0.7, h: 0.6, color: '#6b6e73' });
-        P.push({ pool: 'plain', x: W * 0.25, z: -D * 0.15, w: 0.3, d: 1.2, h: 0.9, color: '#4f5257' });
-        P.push({ pool: 'cyl', x: -W * 0.3, z: -D * 0.2, w: 0.8, d: 0.8, h: 0.35, color: '#5e5148' });
-        break;
-      case 'spec_oil':
-        P.push({ pool: 'cyl', x: -W * 0.25, z: D * 0.2, w: 0.8, d: 0.8, h: 0.7, color: '#d6d3cc' });
-        P.push({ pool: 'plain', x: W * 0.2, z: -D * 0.15, w: 0.15, d: 0.6, h: 0.5, color: '#333' });
-        P.push({ pool: 'plain', x: W * 0.2, z: -D * 0.15, w: 0.12, d: 0.9, h: 0.1, y: 0.5, color: '#c94c32' });
-        break;
-      default:
-        P.push({ pool: 'body', x: 0, z: 0, w: W * 0.8, d: D * 0.7, h: floors * FLOOR, color: wall });
-    }
-    return P;
-  }
+  // Grown buildings: one of their zone's styles (see zoneStyles.js)
+  const zonedParts = (b, def) => zoneParts(b, def, theme, state.theme);
 
   // Landfill: a dirt yard with a site office, and a garbage mound that grows as it fills
   // (it covers the whole yard, including land added by expansions)
@@ -342,8 +259,10 @@ export function createBuildingsView(view, state, servicesById) {
       const wx = cx + px * cos + pz * sin;
       const wz = cz - px * sin + pz * cos;
       // roofs sit a hair above the walls they cap, so their eaves never flicker against them
-      const y = baseY + (p.y || 0) + (p.pool === 'roof' ? 0.006 : 0);
-      boxMatrix(wx, y - (p.y ? 0 : 0.3), wz, p.w * scale, p.h + (p.y ? 0 : 0.3), p.d * scale, ry, m); // sink 0.3 so slopes don't show gaps
+      const y = baseY + (p.y || 0) + (p.pool === 'roof' || p.pool === 'hip' ? 0.006 : 0);
+      // a turned part (a gable end to the street) is the same box a quarter turn round
+      const sx = (p.turn ? p.d : p.w) * scale, sz = (p.turn ? p.w : p.d) * scale;
+      boxMatrix(wx, y - (p.y ? 0 : 0.3), wz, sx, p.h + (p.y ? 0 : 0.3), sz, ry + (p.turn ? Math.PI / 2 : 0), m); // sink 0.3 so slopes don't show gaps
       cb(p, m);
     }
   }

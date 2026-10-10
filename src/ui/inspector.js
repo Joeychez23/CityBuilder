@@ -11,11 +11,12 @@ import { truckCount, trucksOut } from '../sim/garbage.js';
 import { demolishBuilding, buildingValue, REFUND_RATE } from '../sim/build.js';
 import { ageGroup } from '../sim/citizens.js';
 import { FACTOR_ICONS, levelFactors, levelNeed } from '../sim/wellbeing.js';
-import { onSiteSpaces } from '../sim/parking.js';
+import { onSiteSpaces, parkReach } from '../sim/parking.js';
 import { unitsOf } from '../sim/emergency.js';
 import { idx } from '../core/grid.js';
 import { perWeek } from '../sim/economy.js';
 import { rushCost, rushConstruction } from '../sim/construction.js';
+import { zoneStyleName } from '../world/zoneStyles.js';
 
 const status = (v) => (v >= 0.95 ? '<span class="good">OK</span>' : v >= 0.5 ? `<span class="warn">${pct(v)}</span>` : `<span class="bad">${pct(v)}</span>`);
 
@@ -82,7 +83,7 @@ registerPanel({
     if (!b) { body.innerHTML = '<div class="muted">This building is gone.</div>'; app.preview.setSelection(null); return; }
     app.preview.setSelection(b);
     const i = centerIdx(b);
-    let html = `<h3 style="margin:0 0 2px">${b.name || b.def.name}</h3><div class="muted" style="margin-bottom:8px">${b.kind === 'zone' ? `Level ${b.level} · ${b.def.name}` : b.def.desc || ''}${b.abandoned ? ' · <span class="bad">Abandoned</span>' : ''}${b.onFire ? ' · <span class="bad">ON FIRE</span>' : ''}</div>`;
+    let html = `<h3 style="margin:0 0 2px">${b.name || b.def.name}</h3><div class="muted" style="margin-bottom:8px">${b.kind === 'zone' ? `Level ${b.level} · ${b.def.name}${!b.def.shape && zoneStyleName(b, s.theme) ? ` · ${zoneStyleName(b, s.theme)}` : ''}` : b.def.desc || ''}${b.abandoned ? ' · <span class="bad">Abandoned</span>' : ''}${b.onFire ? ' · <span class="bad">ON FIRE</span>' : ''}</div>`;
     if (b.cons) {
       // a building site: how far along it is, and (for city services) the option to rush it
       const left = Math.max(0, (1 - b.cons.progress) * b.cons.hours);
@@ -134,7 +135,7 @@ registerPanel({
       if (d.storage) {
         const cap = storageCap(b);
         const fill = (b.stored || 0) / cap;
-        const perDay = (b.load || 0) * 24;
+        const perDay = d.deathRate ? Math.max(b.doneToday || 0, b.doneYesterday || 0) : (b.load || 0) * 24;
         const left = perDay > 0.5 ? Math.max(0, (cap - (b.stored || 0)) / perDay) : null;
         html += row(d.garbageRate ? 'Garbage stored' : 'Graves used', `${Math.round(b.stored || 0).toLocaleString()} / ${Math.round(cap).toLocaleString()} t`, b.full ? 'bad' : fill > 0.85 ? 'warn' : '')
           + meter(fill, b.full ? 'var(--bad)' : fill > 0.85 ? 'var(--yellow)' : 'var(--blue)')
@@ -149,8 +150,18 @@ registerPanel({
       }
       if (d.students) html += row('Students', `${b.studentCount || 0} / ${d.students}`);
       if (d.patients) html += row('Patients today', `${b.patientsToday || 0} / ${d.patients}`);
+      if (d.rooms) {
+        const occ = b.occupancy;
+        html += row('Guests last night', occ == null ? '<span class="muted">opens tonight</span>' : `${b.guests} / ${d.rooms} rooms · ${pct(occ)}`, occ != null && occ < 0.4 ? 'warn' : '')
+          + (occ == null ? '' : meter(occ, 'var(--blue)'))
+          + row('Room price', `${money(d.roomRate)} a night`) + row('Rooms earned', `${money(b.roomIncome || 0)} a day`)
+          + row('Appeal to guests', b.appeal == null ? '–' : b.appeal >= 1.1 ? 'high' : b.appeal >= 0.75 ? 'fair' : 'low', b.appeal != null && b.appeal < 0.75 ? 'warn' : '');
+        if (occ != null && occ < 0.9) html += `<div class="muted" style="font-size:11px;margin:2px 0 6px">${(s.stats.hotelWanted || 0) <= (s.stats.hotelRooms || 0) ? 'More rooms than tourists who want to stay: parks, landmarks and attractions (and a train, harbor or airport) bring more.' : 'Guests choose hotels near parks and landmarks first' + (d.resort ? ', and resorts by the water.' : '.')}</div>`;
+      }
+      if (d.deathRate) html += row('Deceased collected today', `${Math.round(b.doneToday || 0)} / ${Math.round(d.deathRate * eff)}`, (b.doneToday || 0) >= d.deathRate * eff - 0.5 ? 'warn' : '');
       if (d.parking) {
         html += row('Cars parked (workday)', `${b.used || 0} / ${b.spaces ?? d.parking}${(b.used || 0) >= (b.spaces ?? d.parking) ? ' · full' : ''}`) + meter((b.used || 0) / (b.spaces || d.parking), (b.used || 0) >= (b.spaces ?? d.parking) ? 'var(--bad)' : 'var(--blue)');
+        html += row('Serves workplaces within', `${parkReach(d) * 8} m`);
         if (b.turnedAway) html += row('Turned away', `${b.turnedAway} driver${b.turnedAway === 1 ? '' : 's'} walk to work instead`, 'warn');
       }
       if (d.engines || d.patrol) {

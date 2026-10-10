@@ -14,6 +14,7 @@ import { SERVICE_LIST } from '../data/services.js';
 import { TRANSPORT_LIST, LINE_TYPES } from '../data/transport.js';
 import { ZONE_LIST } from '../data/zones.js';
 import { ROAD_LIST, UPGRADES } from '../data/roads.js';
+import { difficultyOf } from '../data/difficulty.js';
 
 const devNode = (key) => DEV_NODES.find((n) => n.key === key);
 
@@ -183,7 +184,7 @@ export const progressionFeature = {
       if (!next) return { name: cur.name, xp: P.xp, need: cur.xp, frac: 1 };
       return { name: `${P.milestone}. ${cur.name}`, xp: P.xp, need: next.xp, frac: (P.xp - cur.xp) / (next.xp - cur.xp) };
     };
-    bus.on('xp', ({ amount }) => { P.xp += amount; reachMilestones(app); });
+    bus.on('xp', ({ amount }) => { P.xp += amount * difficultyOf(app.state).xp; reachMilestones(app); });
     // Passive XP every 1.5 in-game hours from population and happiness
     let steps = 0;
     registerSystem({
@@ -191,7 +192,7 @@ export const progressionFeature = {
         if (++steps % 9) return;
         const pop = state.citizens.size;
         const happy = state.stats.happiness ?? 50;
-        const gain = (pop / 60) * (0.5 + happy / 100) + Math.min(5, pop / 20);
+        const gain = ((pop / 60) * (0.5 + happy / 100) + Math.min(5, pop / 20)) * difficultyOf(state).xp;
         if (gain > 0) { P.xp += gain; reachMilestones(app); }
       },
     });

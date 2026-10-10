@@ -15,6 +15,7 @@ import { transitOption } from './transit.js';
 import { linked, roadLinks, roadMasks } from './bridges.js';
 import { hasPerk } from '../data/progression.js';
 import { earn } from './economy.js';
+import { isOwned } from './build.js';
 
 const NN = N * N;
 
@@ -156,16 +157,32 @@ export function outsideCell(state) {
   return c ? idx(c.x, c.y) : -1;
 }
 
-const cache = new Map(); // "a-b-vehicle" -> { path, stamp, step }
+// What a route costs to drive right now (same units as the A* search)
+const dirOf = (a, b) => (b === a + 1 ? 0 : b === a + N ? 1 : b === a - 1 ? 2 : 3);
+export function pathCost(path, cost) {
+  let c = 0;
+  for (let k = 1; k < path.length; k++) c += cost(path[k - 1], path[k], dirOf(path[k - 1], path[k]));
+  return c;
+}
+
+// Routes are remembered, but drivers keep an eye on the traffic: once a remembered route has
+// got noticeably slower than when it was chosen (a jam built up on it), it's planned again,
+// so trips take the longer way round when that's quicker than sitting in the queue.
+const cache = new Map(); // "a-b-vehicle" -> { path, stamp, step, cost }
+const FRESH = 3, MAX_AGE = 48, SLOWER = 1.2;
 export function route(state, ctx, a, b, vehicle = 'car') {
   if (a < 0 || b < 0) return null;
   const key = `${a}-${b}-${vehicle}`;
   const hit = cache.get(key);
-  if (hit && hit.stamp === ctx.netStamp && ctx.stepCount - hit.step < 240) return hit.path;
+  const cost = makeRoadCost(state, ctx, vehicle);
+  const age = hit ? ctx.stepCount - hit.step : Infinity;
+  if (hit && hit.stamp === ctx.netStamp && age < MAX_AGE &&
+    (age < FRESH || !hit.path || pathCost(hit.path, cost) <= hit.cost * SLOWER)) return hit.path;
   if (ctx.routeBudget <= 0) return hit?.path ?? null;
   ctx.routeBudget--;
-  const path = astar(a, b, (i) => state.road[i] > 0, makeRoadCost(state, ctx, vehicle), 0.4);
-  cache.set(key, { path, stamp: ctx.netStamp, step: ctx.stepCount });
+  const path = astar(a, b, (i) => state.road[i] > 0, cost, 0.4);
+  cache.delete(key);
+  cache.set(key, { path, stamp: ctx.netStamp, step: ctx.stepCount, cost: path ? pathCost(path, cost) : 0 });
   if (cache.size > 3000) cache.delete(cache.keys().next().value);
   return path;
 }
@@ -176,7 +193,7 @@ export function rushFactor(h) {
 
 // Daily: lists to sample trips from
 export function rebuildTripPools(state, ctx) {
-  const commutes = [], homes = [], shops = [], industry = [], leisure = [], services = [];
+  const commutes = [], homes = [], shops = [], industry = [], leisure = [], services = [], hotels = [];
   for (const c of state.citizens.values()) {
     if (!c.job && !c.school) continue;
     const hh = state.households.get(c.hh);
@@ -189,12 +206,13 @@ export function rebuildTripPools(state, ctx) {
       if (b.def.cat === 'ind' || b.def.cat === 'spec') industry.push(b.id);
     } else if (isService(b)) {
       if (b.def.leisure || b.def.attract) leisure.push(b.id);
+      if (b.def.rooms && b.guests) hotels.push(b.id);
       // (garbage trucks aren't drawn from here: their real rounds are in garbage.js)
       if (b.def.patrol || b.def.mail || b.def.deathRate || b.def.roadMaint) services.push(b.id);
     }
     if (b.def.signature) leisure.push(b.id);
   }
-  ctx.trips = { commutes, homes, shops, industry, leisure, services };
+  ctx.trips = { commutes, homes, shops, industry, leisure, services, hotels };
 }
 
 const pick = (arr) => arr[Math.floor(rng.next() * arr.length)];
@@ -224,7 +242,9 @@ function sampleTrip(state, ctx) {
   }
   if (T.leisure.length && (T.homes.length || state.stats.tourists)) {
     const tourist = rng.chance(clamp((state.stats.tourists || 0) / 1500, 0.1, 0.6));
-    return { from: tourist ? 'outside' : B.get(pick(T.homes)), to: B.get(pick(T.leisure)), type: 'car', car: true, purpose: tourist ? 'tourism' : 'leisure' };
+    // hotel guests set out from their hotel; day visitors drive in from outside
+    const guest = tourist && T.hotels?.length && rng.chance((state.stats.hotelGuests || 0) / Math.max(1, state.stats.tourists));
+    return { from: guest ? B.get(pick(T.hotels)) : tourist ? 'outside' : B.get(pick(T.homes)), to: B.get(pick(T.leisure)), type: 'car', car: true, purpose: tourist ? 'tourism' : 'leisure' };
   }
   return null;
 }
@@ -337,7 +357,9 @@ export function roadsHourly(state, ctx) {
     if (state.roadUpg[i] & UPG.TOLL) booths++;
     const def = ROADS[t];
     const v = state.roadVol[i];
-    const m = maint ? maint[i] : 0;
+    // road off your land (the outside connections) is the region's to look after: it's kept
+    // up and cleared of snow as if a maintenance depot covered it
+    const m = !isOwned(state, i % N, (i / N) | 0) ? 1 : maint ? maint[i] : 0;
     const wear = hasPerk(state, 'roads_asphalt') ? 0.6 : 1;
     state.roadCond[i] = clamp(state.roadCond[i] - (v * 0.00004 + 0.0002) * wear + m * 0.012, 0, 1);
     if (w.snow > 0.05 && w.temp < 1) state.roadSnow[i] = Math.min(1, state.roadSnow[i] + w.snow * 0.05);

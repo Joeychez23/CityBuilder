@@ -6,8 +6,9 @@ import '@fontsource/ibm-plex-mono/latin-600.css';
 import '@fontsource/instrument-serif/latin-400.css';
 import { createState } from './core/state.js';
 import { bus } from './core/events.js';
-import { generateMap, applyCustomMap, addPowerConnection, recomputeWater } from './sim/mapgen.js';
+import { generateMap, applyCustomMap, addPowerConnection, recomputeWater, bridgeConnections } from './sim/mapgen.js';
 import { gradeAlongSegment } from './sim/grade.js';
+import { isOwned } from './sim/build.js';
 import { bridgeWaterRuns, migrateRoadNodes } from './sim/bridges.js';
 import { createScene } from './world/scene.js';
 import { N } from './core/grid.js';
@@ -31,6 +32,7 @@ import { createUndoBar } from './ui/undoBar.js';
 import { createUndo } from './sim/undo.js';
 import { createPanels } from './ui/panels.js';
 import { initHoverTips } from './ui/hovertips.js';
+import { initTouch } from './ui/touch.js';
 import { showMenu } from './ui/menu.js';
 import { MAPS } from './data/maps.js';
 import { features } from './features.js';
@@ -68,6 +70,31 @@ function startGame(state, isNew) {
       app.terrain.updateHeights();
       state.version = 5;
     }
+    if (state.version < 6) {
+      // road off your land is now kept up by the region: it starts out mended
+      for (let i = 0; i < N * N; i++) if (state.road[i] && !isOwned(state, i % N, (i / N) | 0)) state.roadCond[i] = 1;
+      // the old flat bridges on the outside highway and railway, with a sudden ramp at each
+      // end, are rebuilt like the player's own (any that already meet that are kept)
+      if (bridgeConnections(state, { onlyBad: true })) {
+        recomputeWater(state);
+        app.terrain.updateHeights();
+        bus.emit('network:changed', { layer: 'road' });
+        bus.emit('network:changed', { layer: 'rail' });
+      }
+      state.version = 6;
+    }
+    if (state.version < 7) {
+      // forest used to grow back over railway track and footpaths: clear it off them
+      let cleared = 0;
+      for (let i = 0; i < N * N; i++) {
+        if (!state.rail[i] && !state.path[i]) continue;
+        if (state.tree[i]) cleared++;
+        state.tree[i] = 0;
+        state.forestMax[i] = 0;
+      }
+      if (cleared) bus.emit('trees:changed');
+      state.version = 7;
+    }
   }
   app.sim = createSimulation(state, ctx);
   app.sim.refreshNetworks();
@@ -101,6 +128,7 @@ function startGame(state, isNew) {
   };
   app.tools = createTools(app);
   initHoverTips();
+  initTouch(app);
   app.hud = createHud(app);
   app.panels = createPanels(app);
 

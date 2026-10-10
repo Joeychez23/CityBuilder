@@ -1,6 +1,7 @@
 // The whole city lives in one plain object. Big per-cell layers are typed arrays
 // (fast + easy to save); entities (buildings, households, citizens) live in Maps.
 import { N, HN, TILES } from './grid.js';
+import { DIFFICULTIES } from '../data/difficulty.js';
 
 const NN = N * N;
 const f32 = () => new Float32Array(NN);
@@ -17,9 +18,11 @@ export const SAVED_LAYERS = [
 
 export function createState(map, options = {}) {
   return {
-    version: 5, // 3: power lines need Power Connectors to feed roads (older cities get them added)
+    version: 7, // 3: power lines need Power Connectors to feed roads (older cities get them added)
                 // 4: roads at an angle connect only at their ends and junctions (see roadNode)
                 // 5: the ground under the whole width of roads at an angle is graded
+                // 6: the outside highway and railway cross water on arched bridges (bridgeConnection)
+                // 7: forest no longer grows back on railways and footpaths
     cityName: options.cityName || 'New City',
     mapId: map.id,
     mapName: map.name,
@@ -28,6 +31,7 @@ export function createState(map, options = {}) {
     seed: map.seed,
     connectionsAvailable: { ...map.connections },
     options: {
+      difficulty: DIFFICULTIES[options.difficulty] ? options.difficulty : 'normal', // see data/difficulty.js
       disasters: options.disasters ?? true,
       unlimitedMoney: options.unlimitedMoney ?? false,
       unlockAll: options.unlockAll ?? false,
@@ -101,7 +105,7 @@ export function createState(map, options = {}) {
     nextId: 1,
 
     // --- Economy
-    money: options.unlimitedMoney ? 1e12 : 600000,
+    money: options.unlimitedMoney ? 1e12 : (DIFFICULTIES[options.difficulty] || DIFFICULTIES.normal).money,
     loan: 0,
     taxes: { res: 10, com: 10, ind: 10, off: 10, resEdu: [0, 0, 0, 0, 0] },
     fees: { electricity: 0.2, water: 0.3, garbage: 1, healthcare: 100, education: 100, parking: 10, taxiFare: 0, toll: 3 },
@@ -139,7 +143,7 @@ export function createState(map, options = {}) {
 
 export function newLedger() {
   return {
-    income: { resTax: 0, comTax: 0, indTax: 0, offTax: 0, fees: 0, transit: 0, parking: 0, tolls: 0, exports: 0, subsidy: 0, refunds: 0 },
+    income: { resTax: 0, comTax: 0, indTax: 0, offTax: 0, fees: 0, transit: 0, parking: 0, tolls: 0, hotels: 0, exports: 0, subsidy: 0, refunds: 0 },
     expense: { services: 0, roads: 0, loanInterest: 0, imports: 0, policies: 0, transit: 0 },
   };
 }

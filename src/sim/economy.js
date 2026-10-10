@@ -8,6 +8,7 @@ import { isService, buildingUpkeep } from './services.js';
 import { clamp } from '../core/grid.js';
 import { bus } from '../core/events.js';
 import { dateOf, daysLeftInWeek, formatDate } from './simulation.js';
+import { difficultyOf } from '../data/difficulty.js';
 
 export const BASE_INTEREST = 6; // % per year
 export const DAYS_PER_WEEK = 7;
@@ -16,7 +17,7 @@ export const perWeek = (perDay) => perDay * DAYS_PER_WEEK;
 // Ledger lines that were already paid when they happened (not settled again on Saturday)
 const PAID_AT_ONCE = new Set(['refunds']);
 // Ledger lines booked once a day (the rest trickle in every hour or step)
-const DAILY = new Set(['resTax', 'comTax', 'indTax', 'offTax', 'subsidy', 'transit', 'services', 'roads', 'loanInterest', 'policies']);
+const DAILY = new Set(['resTax', 'comTax', 'indTax', 'offTax', 'subsidy', 'transit', 'hotels', 'services', 'roads', 'loanInterest', 'policies']);
 
 const ensure = (state) => {
   if (!state.today) state.today = newLedger();
@@ -26,9 +27,12 @@ const ensure = (state) => {
 
 // Income and costs owed this week. Positive amounts only make sense, but negative ones
 // (e.g. subsidies paid through negative taxes) are allowed.
+// Tax income is scaled by the difficulty (data/difficulty.js)
+const TAXES = new Set(['resTax', 'comTax', 'indTax', 'offTax']);
 export function earn(state, key, amount) {
   if (!amount) return;
   ensure(state);
+  if (TAXES.has(key)) amount *= difficultyOf(state).income;
   state.ledger.income[key] = (state.ledger.income[key] || 0) + amount;
   state.today.income[key] = (state.today.income[key] || 0) + amount;
 }
@@ -40,7 +44,7 @@ export function charge(state, key, amount) {
 }
 
 export function interestRate(state, ctx) {
-  let r = BASE_INTEREST;
+  let r = BASE_INTEREST + difficultyOf(state).interest;
   if (ctx.cityHall) r -= 1;
   if (ctx.centralBank) r -= 2;
   if (state.money < 0) r += 4;
@@ -96,7 +100,7 @@ export function dailyCosts(state, ctx) {
   // The government subsidy shrinks as the city earns its own money
   const T = state.today.income;
   const own = T.resTax + T.comTax + T.indTax + T.offTax + T.fees;
-  const subsidy = Math.max(0, 9000 - own * 0.4);
+  const subsidy = Math.max(0, 9000 - own * 0.4) * difficultyOf(state).subsidy;
 
   charge(state, 'services', services);
   charge(state, 'roads', roads);

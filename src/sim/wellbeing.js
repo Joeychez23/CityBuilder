@@ -9,6 +9,7 @@ import { hasPerk } from '../data/progression.js';
 import { dispatch } from './emergency.js';
 import { accessCell } from './traffic.js';
 import { startRenovation } from './construction.js';
+import { difficultyOf } from '../data/difficulty.js';
 
 const districtOf = (state, b) => (b.district ? state.districts.find((d) => d.id === b.district) : null);
 
@@ -22,7 +23,7 @@ export const FACTOR_ICONS = {
   Internet: '📡', 'Education access': '🎓', 'City hall': '🏛️', Welfare: '🤝', 'Air quality': '🌫️', Crime: '🚨',
   'Garbage & deathcare': '🗑️', 'Service fees': '🧾', Landmarks: '⭐', 'District policies': '📜', Home: '🏠',
   Wealth: '💰', Sick: '🤒', 'In jail': '🚔', Studying: '📚', 'No parking at work': '🅿️', 'Stuck in traffic': '🚦',
-  'Air pollution': '🌫️', 'Ground pollution': '🟤', 'Polluted tap water': '☣️', 'Sewage backing up': '💩', 'Uncollected garbage': '🗑️', Parks: '🌳',
+  'Citizens\' expectations': '🎚️', 'Air pollution': '🌫️', 'Ground pollution': '🟤', 'Polluted tap water': '☣️', 'Sewage backing up': '💩', 'Uncollected garbage': '🗑️', Parks: '🌳',
 };
 
 function buildingFactors(state, ctx, b) {
@@ -67,11 +68,12 @@ function buildingFactors(state, ctx, b) {
     ['Noise', -Math.min(1.2, otherNoise) * 12],
     ['Air quality', -air * 8],
     ['Crime', -(b.crime || 0) * 0.22],
-    ['Garbage & deathcare', ((b.garbage || 0) > 4 ? -8 : 0) + ((b.dead || 0) > 0 ? -6 : 0)],
+    ['Garbage & deathcare', ((b.garbage || 0) > 4 ? -8 : 0) + ((b.deadHours || 0) >= 12 ? -6 : 0)],
     ['Service fees', -feeOver * 6],
     ['Landmarks', ctx.sigBoost?.[i] || 0],
     ['District policies', (dist?.policies?.gated ? 5 : 0) + (dist?.policies?.speedBumps ? 1 : 0) + (dist?.policies?.heavyBan ? 1 : 0)],
-    ['Home', b.def.key === 'res_low' ? 4 : b.def.key === 'res_high' || b.def.lowRent ? -2 : 0],
+    ['Home', b.def.key === 'res_low' ? 4 : b.def.key === 'res_tower' ? -3 : b.def.key === 'res_high' || b.def.lowRent ? -2 : 0],
+    ["Citizens' expectations", difficultyOf(state).mood], // the difficulty
   ];
   return { health, wb };
 }

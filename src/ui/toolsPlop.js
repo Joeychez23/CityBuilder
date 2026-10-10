@@ -9,6 +9,7 @@ import { placeService, serviceBlocker, isService } from '../sim/services.js';
 import { footprintFree } from '../sim/build.js';
 import { cellHeight } from '../sim/mapgen.js';
 import { perWeek } from '../sim/economy.js';
+import { parkReach } from '../sim/parking.js';
 import { sewagePlume, intakeCell, flowNames } from '../sim/utilities.js';
 
 // Footprint rectangle for a w×d building centred on (cx, cy) facing `rot`
@@ -89,6 +90,9 @@ registerTool('plop', {
       <div class="row"><span class="k">Cost</span><span>${money(d.cost)}</span></div>
       <div class="row"><span class="k">Upkeep</span><span>${money(perWeek(d.upkeep || 0))}/wk</span></div>
       ${d.radius ? `<div class="row"><span class="k">Range</span><span>${d.radius * 8} m</span></div>` : ''}
+      ${d.rooms ? `<div class="row"><span class="k">Rooms</span><span>${d.rooms} · ${money(d.roomRate)} a night</span></div>` : ''}
+      ${d.deathRate ? `<div class="row"><span class="k">Handles</span><span>${d.deathRate} deceased a day</span></div>` : ''}
+      ${d.parking ? `<div class="row"><span class="k">Holds</span><span>${d.parking} cars · drivers walk up to ${parkReach(d) * 8} m</span></div>` : ''}
       <div class="section-title">Facing</div>
       <div class="rot-row"><button class="btn" data-r="-1" title="Turn left (Shift+R)">⟲</button><span>Entrance faces <b>${SIDES[t.place?.rot ?? t.rot ?? 1]}</b></span><button class="btn" data-r="1" title="Turn right (R)">⟳</button></div>`;
     segButtons(el, null, [[true, 'Face the road'], [false, 'Keep my turn']], auto, (v) => { t.auto = v; rerender(); });
@@ -113,7 +117,8 @@ registerTool('plop', {
     const cx = Math.min(N - 1, Math.max(0, Math.floor((x0 + x1 + 1) / 2))), cy = Math.min(N - 1, Math.max(0, Math.floor((y0 + y1 + 1) / 2)));
     app.buildings.showGhost(t.def, place.rect, place.rot, !reason && afford, cellHeight(state, cx, cy));
     if (before !== place.rot) app.tools.renderOptions();
-    if (t.def.radius) app.preview.setRing((x0 + x1 + 1) / 2, (y0 + y1 + 1) / 2, t.def.radius, '#ffffff');
+    const ring = t.def.radius || (t.def.parking && parkReach(t.def));
+    if (ring) app.preview.setRing((x0 + x1 + 1) / 2, (y0 + y1 + 1) / 2, ring, '#ffffff');
     const sew = sewagePreview(state, ctx, t.def, x0, y0, x1, y1);
     if (sew) {
       const shade = sew.bad ? '#ff4b3a' : '#8a5a2b';

@@ -8,6 +8,7 @@
 import { HN, N } from '../core/grid.js';
 import { bus } from '../core/events.js';
 import { removeBuilding, changeHooks } from './build.js';
+import { difficultyOf } from '../data/difficulty.js';
 import { centerIdx } from './services.js';
 
 export const UNDO_SECONDS = 60;
@@ -72,7 +73,7 @@ export function createUndo(state) {
     for (const k of ['x0', 'y0', 'x1', 'y1', 'w', 'd', 'full', 'expansions', 'extraUpkeep']) was[k] = b[k];
     tx.altered.set(b.id, { b, was });
   };
-  bus.on('xp', (e) => { if (tx && active && !undoing) tx.xp += e.amount || 0; });
+  bus.on('xp', (e) => { if (tx && active && !undoing) tx.xp += (e.amount || 0) * difficultyOf(state).xp; });
 
   const undo = { steps };
 

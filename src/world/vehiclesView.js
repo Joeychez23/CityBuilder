@@ -4,8 +4,12 @@
 // between the two directions, roundabouts let cars in while there's room, small junctions
 // let one car through at a time, and nobody drives into a junction whose exit is backed up.
 // Where the simulation says a road carries more than it can, cars slow to a crawl, so queues
-// build up behind bottlenecks and spill back along the roads leading in. Trains and subways
-// run on their tracks; the occasional plane and ship visit. One InstancedMesh draws them all.
+// build up behind bottlenecks and spill back along the roads leading in. A driver stuck in a
+// queue, or about to join one, looks for another way and takes it when going round is quicker
+// than waiting. Trains and subways run on their tracks as a locomotive and its carriages (or
+// wagons), braking into each station; intercity trains come in from the outside railway to
+// your stations and freight trains to your cargo terminals, one at a time on the main line.
+// The occasional plane and ship visit. One InstancedMesh draws them all.
 import * as THREE from 'three';
 import { N, clamp, DIRS, inBounds, idx } from '../core/grid.js';
 import { ROADS, UPG, rankOf } from '../data/roads.js';
@@ -14,8 +18,9 @@ import { getDeck, deckBetween } from '../sim/deck.js';
 import { bus } from '../core/events.js';
 import { lineRunning } from '../sim/transit.js';
 import { roadPathPoints } from '../sim/roadsegs.js';
-import { roadMasks } from '../sim/bridges.js';
-import { congestion, jamFactor, junctionKind, rushFactor } from '../sim/traffic.js';
+import { roadMasks, linked } from '../sim/bridges.js';
+import { congestion, jamFactor, junctionKind, rushFactor, makeRoadCost, pathCost } from '../sim/traffic.js';
+import { astar } from '../sim/pathfind.js';
 import { hourOf } from '../sim/simulation.js';
 
 const CAP = 1800;
@@ -38,13 +43,60 @@ const GIVE_UP = 25;       // a car stuck this long (gridlock) is taken off the m
 // Traffic lights: a cycle of SIGNAL_CYCLE seconds, split between the two directions by how
 // much each road carries, with a short all-red between
 const SIGNAL_CYCLE = 7, ALL_RED = 0.05;
+// Rerouting: a driver crawling this long (or seeing this many crawling cars just ahead) looks
+// for another way, at most every REROUTE_EVERY seconds, and takes it when it saves a fifth of
+// the time left. Each car crawling in a lane is about QUEUE_COST of route cost (≈ a second).
+const REROUTE_WAIT = 1.2, QUEUE_AHEAD = 4, REROUTE_EVERY = 4, BETTER = 0.8, QUEUE_COST = 3;
+const REROUTES_PER_FRAME = 4;
+const CAN_REROUTE = new Set(['car', 'taxi', 'truck', 'service', 'emergency']);
+
+// Trains: cars [length, parts], each part a box { x along the car, y up from its floor, l, h, w }.
+// A train set has a driving end at each end, so it can set off back the way it came.
+const RAIL_CAP = 700;          // instances kept for train cars on top of the road traffic
+const CAR_GAP = 0.06;          // cells between cars
+const RAIL_SPEED = 2.4;        // cells per second of visual time, × the line type's speed
+const WINDOWS = '#232a32';
+const cab = (body, stripe, len = 0.95) => ({ len, parts: [
+  { l: len, h: 0.3, w: 0.25, color: body },
+  { x: len * 0.3, y: 0.17, l: len * 0.26, h: 0.07, w: 0.256, color: WINDOWS },
+  { x: len / 2 - 0.015, y: 0.03, l: 0.03, h: 0.13, w: 0.256, color: stripe },
+] });
+const coach = (body, stripe, len = 0.9) => ({ len, parts: [
+  { l: len, h: 0.27, w: 0.24, color: body },
+  { y: 0.14, l: len * 0.88, h: 0.07, w: 0.246, color: WINDOWS },
+  { y: 0.05, l: len, h: 0.03, w: 0.246, color: stripe },
+] });
+const FREIGHT = ['#c0622f', '#2f6b8f', '#7a8a3a', '#9b2f2f', '#d9d4c8', '#e0a32e'];
+function wagon() {
+  const r = Math.random(), base = { l: 0.9, h: 0.06, w: 0.22, color: '#2b2b2e' };
+  if (r < 0.55) return { len: 0.9, parts: [base, { y: 0.06, l: 0.84, h: 0.21, w: 0.24, color: FREIGHT[Math.floor(Math.random() * FREIGHT.length)] }] };
+  if (r < 0.8) return { len: 0.9, parts: [base, { y: 0.06, l: 0.8, h: 0.18, w: 0.2, color: Math.random() < 0.5 ? '#3a3d42' : '#cfd2d4' }] };
+  return { len: 0.9, parts: [base, { y: 0.06, l: 0.82, h: 0.15, w: 0.24, color: '#6b4e33' }] };
+}
+// The driving end at the back faces backwards
+const ends = (front, middle, back) => [front, ...middle, { ...back, flip: true }];
+function trainSet(kind, line) {
+  if (kind === 'freight') return ends(cab('#2f5ba8', '#ffd300', 1), Array.from({ length: 8 }, wagon), cab('#2f5ba8', '#ffd300', 1));
+  if (kind === 'intercity') return ends(cab('#b8302a', '#ffd300', 1), Array.from({ length: 5 }, () => coach('#e4e1d8', '#b8302a')), cab('#b8302a', '#ffd300', 1));
+  const stripe = line?.color || LINE_TYPES[kind].color;
+  if (kind === 'subway') return ends(cab('#a9b0b6', stripe, 0.9), [coach('#a9b0b6', stripe), coach('#a9b0b6', stripe)], cab('#a9b0b6', stripe, 0.9));
+  return ends(cab(LINE_TYPES.train.color, stripe), [coach('#d8dadc', stripe), coach('#d8dadc', stripe)], cab(LINE_TYPES.train.color, stripe));
+}
+const setLength = (cars) => cars.reduce((a, car) => a + car.len + CAR_GAP, 0);
+// Does the track turn back at path index s (the end of a line, or a stop on a dead end)?
+function turnsBack(path, s) {
+  const L = path.length - 1;
+  if (L < 2) return false;
+  if (s <= 0 || s >= L) return path[1] === path[L - 1];
+  return path[s - 1] === path[s + 1];
+}
 
 const dirOf = (a, b) => (b === a + 1 ? 0 : b === a + N ? 1 : b === a - 1 ? 2 : 3);
 
 export function createVehiclesView(view, state) {
   const geo = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0);
   const mat = new THREE.MeshStandardMaterial({ roughness: 0.5, metalness: 0.3 });
-  const mesh = new THREE.InstancedMesh(geo, mat, CAP);
+  const mesh = new THREE.InstancedMesh(geo, mat, CAP + RAIL_CAP);
   mesh.count = 0;
   mesh.frustumCulled = false;
   mesh.castShadow = true;
@@ -75,8 +127,9 @@ export function createVehiclesView(view, state) {
 
   const agents = [];
   const lineAgents = new Map(); // line id -> { version, agents }
-  const vv = { agents, visible: true, showUnderground: false, jams: 0 };
+  const vv = { agents, visible: true, showUnderground: false, jams: 0, reroutes: 0 };
   const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
+  const off = new THREE.Vector3(), euler = new THREE.Euler(), pf = { x: 0, y: 0, z: 0 }, pr = { x: 0, y: 0, z: 0 };
   const c = new THREE.Color();
 
   // Vehicles ride on the same deck heights the roads and rails are drawn with
@@ -244,7 +297,8 @@ export function createVehiclesView(view, state) {
 
   let clock = 0, rclock = 0; // driving time (follows the game speed) and real time (for flashing lights)
   const occ = new Map();
-  const jOcc = new Map();
+  const jOcc = new Map(); // (junction × 2 + axis) -> vehicles inside it moving east-west (0) or north-south (1)
+  const crawl = new Map(); // (cell entered × 4 + heading) -> cars crawling towards it
 
   function syncLines() {
     const seen = new Set();
@@ -260,6 +314,7 @@ export function createVehiclesView(view, state) {
           const a = makeAgent(line.path, { type: line.type, color: line.type === 'bus' ? line.color : LINE_TYPES[line.type].color, factor: LINE_TYPES[line.type].speed, loop: true, line, pax: [] });
           a.t = (k / n) * (line.path.length - 1);
           a.lane = 0;
+          if (line.type === 'train' || line.type === 'subway') { a.cars = trainSet(line.type, line); a.setLen = setLength(a.cars); a.dwellTime = 1.2; }
           list.push(a);
         }
       }
@@ -271,6 +326,7 @@ export function createVehiclesView(view, state) {
   // ------------------------------------------------------------- drawing
   let n = 0;
   function place(a) {
+    if (a.cars) { placeTrain(a); return; }
     if (n >= CAP) return;
     const L = a.path.length - 1;
     const k = Math.min(Math.floor(a.t), Math.max(0, L - 1));
@@ -297,11 +353,143 @@ export function createVehiclesView(view, state) {
     n++;
   }
 
+  // Where on its track a train's path puts distance t (cells from the start): false when that's
+  // off the line (a train still coming in from outside the map, or gone out of it)
+  function railPoint(a, t, out) {
+    const L = a.path.length - 1;
+    if (L < 1) return false;
+    if (a.loop) t = ((t % L) + L) % L;
+    else if (t < 0 || t > L) return false;
+    const k = Math.min(Math.floor(t), L - 1), f = t - k;
+    const i0 = a.path[k], i1 = a.path[k + 1];
+    const x0 = i0 % N, z0 = (i0 / N) | 0;
+    out.x = x0 + 0.5 + ((i1 % N) - x0) * f;
+    out.z = z0 + 0.5 + (((i1 / N) | 0) - z0) * f;
+    out.y = surface(i0, i1, f, a.type);
+    return true;
+  }
+
+  // Each car sits on two bogies on the track, so it cuts the corners and tilts up the ramps
+  function placeTrain(a) {
+    if (a.type === 'subway' && !vv.showUnderground) return;
+    const lift = a.type === 'subway' ? 0.2 : 0.1;
+    let back = 0;
+    for (const car of a.cars) {
+      const mid = a.t - back - car.len / 2;
+      back += car.len + CAR_GAP;
+      if (!railPoint(a, mid + car.len * 0.4, pf) || !railPoint(a, mid - car.len * 0.4, pr)) continue;
+      let fx = pf.x - pr.x, fz = pf.z - pr.z;
+      const run = Math.hypot(fx, fz);
+      if (run < 1e-4) continue;
+      fx /= run; fz /= run;
+      q.setFromEuler(euler.set(0, Math.atan2(-fz, fx), Math.atan2(pf.y - pr.y, run), 'YZX'));
+      const cx = (pf.x + pr.x) / 2, cy = (pf.y + pr.y) / 2 + lift, cz = (pf.z + pr.z) / 2;
+      const dir = car.flip ? -1 : 1;
+      for (const part of car.parts) {
+        if (n >= CAP + RAIL_CAP) return;
+        off.set((part.x || 0) * dir, part.y || 0, 0).applyQuaternion(q);
+        p.set(cx + off.x, cy + off.y, cz + off.z);
+        s.set(part.l, part.h, part.w);
+        mesh.setMatrixAt(n, m.compose(p, q, s));
+        mesh.setColorAt(n, c.set(part.color));
+        n++;
+      }
+    }
+  }
+
+  // A train pulls away from a stop and brakes into the next, waits there, and where the track
+  // turns back sets off the other way with its back end leading
+  function stepRail(a, dtv) {
+    const L = a.path.length - 1;
+    const stops = a.line ? a.line.stopIndex || [] : a.stopsAt;
+    if (a.dwell > 0) {
+      a.dwell -= dtv;
+      if (a.dwell > 0) return;
+      if (turnsBack(a.path, a.at) && a.at + a.setLen < L) {
+        a.t = a.at + a.setLen;
+        a.cars.reverse();
+        for (const car of a.cars) car.flip = !car.flip;
+      }
+      a.departT = a.t;
+      return;
+    }
+    let next = a.loop ? L : Infinity;
+    for (const x of stops) if (x > a.t + 1e-6) { next = Math.min(next, x); break; }
+    const ease = Math.min(clamp(0.25 + (a.t - (a.departT ?? -1e9)) / 5, 0.25, 1), clamp(0.15 + (next - a.t) / 5, 0.15, 1));
+    a.t += dtv * RAIL_SPEED * (a.factor ?? 1) * ease;
+    if (a.t >= next) {
+      const at = a.loop && next === L ? 0 : next;
+      a.t = at; a.at = at;
+      a.dwell = a.dwellTime ?? 0.6;
+      if (a.line) { const si = stops.indexOf(at); if (si >= 0) vv.onStop?.(a, a.line.stops[si], si); }
+    }
+    if (!a.loop && a.t - a.setLen > L) a.done = true;
+  }
+
+  // Intercity and freight trains: from the outside railway to the far end of a station's (or
+  // cargo terminal's) platform and back out again, taking turns. Where they can go is worked
+  // out each time one sets off; one whose station or track is taken away leaves the map.
+  const trips = vv.trips = [];
+  let railGap = 3, railTurn = 0, railCheck = false;
+  bus.on('network:changed', ({ layer } = {}) => { if (!layer || layer === 'rail') railCheck = true; });
+  const railStop = (b) => b.def.id === 'trainstation' || b.def.id === 'cargotrain';
+  bus.on('building:remove', (b) => {
+    if (railStop(b)) for (let k = trips.length - 1; k >= 0; k--) if (trips[k].dest === b.id) trips.splice(k, 1);
+  });
+  function findRailDests() {
+    const out = [];
+    const pass = (i) => state.rail[i] > 0;
+    const cost = (f, t, d) => (linked(state, 'rail', f, t, d) ? 1 : Infinity);
+    const gates = state.connections.filter((c) => c.type === 'rail' && inBounds(c.x, c.y) && state.rail[idx(c.x, c.y)]).map((c) => idx(c.x, c.y));
+    for (const b of state.buildings.values()) {
+      if (!railStop(b) || b.cons) continue;
+      const side = [];
+      for (let y = b.y0 - 1; y <= b.y1 + 1; y++) for (let x = b.x0 - 1; x <= b.x1 + 1; x++) {
+        const outX = x < b.x0 || x > b.x1, outY = y < b.y0 || y > b.y1;
+        if (outX === outY || !inBounds(x, y) || !state.rail[idx(x, y)]) continue; // the sides, not the corners
+        side.push(idx(x, y));
+      }
+      let best = null;
+      for (const g of gates) {
+        const paths = side.map((cell) => astar(g, cell, pass, cost, 1, 40000)).filter(Boolean);
+        if (!paths.length) continue;
+        const shortest = Math.min(...paths.map((pa) => pa.length));
+        const reach = Math.max(b.x1 - b.x0, b.y1 - b.y0) + 2;
+        // stop at the far end of the platform: the last of its cells the train comes to
+        const pa = paths.filter((x) => x.length <= shortest + reach).sort((u, v) => v.length - u.length)[0];
+        if (!best || pa.length < best.length) best = pa;
+      }
+      if (best && best.length > 2) out.push({ id: b.id, kind: b.def.id === 'cargotrain' ? 'freight' : 'intercity', path: best });
+    }
+    return out;
+  }
+  function runTrips(dtv) {
+    if (railCheck) {
+      railCheck = false;
+      for (let k = trips.length - 1; k >= 0; k--) if (trips[k].path.some((i) => !state.rail[i])) trips.splice(k, 1);
+    }
+    for (let k = trips.length - 1; k >= 0; k--) {
+      const a = trips[k];
+      stepRail(a, dtv);
+      if (a.done) { trips.splice(k, 1); railGap = 6; }
+    }
+    if (trips.length || (railGap -= dtv) > 0) return;
+    railGap = 3;
+    const dests = findRailDests();
+    if (!dests.length) return;
+    const d = dests[railTurn++ % dests.length];
+    // in to the platform, and back out the way it came
+    const path = d.path.concat(d.path.slice(0, -1).reverse());
+    const cars = trainSet(d.kind);
+    trips.push({ type: 'train', path, t: 0, loop: false, cars, setLen: setLength(cars), stopsAt: [d.path.length - 1], dwellTime: d.kind === 'freight' ? 5 : 3, factor: LINE_TYPES.train.speed, dest: d.id });
+  }
+
   // ------------------------------------------------------------- driving
   // Who is on which lane of which stretch, nose to tail; and how many are inside each junction
   function buildOccupancy(all) {
     occ.clear();
     jOcc.clear();
+    crawl.clear();
     for (const a of all) {
       if (!a.onRoad || a.parked) continue;
       const L = a.path.length - 1;
@@ -314,7 +502,11 @@ export function createVehiclesView(view, state) {
       if (!list) occ.set(a._key, (list = []));
       list.push(a);
       const inJ = f > 0.5 ? a.path[k + 1] : a.path[k];
-      if (J[inJ]) jOcc.set(inJ, (jOcc.get(inJ) || 0) + 1);
+      if (J[inJ]) { const jk = inJ * 2 + (dirOf(a.path[k], a.path[k + 1]) & 1); jOcc.set(jk, (jOcc.get(jk) || 0) + 1); }
+      if (a.v < 0.6) {
+        const ck = a.path[k + 1] * 4 + dirOf(a.path[k], a.path[k + 1]);
+        crawl.set(ck, (crawl.get(ck) || 0) + 1);
+      }
     }
     for (const list of occ.values()) {
       list.sort((u, w) => u._f - w._f);
@@ -341,10 +533,16 @@ export function createVehiclesView(view, state) {
     const kind = J[jc];
     if (kind && f < 0.5 && !a.flash) {
       const d = dirOf(a.path[k], jc);
-      const inside = jOcc.get(jc) || 0;
+      // traffic going straight across on the same road doesn't get in each other's way (they're
+      // in their own lanes); what has to take turns is traffic crossing it
+      const same = jOcc.get(jc * 2 + (d & 1)) || 0, cross = jOcc.get(jc * 2 + 1 - (d & 1)) || 0;
+      const inside = same + cross;
       // (at a priority junction the side street waits for a gap; the main road carries on)
       const yieldHere = kind === 3 || (kind === 5 && rankOf(state.road[a.path[k]]) < rankOf(state.road[jc]));
-      let stop = kind === 1 ? !green(jc, d) : kind === 2 ? inside >= 2 : yieldHere ? inside >= 1 : inside >= 3;
+      let stop = kind === 1 ? !green(jc, d) : kind === 2 ? inside >= 2 : yieldHere ? inside >= 1 : cross >= 2 || (cross >= 1 && same >= 2);
+      // a car already inside one junction always moves on into the next (two junctions side by
+      // side would otherwise each wait for the other to empty: gridlock); lights still hold it
+      if (stop && kind !== 1 && J[a.path[k]]) stop = false;
       // don't block the box: if the way out is backed up, wait
       if (!stop && k + 2 <= L) {
         const out = occ.get(edgeKey(jc, a.path[k + 2], laneOn(a, k + 1)));
@@ -353,6 +551,47 @@ export function createVehiclesView(view, state) {
       if (stop) gap = Math.min(gap, (0.5 - 0.12 - f) * len - a.len / 2);
     }
     return gap;
+  }
+
+  // ------------------------------------------------------------- rerouting
+  let rerouteBudget = 0;
+  const queueAt = (u, w, d) => (crawl.get(w * 4 + d) || 0) * QUEUE_COST / lanesAt(w);
+  const vehicleKind = (a) => (a.type === 'truck' ? 'truck' : a.type === 'service' || a.type === 'emergency' ? 'service' : 'car');
+  // How many cars are crawling on the next few cells of this vehicle's route
+  function queuedAhead(a, k) {
+    let q = 0;
+    for (let j = k + 1; j < Math.min(a.path.length, k + 7); j++) q += crawl.get(a.path[j] * 4 + dirOf(a.path[j - 1], a.path[j])) || 0;
+    return q;
+  }
+  // Plan again from the next cell (the one it can still turn at) to the same destination,
+  // counting the queues it can see, and switch if that's clearly quicker
+  function reroute(a) {
+    const L = a.path.length - 1;
+    const k = Math.floor(a.t);
+    if (k + 3 > L) return;
+    rerouteBudget--;
+    const from = a.path[k + 1], back = a.path[k], goal = a.path[L];
+    const base = makeRoadCost(state, null, vehicleKind(a));
+    const cost = (u, w, d) => (u === from && w === back ? Infinity : base(u, w, d) + queueAt(u, w, d));
+    const now = pathCost(a.path.slice(k + 1), cost);
+    const alt = astar(from, goal, (i) => state.road[i] > 0, cost, 0.4, 8000);
+    if (!alt || alt.length < 2 || !(pathCost(alt, cost) < now * BETTER)) return;
+    const path = a.path.slice(0, k + 1).concat(alt);
+    const pts = roadPathPoints(state, path);
+    const seg = new Float32Array(Math.max(1, path.length - 1));
+    for (let j = 0; j < path.length - 1; j++) seg[j] = Math.max(0.05, Math.hypot(pts[j + 1][0] - pts[j][0], pts[j + 1][1] - pts[j][1]));
+    a.path = path; a.pts = pts; a.seg = seg;
+    a.rerouted = (a.rerouted || 0) + 1;
+    vv.reroutes++;
+  }
+  function considerReroute(a) {
+    if (!CAN_REROUTE.has(a.type) || a.flash || rerouteBudget <= 0 || clock < (a.nextLook || 0)) return;
+    const k = Math.floor(a.t);
+    const moved = k !== a.lookK;
+    a.lookK = k;
+    if (!(a.wait > REROUTE_WAIT || (moved && queuedAhead(a, k) >= QUEUE_AHEAD))) return;
+    a.nextLook = clock + REROUTE_EVERY;
+    reroute(a);
   }
 
   function drive(a, dtv) {
@@ -390,12 +629,13 @@ export function createVehiclesView(view, state) {
     if (dtv > 0) buildOccupancy(all);
     n = 0;
     let stuck = 0;
+    rerouteBudget = REROUTES_PER_FRAME;
     for (let k = agents.length - 1; k >= 0; k--) {
       const a = agents[k];
       if (a.life != null) { a.life -= dtv; if (a.life <= 0) { agents.splice(k, 1); continue; } }
       if (a.until) { if (!a.until()) { agents.splice(k, 1); continue; } place(a); continue; }
       if (dtv > 0) {
-        if (a.onRoad) drive(a, dtv);
+        if (a.onRoad) { considerReroute(a); drive(a, dtv); }
         else a.t += dtv * 3.2 * (a.factor ?? 1) * 0.9;
       }
       if (a.t >= a.path.length - 1 || a.wait > GIVE_UP) { agents.splice(k, 1); a.onArrive?.(a); continue; }
@@ -404,7 +644,8 @@ export function createVehiclesView(view, state) {
     }
     vv.jams = stuck;
     for (const a of lines) {
-      if (dtv > 0) {
+      if (dtv > 0 && a.cars) stepRail(a, dtv);
+      else if (dtv > 0) {
         // dwell at stops while riders get on and off
         if (a.dwell > 0) { a.dwell -= dtv; place(a); continue; }
         const before = a.t;
@@ -419,6 +660,8 @@ export function createVehiclesView(view, state) {
       }
       place(a);
     }
+    if (dtv > 0) runTrips(dtv);
+    for (const a of trips) place(a);
     mesh.count = n;
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;

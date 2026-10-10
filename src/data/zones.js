@@ -20,6 +20,11 @@ export const ZONES = {
   13: { id: 13, key: 'spec_forest', name: 'Forestry', cat: 'spec', resource: 'forest', product: 'wood', color: '#5b8a3a', lots: [[3, 3]], floors: 1, jobs: 1.2, maxFloors: 1, edu: [0.7, 0.25, 0.05, 0, 0], milestone: 2 },
   14: { id: 14, key: 'spec_ore', name: 'Ore Mining', cat: 'spec', resource: 'ore', product: 'ore', color: '#7f8fa8', lots: [[3, 3]], floors: 2, jobs: 1.6, maxFloors: 2, edu: [0.6, 0.3, 0.1, 0, 0], milestone: 2 },
   15: { id: 15, key: 'spec_oil', name: 'Oil Extraction', cat: 'spec', resource: 'oil', product: 'oil', color: '#3b3b3b', lots: [[3, 3]], floors: 2, jobs: 1.6, maxFloors: 2, edu: [0.5, 0.3, 0.15, 0.05, 0], milestone: 2 },
+  // (order: where it sits in the zoning menu, among its kind)
+  16: { id: 16, key: 'res_tower', name: 'High-Rise Apartments', cat: 'res', needsRoad: 'collector', color: '#14603a', lots: [[3, 3], [3, 4], [4, 4]], floors: 16, hh: 12, maxFloors: 44, rent: 0.75, family: 0.2, milestone: 9, order: 4.5 },
+  // pollute: × the pollution and noise of ordinary industry per cell; output: × what each worker makes;
+  // fallbackLots: tried only when none of its lots fit
+  17: { id: 17, key: 'ind_large', name: 'Large Industry', cat: 'ind', needsRoad: 'collector', color: '#d9a21b', lots: [[4, 4], [4, 5], [5, 5]], fallbackLots: [[3, 4]], floors: 2, jobs: 5, maxFloors: 5, edu: [0.45, 0.3, 0.17, 0.07, 0.01], pollute: 1.25, output: 1.2, milestone: 6, order: 9.5 },
 };
 
 // What each zone grows (shown when you hover it in the menu)
@@ -30,9 +35,11 @@ const ZONE_DESC = {
   res_high: 'Apartment towers: the most homes per cell. People there expect good services nearby.',
   res_mixed: 'Shops on the ground floor and homes above, so people live and shop in the same block.',
   res_lowrent: 'Cheap apartments for households on low incomes (a welfare office nearby helps them).',
+  res_tower: 'Skyscraper apartments on big lots: by far the most homes per cell. They need a lot of people wanting to move in, and their residents expect good services and transit nearby.',
   com_low: 'Small shops and services along the street. They need customers living nearby, workers and parking.',
   com_high: 'Malls and big stores: many jobs, and they need lots of customers and parking.',
   ind: 'Factories and warehouses: plenty of jobs, but noisy and polluting. Keep them a few blocks from homes.',
+  ind_large: 'Steel mills, refineries, assembly plants and distribution centres on lots of up to 5 × 5: more jobs per cell and more made by each worker, but even dirtier and louder than ordinary industry. Give it room and a good road for the trucks.',
   off_low: 'Small offices: clean jobs for well-educated workers.',
   off_high: 'Office towers: many jobs for well-educated workers.',
   spec_farm: 'Farms on fertile land (press V to see where it is).',
@@ -42,7 +49,8 @@ const ZONE_DESC = {
 };
 for (const z of Object.values(ZONES)) z.desc = ZONE_DESC[z.key] + (z.needsRoad ? ' Grows only beside a Medium Road, One-Way Road or bigger (not on local streets).' : '');
 
-export const ZONE_LIST = Object.values(ZONES);
+const CAT_ORDER = { res: 0, com: 1, ind: 2, off: 3, spec: 4 };
+export const ZONE_LIST = Object.values(ZONES).sort((a, b) => CAT_ORDER[a.cat] - CAT_ORDER[b.cat] || (a.order ?? a.id) - (b.order ?? b.id));
 export const ZONE_DEPTH = 6; // zone cells reach up to 6 cells away from a road
 
 // Default job education mix for mixed-use buildings' shops.

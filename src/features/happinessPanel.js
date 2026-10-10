@@ -20,6 +20,7 @@ const FIX = {
   Crime: 'More police coverage and jobs lower crime.',
   'Garbage & deathcare': 'Landfills or incinerators, and a cemetery.',
   'Service fees': 'Electricity and water fees above default upset people.',
+  "Citizens' expectations": 'The difficulty: change it in the Game panel (⚙️).',
   'No parking at work': 'Build parking lots near shops, offices and industry.',
   Wealth: 'Jobs with better wages make households richer.',
   Sick: 'Healthcare treats sick people.',

@@ -6,16 +6,32 @@ const box = (x, z, w, d, h, color, y = 0, pool = 'body') => ({ pool, x, z, w, d,
 const plain = (x, z, w, d, h, color, y = 0) => box(x, z, w, d, h, color, y, 'plain');
 const cyl = (x, z, r, h, color, y = 0) => ({ pool: 'cyl', x, z, w: r * 2, d: r * 2, h, y, color });
 const roof = (x, z, w, d, h, color, y) => ({ pool: 'roof', x, z, w, d, h, y, color });
+// A multi-storey car park `cells` wide: a deck every 0.55 up to `levels` parking levels
+// (the stalls are laid out to match in world/peopleView.js STALLS)
+function garageShape(cells, levels) {
+  const W = cells - 0.2, e = W / 2 - 0.1, top = (levels - 1) * 0.55;
+  const posts = cells > 3 ? [-e, -e / 3, e / 3, e] : [-e, e];
+  const P = [box(0, 0, W, W, 0.25, '#9a9893')];
+  for (let k = 1; k < levels; k++) P.push(plain(0, 0, W, W, 0.08, '#b5b2ab', k * 0.55));
+  for (const x of posts) for (const z of posts) if (Math.abs(x) === e || Math.abs(z) === e) P.push(plain(x, z, 0.18, 0.18, top + 0.1, '#8b8984'));
+  P.push(plain(0, W / 2 + 0.02, cells * 0.27, 0.05, 0.4, '#2f55ff', 0.3)); // the blue P sign over the entrance
+  return P;
+}
 
 const T = [
   { id: 'roadmaint', name: 'Road Maintenance Depot', cost: 30000, upkeep: 1500, w: 2, d: 2, radius: 45, roadMaint: true, workers: 8, milestone: 1,
     desc: 'Repairs worn roads and plows snow nearby.', shape: [box(0, 0.2, 1.7, 1.2, 0.7, '#e3a63a'), plain(0, -0.7, 1.6, 0.5, 0.1, '#55585e')] },
-  { id: 'parking', name: 'Parking Lot', cost: 6000, upkeep: 120, w: 2, d: 2, parking: 40, milestone: 0,
-    desc: 'Workplaces need parking: drivers park here and walk up to 70 m to work. It holds 40 cars; when it\'s full, the drivers left over walk to work from home. Earns the parking fee.',
+  { id: 'parking', name: 'Parking Lot', cost: 6000, upkeep: 120, w: 2, d: 2, parking: 40, parkReach: 10, milestone: 0,
+    desc: 'Workplaces need parking: drivers park here and walk up to 80 m to work. It holds 40 cars; when it\'s full, the drivers left over walk to work from home. Earns the parking fee.',
     // two rows of stalls either side of an aisle (the cars are parked in them by drawParked in world/peopleView.js)
     shape: [plain(0, 0, 1.94, 1.94, 0.06, '#4f5359'), ...[-0.66, 0.66].flatMap((z) => Array.from({ length: 9 }, (_, k) => plain(-0.96 + k * 0.24, z, 0.02, 0.5, 0.07, '#e8e8e8'))), ...[-0.4, 0.4].map((z) => plain(0, z, 1.92, 0.02, 0.07, '#e8e8e8'))] },
-  { id: 'garage', name: 'Parking Garage', cost: 45000, upkeep: 600, w: 3, d: 3, parking: 180, milestone: 3,
-    desc: 'Four storeys of parking (180 cars) for busy shopping and office streets. When it\'s full, the drivers left over walk to work from home.', shape: [box(0, 0, 2.8, 2.8, 0.25, '#9a9893'), ...[0.55, 1.1, 1.65].map((y) => plain(0, 0, 2.8, 2.8, 0.08, '#b5b2ab', y)), ...[[-1.3, -1.3], [1.3, -1.3], [-1.3, 1.3], [1.3, 1.3]].map(([x, z]) => plain(x, z, 0.18, 0.18, 1.75, '#8b8984')), plain(0, 1.42, 0.8, 0.05, 0.4, '#2f55ff', 0.3)] },
+  // garages: a parking deck on every storey, with cars on the ground floor and the open roof too
+  { id: 'garage', name: 'Parking Garage', cost: 45000, upkeep: 600, w: 3, d: 3, parking: 360, parkReach: 16, milestone: 3,
+    desc: 'Six storeys of parking (360 cars) for shopping and office streets: drivers walk up to 128 m to work. When it\'s full, the drivers left over walk to work from home.',
+    shape: garageShape(3, 6) },
+  { id: 'garage_large', name: 'Large Parking Garage', cost: 110000, upkeep: 1400, w: 4, d: 4, parking: 900, parkReach: 22, milestone: 6,
+    desc: 'Eight storeys of parking (900 cars) to serve a whole downtown: drivers walk up to 176 m to work. When it\'s full, the drivers left over walk to work from home.',
+    shape: garageShape(4, 8) },
   { id: 'busdepot', name: 'Bus Depot', cost: 45000, upkeep: 2200, w: 3, d: 2, vehicles: 12, mode: 'bus', workers: 15, milestone: 3,
     desc: 'Home of the bus fleet. Needed before bus lines can run.', shape: [box(0, 0.1, 2.8, 1.6, 0.8, '#3f8fd0'), roof(0, 0.1, 2.9, 1.7, 0.2, '#2b5f8c', 0.8)] },
   { id: 'taxidepot', name: 'Taxi Depot', cost: 30000, upkeep: 1500, w: 2, d: 2, vehicles: 10, mode: 'taxi', workers: 12, milestone: 4,

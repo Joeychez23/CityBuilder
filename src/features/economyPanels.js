@@ -12,7 +12,7 @@ import '../ui/inspector.js';
 
 const LABELS = {
   resTax: 'Residential tax', comTax: 'Commercial tax', indTax: 'Industrial tax', offTax: 'Office tax', fees: 'Service fees',
-  transit: 'Public transport fares', exports: 'Utility exports', subsidy: 'Government subsidy', parking: 'Parking fees', tolls: 'Road tolls', refunds: 'Demolition refunds (paid at once)',
+  transit: 'Public transport fares', exports: 'Utility exports', subsidy: 'Government subsidy', parking: 'Parking fees', tolls: 'Road tolls', hotels: 'Hotel rooms', refunds: 'Demolition refunds (paid at once)',
   services: 'Service upkeep', roads: 'Road upkeep', loanInterest: 'Loan interest', imports: 'Imported utilities & services', policies: 'Policies', transitCost: 'Transit',
 };
 

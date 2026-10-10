@@ -3,7 +3,7 @@
 // pay wages and rent, and the city taxes their profit.
 import { RESOURCES, RAW, GOODS, IMMATERIAL, RETAIL_MIX } from '../data/resources.js';
 import { WAGES } from '../data/zones.js';
-import { clamp, idx } from '../core/grid.js';
+import { N, clamp, idx } from '../core/grid.js';
 import { rng } from '../core/rng.js';
 import { centerIdx, covAt, isService } from './services.js';
 import { accessComp } from './citizens.js';
@@ -106,7 +106,7 @@ export function companiesDaily(state, ctx) {
       depleteUnder(state, b, out * 0.00008);
       b.output = out;
     } else if (b.def.cat === 'ind') {
-      const want = b.workerCount * PER_WORKER.ind * b.efficiency;
+      const want = b.workerCount * PER_WORKER.ind * b.efficiency * (b.def.output || 1);
       let made = want;
       for (const [r, k] of Object.entries(RESOURCES[p].inputs)) {
         const need = want * k;
@@ -209,13 +209,40 @@ export function companiesDaily(state, ctx) {
   state.stats.profitable = companies.filter((b) => b.profit > 0).length;
 }
 
+// How much guests like staying at this hotel (about 0.4..1.6): parks and leisure around it,
+// landmarks within a short trip, a good neighbourhood, and for a resort the water.
+export function hotelAppeal(state, ctx, h, sights) {
+  const i = centerIdx(h);
+  const [hx, hy] = [(h.x0 + h.x1) / 2, (h.y0 + h.y1) / 2];
+  let near = 0;
+  for (const [x, y, a] of sights) {
+    const d = Math.hypot(x - hx, y - hy);
+    if (d < 45) near += a * (1 - d / 45);
+  }
+  let water = 0;
+  if (h.def.resort) {
+    for (let y = h.y0 - 4; y <= h.y1 + 4 && !water; y++) for (let x = h.x0 - 4; x <= h.x1 + 4; x++) {
+      if (x >= 0 && y >= 0 && x < N && y < N && state.water[y * N + x]) { water = 1; break; }
+    }
+  }
+  return 0.4 + 0.35 * Math.min(1, ctx.coverage.leisure?.[i] || 0) + 0.45 * Math.min(1, near / 20) + 0.2 * (state.landValue[i] || 0) + 0.25 * water;
+}
+
+const STAY = 1.2;      // visitors who'd stay the night for every day visitor, when there are rooms
+const GUEST_SHOPS = 30; // what a hotel guest spends in the shops a day (a day visitor: 22)
+
 // Tourism: attractiveness from parks, landmarks and signature buildings, multiplied by how
 // easy the city is to reach (highway, train, ship, plane). Tourists spend at shops.
+// Hotels add guests who stay the night on top of the day visitors: they pay for the room
+// (the city runs the hotels) and spend more in the shops.
 export function tourismDaily(state, ctx) {
   let attract = 0;
+  const sights = [];
+  const hotels = [];
   for (const b of state.buildings.values()) {
-    if (isService(b) && b.def.attract) attract += b.def.attract * (b.efficiency ?? 1);
-    if (b.def.signature && !b.cons) attract += b.def.attract || 5;
+    const a = isService(b) && b.def.attract ? b.def.attract * (b.efficiency ?? 1) : b.def.signature && !b.cons ? b.def.attract || 5 : 0;
+    if (a) { attract += a; sights.push([(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, a]); }
+    if (isService(b) && b.def.rooms) hotels.push(b);
   }
   const leisureAvg = (() => {
     const g = ctx.coverage.leisure; if (!g) return 0;
@@ -225,9 +252,52 @@ export function tourismDaily(state, ctx) {
   const access = 0.5 + (ctx.transitAccess?.rail ? 0.3 : 0) + (ctx.transitAccess?.ship ? 0.2 : 0) + (ctx.transitAccess?.air ? 0.5 : 0);
   const pop = state.citizens.size;
   const tourists = Math.round(Math.min(pop * 0.4 + 30, attract * 6) * access * (state.weather.rain > 0.5 ? 0.7 : 1));
+  const visitors = pop > 50 ? tourists : 0;
+
+  // Hotel guests go to the hotels they like best first, as many as each has rooms open
+  let rooms = 0;
+  for (const h of hotels) {
+    h.appeal = hotelAppeal(state, ctx, h, sights);
+    h.roomsOpen = Math.round(h.def.rooms * clamp(h.efficiency ?? 1, 0, 1));
+    h.guests = 0;
+    rooms += h.roomsOpen;
+  }
+  let left = Math.round(visitors * STAY);
+  const wanted = left;
+  for (let pass = 0; pass < 4 && left > 0; pass++) {
+    const open = hotels.filter((h) => h.guests < h.roomsOpen);
+    const weight = open.reduce((a, h) => a + h.roomsOpen * h.appeal, 0);
+    if (!weight) break;
+    let placed = 0;
+    for (const h of open) {
+      const n = Math.min(h.roomsOpen - h.guests, Math.round((left * h.roomsOpen * h.appeal) / weight), left - placed);
+      h.guests += n;
+      placed += n;
+    }
+    if (!placed) {
+      // too few left to share out: the best-liked hotel with room takes them
+      const best = open.reduce((a, h) => (h.appeal > a.appeal ? h : a));
+      placed = Math.min(left, best.roomsOpen - best.guests);
+      best.guests += placed;
+    }
+    left -= placed;
+  }
+  let guests = 0, roomIncome = 0;
+  for (const h of hotels) {
+    h.occupancy = h.def.rooms ? h.guests / h.def.rooms : 0;
+    h.roomIncome = h.guests * h.def.roomRate;
+    guests += h.guests;
+    roomIncome += h.roomIncome;
+  }
+  earn(state, 'hotels', roomIncome);
+
   state.stats.attractiveness = Math.round(Math.min(100, attract));
-  state.stats.tourists = pop > 50 ? tourists : 0;
-  state.stats.touristSpending = state.stats.tourists * 22;
+  state.stats.dayVisitors = visitors;
+  state.stats.hotelGuests = guests;
+  state.stats.hotelRooms = rooms;
+  state.stats.hotelWanted = wanted; // guests who'd have stayed, rooms or not
+  state.stats.tourists = visitors + guests;
+  state.stats.touristSpending = visitors * 22 + guests * GUEST_SHOPS;
   state.counters.tourists += state.stats.tourists;
   if (state.policies.cityPromotion) charge(state, 'policies', 3000);
 }

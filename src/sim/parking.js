@@ -1,7 +1,7 @@
 // Getting to work: how each commuter travels (walk, bus or car) and where the drivers park.
-// Workplaces need parking: drivers park in Parking Lots and Garages within a short walk of
-// their job (industry and small shops also have a few spaces of their own). A lot holds as
-// many cars as it has spaces; the nearest drivers take them first. When the lots near work
+// Workplaces need parking: drivers park in Parking Lots and Garages within a walk of their
+// job (each lot's parkReach: a garage reaches much further than a lot; industry and small
+// shops also have a few spaces of their own). A lot holds as many cars as it has spaces; the nearest drivers take them first. When the lots near work
 // are full, the drivers left over leave the car at home and walk to work instead (or take
 // the bus when one goes there): a long walk makes them late and unhappy. People from
 // neighbouring cities who find no space can't come in at all.
@@ -12,7 +12,9 @@ import { lineRunning } from './transit.js';
 import { earn } from './economy.js';
 
 export const WALK_CELLS = 8;    // commutes shorter than this (in cells) are walked
-export const PARK_REACH = 9;    // drivers walk at most this far from a lot to work
+export const PARK_REACH = 10;   // drivers walk at most this far from a lot to work (unless its def says)
+// How far (in cells, centre to centre) drivers walk from this lot to work
+export const parkReach = (def) => def.parkReach || PARK_REACH;
 
 // A bus or tram line with stops near both ends, as { line, a, b } (stop cells), or null
 export function lineBetween(state, from, to) {
@@ -101,8 +103,8 @@ export function parkingDaily(state, ctx) {
     let near = Infinity;
     for (const l of lots) {
       const [lx, ly] = center(l);
-      const d = Math.abs(bx - lx) + Math.abs(by - ly);
-      if (d > PARK_REACH + (l.x1 - l.x0)) continue;
+      const d = Math.hypot(bx - lx, by - ly);
+      if (d > parkReach(l.def)) continue;
       pairs.push([d, b, l]);
       if (d < near) { near = d; b.nearLot = l.id; }
     }

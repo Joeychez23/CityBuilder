@@ -193,7 +193,8 @@ export function archProfile(hA, hB, floor, xs = null) {
 }
 
 // layer: 'road' | 'rail' | 'path' ; type: road type id when layer is 'road'
-export function planBridge(state, layer, type, a, b, { allowWaterEnds = false } = {}) {
+// anywhere: the land needn't be yours (the outside connections the map starts with)
+export function planBridge(state, layer, type, a, b, { allowWaterEnds = false, anywhere = false } = {}) {
   const { cells, axis, seg, along } = bridgeCells(a, b, layer);
   const plan = { layer, type, cells, axis, seg, ok: false, reason: null, heights: [], cost: 0, maxGrade: 0, spanOver: { water: 0, land: 0, cross: 0 } };
   const n = cells.length - 1;
@@ -203,7 +204,7 @@ export function planBridge(state, layer, type, a, b, { allowWaterEnds = false } 
   for (let k = 0; k <= n; k++) {
     const [x, y] = cells[k];
     const i = idx(x, y);
-    if (!inBounds(x, y) || !isOwned(state, x, y)) { plan.reason = 'Part of the bridge is outside your land'; return plan; }
+    if (!inBounds(x, y) || (!anywhere && !isOwned(state, x, y))) { plan.reason = 'Part of the bridge is outside your land'; return plan; }
     const bld = state.bld[i] && state.buildings.get(state.bld[i]);
     if (bld && bld.kind !== 'zone') { plan.reason = `${bld.def.name} is in the way`; return plan; }
     const end = k === 0 || k === n;
@@ -281,7 +282,9 @@ export function buildBridge(state, plan, { free = false } = {}) {
     state.tree[i] = 0;
     clearZoneCell(state, i);
     if (plan.layer === 'road') {
-      if (!net[i] || !end) { state.road[i] = plan.type; state.roadDir[i] = travel[k]; }
+      // road already there keeps its own type (only Replace re-surfaces road): a stretch of
+      // it the bridge runs along is raised onto the deck as it is
+      if (!net[i]) { state.road[i] = plan.type; state.roadDir[i] = travel[k]; }
       if (!end) state.roadCond[i] = 1;
     } else net[i] = 1;
     if (!end) { H[i] = plan.heights[k]; dir[i] = plan.axis; }
@@ -335,14 +338,20 @@ export function planRoadCrossing(state, a, b, type) {
   // where the banks are high, a bridge that only just spans the water would be too steep:
   // it starts further back on the land instead (a longer ramp up to it)
   const tryPlan = (j0, j1) => planBridge(state, 'road', type, { cx: marks[j0].m[0], cy: marks[j0].m[1] }, { cx: marks[j1].m[0], cy: marks[j1].m[1] });
+  // does the stretch of line k0..k1 already have road on it? (it would go up onto the bridge)
+  const roadIn = (k0, k1) => { for (let k = k0; k <= k1; k++) if (state.road[idx(...line[k])]) return true; return false; };
   for (let n = 0; n < spans.length; n++) {
     let [j0, j1] = spans[n];
     const lo = n ? spans[n - 1][1] : 0, hi = n + 1 < spans.length ? spans[n + 1][0] : marks.length - 1;
     for (let grow = 0; grow < 12; grow++) {
       const p = tryPlan(j0, j1);
       if (p.ok || !/steep/i.test(p.reason || '')) break;
-      const canA = j0 - 1 >= lo && !wet(marks[j0 - 1].m), canB = j1 + 1 <= hi && !wet(marks[j1 + 1].m);
+      let canA = j0 - 1 >= lo && !wet(marks[j0 - 1].m), canB = j1 + 1 <= hi && !wet(marks[j1 + 1].m);
       if (!canA && !canB) break;
+      // reach back over open land first, not over a road already there (say the bigger road
+      // this one starts from): that road would end up raised onto the bridge
+      const roadA = canA && roadIn(marks[j0 - 1].k + 1, marks[j0].k), roadB = canB && roadIn(marks[j1].k, marks[j1 + 1].k - 1);
+      if (canA && canB && roadA !== roadB) { canA = !roadA; canB = !roadB; }
       if (canA && (grow % 2 === 0 || !canB)) j0--; else j1++;
     }
     spans[n] = [j0, j1];
@@ -423,6 +432,91 @@ export function bridgeWaterRuns(state, layer) {
   }
 }
 
+// The outside connections a map starts with (the highway and the railway, laid straight in
+// from the map edge) cross water on bridges planned like the player's own (planBridge, as in
+// planRoadCrossing): each stretch of water is spanned from the land before it to the land
+// after it, reaching further back over the land where the deck can't climb to the bank in
+// time, in one smooth arch that leaves each end level with the track. At the map edge the
+// deck simply runs on out over the water. line: the track's cells from the map edge inward.
+// onlyBad: keep any crossing that already meets that (in older cities only the old flat
+// spans, with a sudden ramp at each end, are rebuilt). Returns how many bridges it built.
+export function bridgeConnection(state, layer, line, { onlyBad = false } = {}) {
+  const [, H, dir] = bridgeLayers(state, layer);
+  const at = line.map(([x, y]) => idx(x, y));
+  const last = at.length - 1;
+  if (last < 2) return 0;
+  const type = layer === 'road' ? state.road[at[0]] : 0;
+  const wet = (k) => !!state.water[at[k]];
+  // each stretch of water (with any deck already over it) and the land either side of it
+  const spans = [];
+  for (let k = 0; k <= last; k++) {
+    if (!wet(k) && !H[at[k]]) continue;
+    let e = k;
+    while (e < last && (wet(e + 1) || H[at[e + 1]])) e++;
+    let keep = false;
+    if (onlyBad) {
+      // the deck from bank to bank: over all the water, and never steeper than a bridge may be
+      const hs = k > 0 ? [cellHeight(state, ...line[k - 1])] : [];
+      keep = true;
+      for (let j = k; j <= e && keep; j++) { if (!H[at[j]]) keep = false; else hs.push(H[at[j]]); }
+      if (e < last) hs.push(cellHeight(state, ...line[e + 1]));
+      for (let j = 1; j < hs.length && keep; j++) if (Math.abs(hs[j] - hs[j - 1]) > MAX_BRIDGE_GRADE + 0.05) keep = false;
+    }
+    // (a bridge on it that crosses no water, over a valley or a road, is left as it is)
+    let dry = true;
+    for (let j = k; j <= e; j++) if (wet(j)) dry = false;
+    const s = { k0: Math.max(0, k - 1), k1: Math.min(last, e + 1), keep: keep || dry };
+    const prev = spans[spans.length - 1];
+    if (prev && s.k0 <= prev.k1) { prev.k1 = s.k1; prev.keep = prev.keep && s.keep; } else spans.push(s);
+    k = e;
+  }
+  const plan = (a, b) => planBridge(state, layer, type, { cx: line[a][0], cy: line[a][1] }, { cx: line[b][0], cy: line[b][1] }, { allowWaterEnds: true, anywhere: true });
+  const steep = (p) => !p.ok && /steep/i.test(p.reason || '');
+  let built = 0;
+  for (let n = 0; n < spans.length; n++) {
+    const sp = spans[n];
+    if (sp.keep) continue;
+    const lo = n ? spans[n - 1].k1 : 0, hi = n + 1 < spans.length ? spans[n + 1].k0 : last;
+    // clear the old deck (it's put back if no bridge can be planned)
+    const old = [];
+    for (let k = sp.k0; k <= sp.k1; k++) if (H[at[k]]) { old.push([at[k], H[at[k]], dir[at[k]]]); H[at[k]] = 0; dir[at[k]] = 0; }
+    let { k0, k1 } = sp, blockA = false, blockB = false;
+    let p = plan(k0, k1);
+    for (let grow = 0; grow < 16 && steep(p); grow++) {
+      const canA = !blockA && k0 - 1 >= lo && !wet(k0 - 1), canB = !blockB && k1 + 1 <= hi && !wet(k1 + 1);
+      if (!canA && !canB) break;
+      const toA = canA && (grow % 2 === 0 || !canB);
+      const q = toA ? plan(k0 - 1, k1) : plan(k0, k1 + 1);
+      if (!q.ok && !steep(q)) { if (toA) blockA = true; else blockB = true; continue; }
+      p = q;
+      if (toA) k0--; else k1++;
+    }
+    // a bank too high to reach in time still gets the smoothest arch there is
+    if (!p.ok && !(steep(p) && p.heights.length)) { for (const [i, h, d] of old) { H[i] = h; dir[i] = d; } continue; }
+    raiseTrack(state, layer, p);
+    sp.k0 = k0; sp.k1 = k1;
+    built++;
+  }
+  return built;
+}
+
+// Lift track that's already there onto a planned bridge. No cost and no events: map
+// generation and loading call this, and refresh what they need themselves.
+function raiseTrack(state, layer, plan) {
+  const [net, H, dir] = bridgeLayers(state, layer);
+  const n = plan.cells.length - 1;
+  const ends = [];
+  plan.cells.forEach(([x, y], k) => {
+    const i = idx(x, y);
+    // an end on dry land stays on the ground (graded level with the deck); one out in the
+    // water at the map edge is part of the deck
+    if ((k === 0 || k === n) && !state.water[i]) { ends.push([x, y]); return; }
+    H[i] = plan.heights[k];
+    dir[i] = plan.axis;
+    state.tree[i] = 0;
+  });
+  if (ends.length) gradeCells(state, net, ends);
+}
 
 // A bridge span is only valid while both of its ends rest on ground-level track. Remove any
 // span (contiguous raised cells along its axis) that has lost an end, so nothing is left

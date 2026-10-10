@@ -1,8 +1,10 @@
 // Hover tips for the interface: any element with a data-tip attribute (HTML) shows a small
 // card explaining it after a short pause, placed beside the element and kept on screen.
 // Used by the toolbar, the build menus, the HUD, the panel rail, the map strip and the tool
-// options, so hovering anything tells you what it does.
+// options, so hovering anything tells you what it does. On a touch screen there's no hover:
+// hold a finger on it instead (the tap that ends a long press doesn't press the button).
 const DELAY = 280;
+const HOLD = 450;
 
 export function initHoverTips() {
   const tip = document.createElement('div');
@@ -30,7 +32,28 @@ export function initHoverTips() {
     tip.style.top = `${y}px`;
   }
 
+  // touch: a long press shows the tip, the next touch hides it
+  let touching = false, holdTimer = 0, held = false;
+  document.addEventListener('pointerdown', (e) => {
+    touching = e.pointerType === 'touch';
+    if (!touching) return;
+    hide();
+    held = false;
+    const el = e.target.closest?.('[data-tip]');
+    if (!el) return;
+    const x = e.clientX, y = e.clientY;
+    holdTimer = setTimeout(() => { held = true; target = el; show(el); }, HOLD);
+    const stop = (ev) => { if (ev.type !== 'pointermove' || Math.hypot(ev.clientX - x, ev.clientY - y) > 10) { clearTimeout(holdTimer); off(); } };
+    const off = () => { document.removeEventListener('pointermove', stop); document.removeEventListener('pointerup', stop); document.removeEventListener('pointercancel', stop); };
+    document.addEventListener('pointermove', stop);
+    document.addEventListener('pointerup', stop);
+    document.addEventListener('pointercancel', stop);
+  }, true);
+  document.addEventListener('click', (e) => { if (held) { held = false; e.stopPropagation(); e.preventDefault(); } }, true);
+  document.addEventListener('contextmenu', (e) => { if (touching && e.target.closest?.('[data-tip]')) e.preventDefault(); });
+
   document.addEventListener('mouseover', (e) => {
+    if (touching) return; // (touch screens fake a mouseover on every tap)
     const el = e.target.closest?.('[data-tip]');
     if (el === target) return;
     hide();
@@ -38,7 +61,7 @@ export function initHoverTips() {
     target = el;
     timer = setTimeout(() => { if (target === el) show(el); }, DELAY);
   });
-  document.addEventListener('mousedown', hide, true);
+  document.addEventListener('mousedown', () => { if (!touching) hide(); }, true);
   document.addEventListener('wheel', hide, { passive: true });
   window.addEventListener('blur', hide);
   // the element may be re-rendered under the mouse: hide if it's gone
