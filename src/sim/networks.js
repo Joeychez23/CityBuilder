@@ -71,6 +71,21 @@ export function computeRoadNetwork(state, ctx) {
 
 // The road component a building's front faces (or any adjacent road), -1 if none.
 export function buildingRoadComp(state, ctx, b) {
+  // a building turned to face its road: the road at its front, else any road beside it
+  if (b.cells) {
+    if (b.front >= 0 && ctx.net.roadComp[b.front] >= 0 && !state.bridgeH[b.front]) return { comp: ctx.net.roadComp[b.front], x: b.front % N, y: (b.front / N) | 0 };
+    const own = new Set(b.cells);
+    for (const i of b.cells) {
+      const x = i % N, y = (i / N) | 0;
+      for (const [dx, dy] of DIRS) {
+        if (!inBounds(x + dx, y + dy)) continue;
+        const j = idx(x + dx, y + dy);
+        if (own.has(j) || state.bridgeH[j]) continue;
+        if (ctx.net.roadComp[j] >= 0) return { comp: ctx.net.roadComp[j], x: x + dx, y: y + dy };
+      }
+    }
+    return null;
+  }
   const [fx, fy] = DIRS[b.rot || 0];
   // check the cells just outside the footprint, front side first
   const cand = [];

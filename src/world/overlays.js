@@ -4,11 +4,6 @@ import * as THREE from 'three';
 import { N, TILE, TILES, idx } from '../core/grid.js';
 import { ZONES } from '../data/zones.js';
 
-const zoneRGB = {};
-for (const z of Object.values(ZONES)) {
-  const c = new THREE.Color(z.color);
-  zoneRGB[z.id] = [c.r * 255, c.g * 255, c.b * 255];
-}
 export const SURFACES = [null,
   { name: 'Concrete', color: '#b9b6ae' }, { name: 'Pavement', color: '#9d968a' }, { name: 'Grass', color: '#7fb35a' },
   { name: 'Sand', color: '#e2d3a3' }, { name: 'Tiles', color: '#c48a6a' }, { name: 'Gravel', color: '#8d8a83' }];
@@ -18,23 +13,12 @@ export function createOverlays(app) {
   const { state, terrain } = app;
   const ov = { zoneMode: false, districtMode: false, tileMode: false, heatFn: null, dirty: true, districtColors: {} };
 
-  ov.setZoneMode = (on) => { ov.zoneMode = on; ov.dirty = true; };
+  ov.setZoneMode = (on) => { ov.zoneMode = on; ov.dirty = true; app.zones?.setZoneMode(on); };
   ov.setDistrictMode = (on) => { ov.districtMode = on; ov.dirty = true; };
   ov.setTileMode = (on) => { ov.tileMode = on; ov.dirty = true; };
 
   ov.rebuild = () => {
     const d = terrain.overlayData;
-    const zonable = app.ctx.zonable;
-    // lots: their front yards are drawn paler, and each lot gets an outline
-    const yard = new Uint8Array(N * N);
-    for (const p of state.plots || []) {
-      const S = p.setback || 0;
-      if (!S) continue;
-      for (let y = p.y0; y <= p.y1; y++) for (let x = p.x0; x <= p.x1; x++) {
-        const inYard = p.rot === 0 ? x > p.x1 - S : p.rot === 2 ? x < p.x0 + S : p.rot === 1 ? y > p.y1 - S : y < p.y0 + S;
-        if (inYard) yard[idx(x, y)] = 1;
-      }
-    }
     const dcol = {};
     for (const dist of state.districts) {
       const c = new THREE.Color(dist.color);
@@ -47,22 +31,12 @@ export function createOverlays(app) {
         let r = 0, g = 0, b = 0, a = 0;
         const s = state.surface[i];
         if (s && surfRGB[s]) { [r, g, b] = surfRGB[s]; a = 230; }
+        // (zone paint itself is drawn along the roads by world/zonesView.js)
         const z = state.zone[i];
-        if (z && !state.bld[i]) {
-          [r, g, b] = zoneRGB[z];
-          a = ov.zoneMode ? 190 : 120;
-          const pl = state.plot[i];
-          if (pl) {
-            if (yard[i]) { r = r * 0.45 + 140; g = g * 0.45 + 140; b = b * 0.45 + 140; }
-            const edge = x === 0 || y === 0 || x === N - 1 || y === N - 1 || state.plot[i - 1] !== pl || state.plot[i + 1] !== pl || state.plot[i - N] !== pl || state.plot[i + N] !== pl;
-            if (edge) { r *= 0.62; g *= 0.62; b *= 0.62; a = Math.max(a, 170); }
-          }
-        } else if (z && state.bld[i] && ZONES[z].cat === 'spec') {
+        if (z && state.bld[i] && ZONES[z].cat === 'spec') {
           // fields / quarries around specialised industry
           const c = ZONES[z].key === 'spec_farm' ? [176, 160, 80] : ZONES[z].key === 'spec_forest' ? [96, 120, 60] : [120, 110, 100];
           [r, g, b] = c; a = 150;
-        } else if (ov.zoneMode && zonable && zonable[i] > 0 && zonable[i] < 255 && !state.bld[i]) {
-          r = 255; g = 255; b = 255; a = 38;
         }
         if (ov.districtMode || ov.zoneMode === 'district') {
           const dc = dcol[state.district[i]];

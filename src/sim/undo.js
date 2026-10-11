@@ -7,7 +7,7 @@
 // the change zoned goes, people who lost their homes move back in.
 import { HN, N } from '../core/grid.js';
 import { bus } from '../core/events.js';
-import { removeBuilding, changeHooks } from './build.js';
+import { removeBuilding, changeHooks, bldCells } from './build.js';
 import { difficultyOf } from '../data/difficulty.js';
 import { centerIdx } from './services.js';
 import { commitRoads } from './roadnet.js';
@@ -193,13 +193,10 @@ export function createUndo(state) {
     // 5) the buildings it removed come back, with the people who lived there
     for (const { b, households, citizens, workers } of back.values()) {
       if (state.buildings.has(b.id)) continue;
-      for (let y = b.y0; y <= b.y1; y++) {
-        for (let x = b.x0; x <= b.x1; x++) {
-          const i = y * N + x;
-          const other = state.bld[i];
-          if (other && other !== b.id && other >= st.nextId && state.buildings.has(other)) removeBuilding(state, other);
-          state.bld[i] = b.id;
-        }
+      for (const i of bldCells(b)) {
+        const other = state.bld[i];
+        if (other && other !== b.id && other >= st.nextId && state.buildings.has(other)) removeBuilding(state, other);
+        state.bld[i] = b.id;
       }
       state.buildings.set(b.id, b);
       // its workers come back, unless they've found another job since

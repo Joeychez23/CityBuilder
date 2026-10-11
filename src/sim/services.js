@@ -32,7 +32,7 @@ export function coverageKey(def) {
   return null;
 }
 
-export const center = (b) => [Math.floor((b.x0 + b.x1) / 2), Math.floor((b.y0 + b.y1) / 2)];
+export const center = (b) => (b.cx != null ? [Math.floor(b.cx), Math.floor(b.cz)] : [Math.floor((b.x0 + b.x1) / 2), Math.floor((b.y0 + b.y1) / 2)]);
 export const centerIdx = (b) => { const [x, y] = center(b); return idx(x, y); };
 // A working city service (a building site isn't one yet)
 export const isService = (b) => (b.kind === 'service' || b.kind === 'transport') && !b.cons;
@@ -52,8 +52,9 @@ export function serviceEfficiency(state, b) {
 
 // ------------------------------------------------------------------ placement
 // Returns null if OK, or a reason string
-export function serviceBlocker(state, ctx, def, x0, y0, x1, y1) {
-  const blocked = footprintBlocker(state, x0, y0, x1, y1);
+export function serviceBlocker(state, ctx, def, x0, y0, x1, y1, rot = 0, cells = null) {
+  // (turned to face a road at an angle: just the cells under it)
+  const blocked = cells ? cells.map((i) => footprintBlocker(state, i % N, (i / N) | 0, i % N, (i / N) | 0)).find(Boolean) : footprintBlocker(state, x0, y0, x1, y1);
   if (blocked) return blocked;
   if (def.unique) for (const b of state.buildings.values()) if (b.def === def) return 'Only one per city';
   if (def.needs) {
@@ -96,7 +97,7 @@ export function touchesLayer(state, layer, x0, y0, x1, y1, reach = 1) {
 }
 
 export function placeService(state, ctx, def, x0, y0, x1, y1, rot, extra = {}, price = null) {
-  const reason = serviceBlocker(state, ctx, def, x0, y0, x1, y1);
+  const reason = serviceBlocker(state, ctx, def, x0, y0, x1, y1, rot, extra.cells);
   if (reason) return { error: reason };
   const cost = def.free ? 0 : price ?? def.cost;
   if (!spend(state, cost, def.cat)) return { error: 'Not enough money' };

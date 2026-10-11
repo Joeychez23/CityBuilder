@@ -301,6 +301,8 @@ export function splitSeg(state, sid, t) {
   const elev = s.br ? Math.max(0, segY(state, sid, sAtT(g.tab, t)) - Math.max(ground, state.seaLevel)) : 0;
   const n = addNode(state, c1[6], c1[7], elev);
   const s2 = { ...s, id: R.nextId++, a: n.id, b: s.b, k: [c2[2], c2[3], c2[4], c2[5]] };
+  // (the zoning along it: both halves take it from where it was, see sim/zoneblocks.js)
+  delete s2.zs; delete s2.zc;
   s.b = n.id;
   s.k = [c1[2], c1[3], c1[4], c1[5]];
   for (const key of ['toll', 'power']) {

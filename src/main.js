@@ -17,6 +17,7 @@ import { createNetworksView } from './world/networksView.js';
 import { createRoadsView } from './world/roadsView.js';
 import { createTreesView } from './world/treesView.js';
 import { createOverlays } from './world/overlays.js';
+import { createZonesView } from './world/zonesView.js';
 import { createPreview } from './world/preview.js';
 import { createPowerView } from './world/powerView.js';
 import { migratePowerLines } from './sim/power.js';
@@ -63,6 +64,7 @@ function startGame(state, isNew) {
   }
   app.trees = createTreesView(view, state);
   app.overlays = createOverlays(app);
+  app.zones = createZonesView(view, state);
   app.preview = createPreview(view, state);
   app.power = createPowerView(view, state);
   if (!isNew) {
@@ -169,6 +171,7 @@ function startGame(state, isNew) {
     app.power.update();
     app.trees.update(now);
     app.overlays.update();
+    app.zones.update();
 
     hudTimer += dt;
     if (hudTimer > 0.25) { hudTimer = 0; app.hud.update(); }

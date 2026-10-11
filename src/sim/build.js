@@ -2,7 +2,7 @@
 // Tools call plan*() for a preview (validity + cost) and then apply it.
 import { N, TILE, TILES, idx, inBounds, DIRS, hidx, clamp, lerp } from '../core/grid.js';
 import { ROADS, UPG, UPGRADES } from '../data/roads.js';
-import { ZONES, ZONE_DEPTH } from '../data/zones.js';
+import { ZONES } from '../data/zones.js';
 import { cellHeight, cellSlope, recomputeWater } from './mapgen.js';
 import { newId } from '../core/state.js';
 import { bus } from '../core/events.js';
@@ -12,6 +12,7 @@ import { clearBridgeCell, pruneBridges } from './bridges.js';
 import { removePylon, pylonValue, dropSpansAt } from './power.js';
 import { maxSlopeAt } from './projects.js';
 import { segAtCell, segValue, removeSeg } from './roadnet.js';
+import { zoneLayout, zoneOf, paintCells, cellsOnGrid, cellOf, zonableGrid } from './zoneblocks.js';
 
 export const MAX_BUILD_SLOPE = 1.3; // height change across one cell (~10 m over 8 m): anything less is buildable
 
@@ -19,8 +20,11 @@ export const isOwned = (state, x, y) => inBounds(x, y) && state.tiles[((y / TILE
 
 // Something is built on cell i: its zoning (and any lot laid out over it) goes
 export function clearZoneCell(state, i) {
+  const Z = zoneLayout(state);
+  const cells = cellsOnGrid(Z, [i]).filter((c) => zoneOf(state, c));
+  for (const c of cells) { const p = plotOfCell(state, c); if (p) dissolvePlot(state, p.id); }
+  if (cells.length) paintCells(state, cells, 0);
   state.zone[i] = 0;
-  if (state.plot[i]) dissolvePlot(state, state.plot[i]);
 }
 
 // Undo (sim/undo.js) listens in on what a change spends, refunds, removes and alters
@@ -97,35 +101,18 @@ export function placeLayer(state, layer, cells) {
 }
 
 // --------------------------------------------------------------------------- zoning
-// A cell can be zoned if it's land, owned, not too steep, and within ZONE_DEPTH cells
-// (walking over land) of a road that allows zoning.
+// Zoning is painted on the zone strips along the roads (sim/zoneblocks.js). A zone cell takes
+// a zone if the land is yours and suits it (farms need fertile land, mines ore...).
+
+// The grid of how far each cell is from a road you can zone beside (see zonableGrid)
 export function computeZonable(state) {
-  const dist = new Uint8Array(N * N).fill(255);
-  const queue = [];
-  for (let i = 0; i < N * N; i++) {
-    const t = state.road[i];
-    if (t && ROADS[t].zonable && !state.water[i] && !state.bridgeH[i]) { dist[i] = 0; queue.push(i); }
-  }
-  for (let q = 0; q < queue.length; q++) {
-    const i = queue[q];
-    const x = i % N, y = (i / N) | 0;
-    if (dist[i] >= ZONE_DEPTH) continue;
-    for (const [dx, dy] of DIRS) {
-      const nx = x + dx, ny = y + dy;
-      if (!inBounds(nx, ny)) continue;
-      const j = idx(nx, ny);
-      if (dist[j] !== 255 || state.road[j] || state.water[j] || state.rail[j]) continue;
-      dist[j] = dist[i] + 1;
-      queue.push(j);
-    }
-  }
-  return dist; // 1..6 = zonable depth; 0 = road; 255 = not zonable
+  return zonableGrid(state);
 }
 
-export function canZoneCell(state, zonable, x, y, zoneId) {
-  const i = idx(x, y);
-  if (!isOwned(state, x, y) || zonable[i] === 0 || zonable[i] > ZONE_DEPTH || state.power[i]) return false;
-  if (cellSlope(state, x, y) > maxSlopeAt(state, x, y)) return false;
+// Can this zone cell be painted with this zone?
+export function canZoneStrip(state, c, zoneId) {
+  const i = c.g, x = i % N, y = (i / N) | 0;
+  if (!isOwned(state, x, y)) return false;
   const b = state.bld[i] && state.buildings.get(state.bld[i]);
   if (b && (b.kind !== 'zone' || b.def.signature)) return false;
   const def = ZONES[zoneId];
@@ -133,90 +120,124 @@ export function canZoneCell(state, zonable, x, y, zoneId) {
   if (def && def.resource === 'forest' && !state.forestMax[i]) return false;
   return true;
 }
+// (by grid cell, for code that thinks in cells: any zone cell over it)
+export function canZoneCell(state, zonable, x, y, zoneId) {
+  const cells = cellsOnGrid(zoneLayout(state), [idx(x, y)]);
+  return cells.some((c) => canZoneStrip(state, c, zoneId));
+}
 
-export function setZone(state, zonable, cells, zoneId) {
-  let n = 0;
-  for (const [x, y] of cells) {
-    if (zoneId && !canZoneCell(state, zonable, x, y, zoneId)) continue;
-    const i = idx(x, y);
-    if (!zoneId && !state.zone[i]) continue;
-    if (state.zone[i] === zoneId) continue;
-    // A building on a cell whose zone changes no longer fits and is removed
-    if (state.bld[i]) {
-      const b = state.buildings.get(state.bld[i]);
-      if (b && b.kind === 'zone') removeBuilding(state, b.id);
-    }
-    // ...and a lot laid out over it is undone (its other cells keep their zone)
-    if (state.plot[i]) dissolvePlot(state, state.plot[i]);
-    state.zone[i] = zoneId;
-    n++;
+// Paint zone cells with a zone (0 to unzone them). A building on a cell whose zone changes
+// no longer fits and is removed, and a lot laid out over it is undone.
+export function zoneCells(state, cells, zoneId) {
+  const change = [];
+  for (const c of cells) {
+    if (zoneId && !canZoneStrip(state, c, zoneId)) continue;
+    if (zoneOf(state, c) === zoneId) continue;
+    change.push(c);
   }
+  for (const c of change) {
+    const b = state.bld[c.g] && state.buildings.get(state.bld[c.g]);
+    if (b && b.kind === 'zone') removeBuilding(state, b.id);
+    const p = plotOfCell(state, c);
+    if (p) dissolvePlot(state, p.id);
+  }
+  const n = paintCells(state, change, zoneId);
   if (n) bus.emit('zones:changed', { count: n });
   return n;
 }
+// (by grid cells: the zone cells over them)
+export function setZone(state, zonable, gridCells, zoneId) {
+  return zoneCells(state, cellsOnGrid(zoneLayout(state), gridCells.map(([x, y]) => idx(x, y))), zoneId);
+}
 
 // ------------------------------------------------------------------------- lots
-// Lots ("plots") are zoned areas you lay out yourself: a set width along the road and depth
-// away from it, with a front yard (setback) between the street and the building. A building
-// grows on the whole lot, set back from the road by the yard.
-export function plotsAt(state, x0, y0, x1, y1) {
-  const ids = new Set();
-  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (inBounds(x, y) && state.plot[idx(x, y)]) ids.add(state.plot[idx(x, y)]);
-  return ids;
+// Lots ("plots") are zoned areas you lay out yourself along a strip: a set width along the
+// road and depth away from it, with a front yard (setback) between the street and the
+// building. A building grows on the whole lot, set back from the road by the yard.
+//   { id, seg, side, col, w, d, setback, zone }: columns col.. col + w - 1, rows 0.. d - 1
+export function plotCells(state, p) {
+  const Z = zoneLayout(state);
+  const out = [];
+  for (let j = 0; j < p.w; j++) for (let r = 0; r < p.d; r++) {
+    const c = cellOf(Z, p.seg, p.side, p.col + j, r);
+    if (!c) return null;
+    out.push(c);
+  }
+  return out;
+}
+export function plotOfCell(state, c) {
+  for (const p of state.plots || []) if (p.seg === c.seg && p.side === c.side && c.col >= p.col && c.col < p.col + p.w && c.row < p.d) return p;
+  return null;
 }
 
 export function dissolvePlot(state, id) {
-  const p = state.plots.find((q) => q.id === id);
-  if (p) {
-    for (let y = p.y0; y <= p.y1; y++) for (let x = p.x0; x <= p.x1; x++) if (state.plot[idx(x, y)] === id) state.plot[idx(x, y)] = 0;
-    state.plots = state.plots.filter((q) => q !== p);
-  } else {
-    for (let i = 0; i < state.plot.length; i++) if (state.plot[i] === id) state.plot[i] = 0;
-  }
+  state.plots = (state.plots || []).filter((q) => q.id !== id);
   bus.emit('zones:changed', { count: 0 });
 }
 
-// Can a lot go on this rectangle? (null = yes, else the reason)
-export function plotBlocker(state, zonable, rect, zoneId) {
-  const [x0, y0, x1, y1] = rect;
-  for (let y = y0; y <= y1; y++) {
-    for (let x = x0; x <= x1; x++) {
-      if (!inBounds(x, y) || !isOwned(state, x, y)) return 'Not your land';
-      const i = idx(x, y);
-      if (state.road[i] || state.water[i] || state.rail[i] || state.power[i]) return 'Something is in the way';
-      if (zonable[i] === 0 || zonable[i] > ZONE_DEPTH) return `Too far from the road (lots reach ${ZONE_DEPTH} cells)`;
-      if (zoneId && !canZoneCell(state, zonable, x, y, zoneId)) return 'Not zonable here';
-    }
+// Can a lot go on these zone cells? (null = yes, else the reason)
+export function plotBlocker(state, lot, zoneId) {
+  const cells = plotCells(state, lot);
+  if (!cells) return 'No room for the lot here (something is in the way, or it runs off the zone strip)';
+  for (const c of cells) {
+    if (!isOwned(state, c.g % N, (c.g / N) | 0)) return 'Not your land';
+    if (zoneId && !canZoneStrip(state, c, zoneId)) return 'Not zonable here';
   }
   return null;
 }
 
-// Lay out a lot: zone its cells, replacing any lots it overlaps. rot = side facing the road.
-export function placePlot(state, zonable, rect, rot, setback, zoneId) {
-  const [x0, y0, x1, y1] = rect;
-  for (const id of plotsAt(state, x0, y0, x1, y1)) {
-    const old = state.plots.find((q) => q.id === id);
-    if (old) for (let y = old.y0; y <= old.y1; y++) for (let x = old.x0; x <= old.x1; x++) {
-      const b = state.bld[idx(x, y)] && state.buildings.get(state.bld[idx(x, y)]);
-      if (b && b.kind === 'zone') removeBuilding(state, b.id);
-    }
-    dissolvePlot(state, id);
-  }
-  const cells = [];
-  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) cells.push([x, y]);
-  // buildings standing on the lot don't fit it any more
-  for (const [x, y] of cells) {
-    const b = state.bld[idx(x, y)] && state.buildings.get(state.bld[idx(x, y)]);
+// Lay out a lot, replacing any lots it overlaps (and the buildings on them)
+export function placePlot(state, lot, setback, zoneId) {
+  const cells = plotCells(state, lot);
+  if (!cells) return null;
+  const gone = new Set();
+  for (const c of cells) {
+    const p = plotOfCell(state, c);
+    if (p) gone.add(p);
+    const b = state.bld[c.g] && state.buildings.get(state.bld[c.g]);
     if (b && b.kind === 'zone') removeBuilding(state, b.id);
   }
-  for (const [x, y] of cells) state.zone[idx(x, y)] = 0;
-  setZone(state, zonable, cells, zoneId);
-  const id = newId(state);
-  for (const [x, y] of cells) state.plot[idx(x, y)] = id;
-  const plot = { id, x0, y0, x1, y1, rot, setback, zone: zoneId };
+  for (const p of gone) {
+    for (const c of plotCells(state, p) || []) {
+      const b = state.bld[c.g] && state.buildings.get(state.bld[c.g]);
+      if (b && b.kind === 'zone') removeBuilding(state, b.id);
+    }
+    dissolvePlot(state, p.id);
+  }
+  paintCells(state, cells, 0);
+  zoneCells(state, cells, zoneId);
+  const plot = { id: newId(state), seg: lot.seg, side: lot.side, col: lot.col, w: lot.w, d: lot.d, setback, zone: zoneId };
   state.plots.push(plot);
   bus.emit('zones:changed', { count: cells.length });
   return plot;
+}
+
+// A building on zone cells (a lot along a strip): turned to face the road, in the middle of
+// its cells; on the grid it holds the cells those zone cells stand over
+export function stripBuilding(state, kind, def, cells, w, d, extra = {}) {
+  let cx = 0, cz = 0, fx = 0, fz = 0;
+  for (const c of cells) { cx += c.x; cz += c.z; fx -= c.nx; fz -= c.nz; }
+  cx /= cells.length; cz /= cells.length;
+  const fl = Math.hypot(fx, fz) || 1;
+  fx /= fl; fz /= fl;
+  const grid = [...new Set(cells.flatMap((c) => c.gs))];
+  let x0 = N, y0 = N, x1 = -1, y1 = -1;
+  for (const i of grid) { const x = i % N, y = (i / N) | 0; x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+  const rot = Math.abs(fx) > Math.abs(fz) ? (fx > 0 ? 0 : 2) : fz > 0 ? 1 : 3;
+  const first = cells.reduce((a, c) => (c.col < a.col ? c : a), cells[0]);
+  const front = frontRoadCell(state, cx + fx * (d / 2 + 0.6), cz + fz * (d / 2 + 0.6));
+  return createBuilding(state, kind, def, x0, y0, x1, y1, rot, { cells: grid, ang: Math.atan2(fx, fz), cx, cz, w, d, blk: { seg: first.seg, side: first.side, col: first.col }, front, ...extra });
+}
+// The road cell nearest a point (where a building's driveway meets the road)
+function frontRoadCell(state, x, z) {
+  let best = -1, bd = Infinity;
+  for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+    const gx = Math.floor(x) + dx, gz = Math.floor(z) + dz;
+    if (!inBounds(gx, gz) || !state.road[idx(gx, gz)] || state.bridgeH[idx(gx, gz)]) continue;
+    const dd = (gx + 0.5 - x) ** 2 + (gz + 0.5 - z) ** 2;
+    if (dd < bd) { bd = dd; best = idx(gx, gz); }
+  }
+  return best;
 }
 
 // ------------------------------------------------------------------------ buildings
@@ -224,15 +245,14 @@ export function placePlot(state, zonable, rect, rot, setback, zoneId) {
 export function createBuilding(state, kind, def, x0, y0, x1, y1, rot, extra = {}) {
   const id = newId(state);
   let maxH = -Infinity;
-  for (let y = y0; y <= y1; y++) {
-    for (let x = x0; x <= x1; x++) {
-      const i = idx(x, y);
-      state.bld[i] = id;
-      state.tree[i] = 0;
-      if (kind !== 'zone' && !def.keepZone) clearZoneCell(state, i);
-      maxH = Math.max(maxH, cellHeight(state, x, y));
-      levelCell(state, x, y, 0.35);
-    }
+  // (a building turned to face a road at an angle holds just the cells under it: extra.cells)
+  for (const i of extra.cells || rectCells(x0, y0, x1, y1)) {
+    const x = i % N, y = (i / N) | 0;
+    state.bld[i] = id;
+    state.tree[i] = 0;
+    if (kind !== 'zone' && !def.keepZone) clearZoneCell(state, i);
+    maxH = Math.max(maxH, cellHeight(state, x, y));
+    levelCell(state, x, y, 0.35);
   }
   const alongX = rot === 1 || rot === 3; // road runs along x when the building faces N/S
   const b = {
@@ -260,14 +280,8 @@ export function removeBuilding(state, id, { bulldozed = false } = {}) {
   const b = state.buildings.get(id);
   if (!b) return;
   changeHooks.removing?.(state, b);
-  const cells = [];
-  for (let y = b.y0; y <= b.y1; y++) {
-    for (let x = b.x0; x <= b.x1; x++) {
-      const i = idx(x, y);
-      if (state.bld[i] === id) state.bld[i] = 0;
-      cells.push(i);
-    }
-  }
+  const cells = bldCells(b);
+  for (const i of cells) if (state.bld[i] === id) state.bld[i] = 0;
   // wires that ran to a power plant come down with it
   if (b.def.power || b.def.battery) dropSpansAt(state, cells);
   state.buildings.delete(id);
@@ -275,10 +289,12 @@ export function removeBuilding(state, id, { bulldozed = false } = {}) {
   bus.emit('building:remove', b);
 }
 
+const rectCells = (x0, y0, x1, y1) => { const out = []; for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) out.push(idx(x, y)); return out; };
+// The grid cells a building stands on (its rectangle; or, turned to face a road at an angle,
+// the cells under it)
+export const bldCells = (b) => b.cells || rectCells(b.x0, b.y0, b.x1, b.y1);
 export function buildingCells(b) {
-  const cells = [];
-  for (let y = b.y0; y <= b.y1; y++) for (let x = b.x0; x <= b.x1; x++) cells.push([x, y]);
-  return cells;
+  return bldCells(b).map((i) => [i % N, (i / N) | 0]);
 }
 
 // Footprint of a w × d building whose front cell row touches the road on side `rot`.

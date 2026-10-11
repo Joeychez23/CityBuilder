@@ -7,6 +7,10 @@ import { registerTool, money, segButtons } from './tools.js';
 import { N, idx, inBounds, DIRS } from '../core/grid.js';
 import { placeService, serviceBlocker, isService } from '../sim/services.js';
 import { footprintFree } from '../sim/build.js';
+import { nearestSeg, rn } from '../sim/roadnet.js';
+import { bezTan } from '../sim/roadgeom.js';
+import { roadWidth } from '../sim/lanes.js';
+import { ROADS } from '../data/roads.js';
 import { cellHeight } from '../sim/mapgen.js';
 import { perWeek } from '../sim/economy.js';
 import { parkReach } from '../sim/parking.js';
@@ -61,11 +65,47 @@ function sewagePreview(state, ctx, def, x0, y0, x1, y1) {
 
 const SIDES = ['east', 'south', 'west', 'north'];
 
+// Beside a road at an angle: the building turned to face it squarely, its front at the kerb
+// level with the cursor. It stands on the grid cells under it. (null where the nearest road
+// runs along the grid, or there's none near)
+export function turnedPlacement(state, def, px, pz) {
+  const q = nearestSeg(state, px, pz, 3.2, (s) => !s.br && !s.tn);
+  if (!q) return null;
+  const X = rn(state), g = X.geo.get(q.id);
+  const d = bezTan(g.c, q.t);
+  if (Math.min(Math.abs(d[0]), Math.abs(d[1])) < 0.06) return null;
+  let nx = -d[1], nz = d[0];
+  if ((px - q.x) * nx + (pz - q.z) * nz < 0) { nx = -nx; nz = -nz; }
+  const W = def.w, D = def.d;
+  const off = roadWidth(ROADS[X.seg.get(q.id).type]) / 2 + D / 2 + 0.05;
+  const cx = q.x + nx * off, cz = q.z + nz * off;
+  const cells = [];
+  const R = Math.ceil(Math.hypot(W, D) / 2) + 1;
+  for (let gz = Math.floor(cz) - R; gz <= Math.floor(cz) + R; gz++) {
+    for (let gx = Math.floor(cx) - R; gx <= Math.floor(cx) + R; gx++) {
+      if (!inBounds(gx, gz)) continue;
+      const vx = gx + 0.5 - cx, vz = gz + 0.5 - cz;
+      if (Math.abs(vx * d[0] + vz * d[1]) <= W / 2 && Math.abs(vx * nx + vz * nz) <= D / 2) cells.push(idx(gx, gz));
+    }
+  }
+  if (!cells.length) return null;
+  let x0 = N, y0 = N, x1 = -1, y1 = -1;
+  for (const i of cells) { const x = i % N, y = (i / N) | 0; x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+  const fx = -nx, fz = -nz;
+  const rot = Math.abs(fx) > Math.abs(fz) ? (fx > 0 ? 0 : 2) : fz > 0 ? 1 : 3;
+  // the road cell its driveway meets
+  const fpx = q.x, fpz = q.z;
+  const front = inBounds(Math.floor(fpx), Math.floor(fpz)) && state.road[idx(Math.floor(fpx), Math.floor(fpz))] ? idx(Math.floor(fpx), Math.floor(fpz)) : -1;
+  return { rot, rect: [x0, y0, x1, y1], snapped: true, turned: { cells, ang: Math.atan2(fx, fz), cx, cz, w: W, d: D, front } };
+}
+
 // Where the building goes for a cursor cell. With auto on, it looks a couple of cells around
 // the cursor for a spot whose front is flush against a road (free spots first, then the
-// fewest turns away from the direction you picked, then the closest to the cursor).
-export function bestPlacement(state, def, cx, cy, preferRot, auto = true) {
+// fewest turns away from the direction you picked, then the closest to the cursor); beside a
+// road at an angle it turns to face it (see turnedPlacement).
+export function bestPlacement(state, def, cx, cy, preferRot, auto = true, p = null) {
   if (!auto) return { rot: preferRot, rect: plopRect(def, cx, cy, preferRot), snapped: false };
+  if (p) { const t = turnedPlacement(state, def, p.x, p.z); if (t) return t; }
   let best = null;
   for (let r = 0; r < 4; r++) {
     const rot = (preferRot + r) % 4;
@@ -111,13 +151,14 @@ registerTool('plop', {
   hover(app, t, p) {
     const { state, ctx } = app;
     const before = t.place?.rot;
-    const place = bestPlacement(state, t.def, p.cx, p.cy, t.rot ?? 1, t.auto !== false);
+    // (the area-built tools that borrow this one keep to the grid)
+    const place = bestPlacement(state, t.def, p.cx, p.cy, t.rot ?? 1, t.auto !== false, t.blocker || t.place_fn ? null : p);
     t.place = place;
     const [x0, y0, x1, y1] = place.rect;
-    const reason = (t.blocker || serviceBlocker)(state, ctx, t.def, x0, y0, x1, y1, place.rot);
+    const reason = (t.blocker || serviceBlocker)(state, ctx, t.def, x0, y0, x1, y1, place.rot, place.turned?.cells);
     const afford = state.options.unlimitedMoney || state.money >= t.def.cost;
-    const cx = Math.min(N - 1, Math.max(0, Math.floor((x0 + x1 + 1) / 2))), cy = Math.min(N - 1, Math.max(0, Math.floor((y0 + y1 + 1) / 2)));
-    app.buildings.showGhost(t.def, place.rect, place.rot, !reason && afford, cellHeight(state, cx, cy));
+    const cx = Math.min(N - 1, Math.max(0, Math.floor(place.turned?.cx ?? (x0 + x1 + 1) / 2))), cy = Math.min(N - 1, Math.max(0, Math.floor(place.turned?.cz ?? (y0 + y1 + 1) / 2)));
+    app.buildings.showGhost(t.def, place.rect, place.rot, !reason && afford, cellHeight(state, cx, cy), place.turned);
     if (before !== place.rot) app.tools.renderOptions();
     const ring = t.def.radius || t.def.boostRadius || t.def.ring || (t.def.parking && parkReach(t.def));
     if (ring) app.preview.setRing((x0 + x1 + 1) / 2, (y0 + y1 + 1) / 2, ring, '#ffffff');
@@ -133,7 +174,7 @@ registerTool('plop', {
   up(app, t, a, b) {
     if (!t.place) return;
     const [x0, y0, x1, y1] = t.place.rect;
-    const res = (t.place_fn || placeService)(app.state, app.ctx, t.def, x0, y0, x1, y1, t.place.rot);
+    const res = (t.place_fn || placeService)(app.state, app.ctx, t.def, x0, y0, x1, y1, t.place.rot, t.place.turned || {});
     if (res.error) app.toast(res.error, 'bad');
     else if (t.once) app.tools.set({ kind: 'select' });
     this.hover(app, t, b);

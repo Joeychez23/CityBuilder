@@ -9,11 +9,11 @@
 // rebuilds it where it stood once the site is cleared (grown buildings for free; for a city
 // service, insurance pays half and the city the rest), and the rebuild goes through
 // construction like anything else.
-import { idx, clamp } from '../core/grid.js';
+import { clamp } from '../core/grid.js';
 import { bus } from '../core/events.js';
 import { STEP_MINUTES } from './simulation.js';
 import { updateCapacity } from './growth.js';
-import { createBuilding, spend, footprintFree } from './build.js';
+import { createBuilding, spend, bldCells } from './build.js';
 import { defFor } from '../data/registry.js';
 import { ZONES } from '../data/zones.js';
 import { rng } from '../core/rng.js';
@@ -129,6 +129,8 @@ export function rememberRuin(state, b, why) {
   state.rebuilds.push({
     kind: b.kind, type: b.type, x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1, rot: b.rot, level: b.level || 1,
     name: b.name || null, setback: b.setback || 0, plot: b.plot || 0, zone: b.kind === 'zone' ? b.def.id : 0,
+    // (turned to face a road at an angle: the cells it stood on, and how it stood)
+    ...(b.cells ? { cells: [...b.cells], ang: b.ang, cx: b.cx, cz: b.cz, w: b.w, d: b.d, blk: b.blk, front: b.front } : {}),
     since: state.time.day * 1440 + state.time.minutes, why,
   });
 }
@@ -137,7 +139,7 @@ export function rememberRuin(state, b, why) {
 // Cells held for rebuilding (nothing else grows there meanwhile)
 export function reservedCells(state) {
   const set = new Set();
-  for (const r of state.rebuilds || []) for (let y = r.y0; y <= r.y1; y++) for (let x = r.x0; x <= r.x1; x++) set.add(idx(x, y));
+  for (const r of state.rebuilds || []) for (const i of bldCells(r)) set.add(i);
   return set;
 }
 
@@ -149,19 +151,19 @@ function rebuildStep(state, ctx) {
     const def = defFor(r.kind, r.type) || (r.kind === 'zone' ? ZONES[r.type] : null);
     if (!def) continue;
     // something else was built there in the meantime: nothing to rebuild
-    if (!footprintFree(state, r.x0, r.y0, r.x1, r.y1, 0, false)) continue;
+    const cells = bldCells(r);
+    if (cells.some((i) => state.bld[i] || state.road[i] || state.water[i])) continue;
     if (r.kind === 'zone' && !def.signature) {
-      let zoned = true;
-      for (let y = r.y0; y <= r.y1 && zoned; y++) for (let x = r.x0; x <= r.x1; x++) if (state.zone[idx(x, y)] !== r.zone) { zoned = false; break; }
-      if (!zoned) continue; // re-zoned: the owner doesn't rebuild
+      if (cells.some((i) => state.zone[i] !== r.zone)) continue; // re-zoned: the owner doesn't rebuild
     } else if (r.kind !== 'zone') {
       // the city pays half (insurance covers the rest); without the money it waits
       const share = Math.round((def.cost || 0) * 0.5);
       if (!def.free && !spend(state, share, def.cat || 'construction')) { keep.push(r); continue; }
     }
+    const turned = r.cells ? { cells: r.cells, ang: r.ang, cx: r.cx, cz: r.cz, w: r.w, d: r.d, blk: r.blk, front: r.front } : {};
     const b = createBuilding(state, r.kind, def, r.x0, r.y0, r.x1, r.y1, r.rot, r.kind === 'zone'
-      ? { level: r.level, setback: r.setback, plot: r.plot, name: r.name || undefined }
-      : { stored: 0, load: 0, staff: def.workers || 0, name: r.name || undefined });
+      ? { level: r.level, setback: r.setback, plot: r.plot, name: r.name || undefined, ...turned }
+      : { stored: 0, load: 0, staff: def.workers || 0, name: r.name || undefined, ...turned });
     if (r.kind === 'zone') updateCapacity(b);
     else { b.jobs = def.workers || 0; bus.emit('services:changed'); }
     startConstruction(state, b);

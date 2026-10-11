@@ -81,7 +81,9 @@ export function deserialize(text) {
     b.def = defFor(b.kind, b.type);
     if (b.def) continue;
     console.warn(`Removed a building of a type that no longer exists: ${b.kind}/${b.type}`);
-    for (let y = b.y0; y <= b.y1; y++) for (let x = b.x0; x <= b.x1; x++) if (state.bld?.[y * N + x] === b.id) state.bld[y * N + x] = 0;
+    const cells = b.cells || [];
+    if (!b.cells) for (let y = b.y0; y <= b.y1; y++) for (let x = b.x0; x <= b.x1; x++) cells.push(y * N + x);
+    for (const i of cells) if (state.bld?.[i] === b.id) state.bld[i] = 0;
     state.buildings.delete(b.id);
   }
   // Core layers must exist; newer layers default to empty for older saves (the per-cell road

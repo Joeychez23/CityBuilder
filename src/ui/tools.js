@@ -1,11 +1,13 @@
 // Mouse/keyboard input for the active tool. Each tool kind is a handler object with
 // optional hover/down/drag/up/frame/options callbacks; more kinds are registered by
 // other modules via registerTool().
-import { idx, inBounds, lCells, N, forRadius, DIRS } from '../core/grid.js';
+import { idx, inBounds, lCells, N, forRadius } from '../core/grid.js';
 import { ROADS, CLASS_NAMES, ROAD_RANK, lanesText, UPGRADES } from '../data/roads.js';
 import { ZONES } from '../data/zones.js';
 import { pickGround } from '../world/picking.js';
-import { planLayer, placeLayer, setZone, canZoneCell, placePlot, plotBlocker, bulldozeCell, bulldozePreview, terraform, brushCells, isOwned, spend, canAfford, planClearTrees, clearTrees, CLEAR_TREE_COST } from '../sim/build.js';
+import { buildingCells, planLayer, placeLayer, setZone, zoneCells, canZoneStrip, placePlot, plotBlocker, bulldozeCell, bulldozePreview, terraform, brushCells, isOwned, spend, canAfford, planClearTrees, clearTrees, CLEAR_TREE_COST } from '../sim/build.js';
+import { zoneLayout, zoneOf, cellAt, cellsNear, cellsInRect, cellOf } from '../sim/zoneblocks.js';
+import { nearestSeg } from '../sim/roadnet.js';
 import { lineCells } from '../sim/roadsegs.js';
 import { bus } from '../core/events.js';
 import { cellHeight } from '../sim/mapgen.js';
@@ -329,21 +331,18 @@ registerTool('zone', {
     if (!t.mode) t.mode = app.zoneMode && (t.zone || app.zoneMode !== 'lots') ? app.zoneMode : t.zone ? 'marquee' : 'paint';
     app.overlays?.setZoneMode(true);
   },
-  exit(app) { app.overlays?.setZoneMode(false); },
+  exit(app) { app.overlays?.setZoneMode(false); app.zones?.clearPreview(); },
+  // The zone cells (of the strips along the roads) a drag from a to b covers
   cells(app, t, a, b) {
+    const Z = zoneLayout(app.state);
     const mode = t.mode || 'marquee';
-    if (mode === 'marquee') return rectCells(a, b);
-    if (mode === 'paint') {
-      const out = [];
-      forRadius(b.cx + 0.5, b.cy + 0.5, (t.size ?? 1) + 0.5, (x, y) => out.push([x, y]));
-      return out;
-    }
-    return floodZone(app, b.cx, b.cy, t.zone);
+    if (mode === 'marquee') return a === b ? [cellAt(Z, b.x, b.z)].filter(Boolean) : cellsInRect(Z, a.x, a.z, b.x, b.z);
+    if (mode === 'paint') return cellsNear(Z, b.x, b.z, (t.size ?? 1) + 0.6);
+    return floodZone(app, b);
   },
   hover(app, t, p) {
     if (t.mode === 'lots') { this.showLots(app, t, p, p); return; }
-    const cells = (t.mode || 'marquee') === 'marquee' ? [[p.cx, p.cy]] : this.cells(app, t, p, p);
-    this.show(app, t, cells);
+    this.show(app, t, this.cells(app, t, p, p));
     app.tools.showTip(this.roadHint(app, t, p));
   },
   // High-density zones only grow beside a collector or bigger: say so over local streets
@@ -355,26 +354,20 @@ registerTool('zone', {
     return best >= 0 && best < ROAD_RANK[need] ? '<span class="warn">Needs a Medium Road, One-Way Road or bigger in front: high density won\'t grow on local streets</span>' : null;
   },
   show(app, t, cells) {
-    const zonable = app.ctx.zonable;
     const color = t.zone ? ZONES[t.zone].color : '#ff6b5a';
-    app.preview.setCells(cells.filter(([x, y]) => (t.zone ? canZoneCell(app.state, zonable, x, y, t.zone) : app.state.zone[idx(x, y)])).map(([x, y]) => [x, y, color]));
+    app.zones.preview(cells.filter((c) => (t.zone ? canZoneStrip(app.state, c, t.zone) : zoneOf(app.state, c))), color);
   },
   showLots(app, t, a, b) {
     const lots = lotPlan(app, t, a, b);
     const color = ZONES[t.zone].color;
-    const cells = [];
+    const items = [];
     for (const lot of lots) {
-      const [x0, y0, x1, y1] = lot.rect;
-      for (let y = y0; y <= y1; y++) {
-        for (let x = x0; x <= x1; x++) {
-          if (!inBounds(x, y)) continue;
-          const edge = x === x0 || x === x1 || y === y0 || y === y1;
-          const yard = lot.yard.has(idx(x, y));
-          cells.push([x, y, !lot.ok ? '#ff4a3a' : yard ? '#e8f0dc' : edge ? shade(color, 0.72) : color]);
-        }
+      for (const c of lot.cells) {
+        const edge = c.col === lot.col || c.col === lot.col + lot.w - 1 || c.row === lot.d - 1;
+        items.push([c, !lot.ok ? '#ff4a3a' : c.row < lot.setback ? '#e8f0dc' : edge ? shade(color, 0.72) : color]);
       }
     }
-    app.preview.setCells(cells);
+    app.zones.preview(items);
     const ok = lots.filter((l) => l.ok).length;
     const L = app.lots;
     app.tools.showTip(lots.length
@@ -385,17 +378,17 @@ registerTool('zone', {
     if (t.mode === 'lots') { this.showLots(app, t, a, b); return; }
     const cells = this.cells(app, t, a, b);
     this.show(app, t, cells);
-    if ((t.mode || 'marquee') === 'paint') setZone(app.state, app.ctx.zonable, cells, t.zone || 0);
+    if ((t.mode || 'marquee') === 'paint') zoneCells(app.state, cells, t.zone || 0);
   },
   up(app, t, a, b) {
     if (t.mode === 'lots') {
       let n = 0;
-      for (const lot of lotPlan(app, t, a, b)) if (lot.ok) { placePlot(app.state, app.ctx.zonable, lot.rect, lot.rot, Math.min(app.lots.setback, app.lots.d - 1), t.zone); n++; }
+      for (const lot of lotPlan(app, t, a, b)) if (lot.ok) { placePlot(app.state, lot, lot.setback, t.zone); n++; }
       if (!n) app.toast('No room for lots there: they need open land of yours beside a road', 'warn');
       this.showLots(app, t, b, b);
       return;
     }
-    if ((t.mode || 'marquee') !== 'paint') setZone(app.state, app.ctx.zonable, this.cells(app, t, a, b), t.zone || 0);
+    if ((t.mode || 'marquee') !== 'paint') zoneCells(app.state, this.cells(app, t, a, b), t.zone || 0);
     this.hover(app, t, b);
   },
 });
@@ -418,71 +411,63 @@ function lotDiagram(L) {
   </svg><span>${L.w * 8} × ${L.d * 8} m lot${L.setback ? `, building ${L.setback * 8} m back from the street` : ''}</span>`;
 }
 
-// Lots along a road from a drag a → b (straight along the grid). Dragging beside a road lays
-// lots out on that side; dragging along the road itself does both sides.
+// Lots along a road from a drag a → b. Dragging beside a road lays lots out along the zone
+// strip on that side; dragging along the road itself does both sides.
 function lotPlan(app, t, a, b) {
-  const s = app.state, zonable = app.ctx.zonable;
-  if (!zonable || !t.zone) return [];
+  const s = app.state;
+  if (!t.zone) return [];
+  const Z = zoneLayout(s);
   const { w: W, d: D } = app.lots;
   const S = Math.min(app.lots.setback, D - 1);
-  const horizontal = Math.abs(b.cx - a.cx) >= Math.abs(b.cy - a.cy);
-  const len = (horizontal ? Math.abs(b.cx - a.cx) : Math.abs(b.cy - a.cy)) + 1;
-  const sx = horizontal ? Math.sign(b.cx - a.cx) || 1 : 0, sy = horizontal ? 0 : Math.sign(b.cy - a.cy) || 1;
-  const count = Math.max(1, Math.floor(len / W));
-  const perp = horizontal ? [1, 3] : [0, 2];
+  // the column of a strip nearest a point
+  const colNear = (strip, x, z) => {
+    let best = 0, bd = Infinity;
+    for (let c = 0; c < strip.cols; c++) { const d = (strip.x[c] - x) ** 2 + (strip.z[c] - z) ** 2; if (d < bd) { bd = d; best = c; } }
+    return best;
+  };
   const sides = [];
-  if (s.road[idx(a.cx, a.cy)]) for (const d of perp) sides.push({ away: d, base: 1 });
+  const start = cellAt(Z, a.x, a.z);
+  if (start) sides.push({ seg: start.seg, side: start.side, at: start.col });
   else {
-    for (const d of perp) {
-      const rx = a.cx + DIRS[d][0], ry = a.cy + DIRS[d][1];
-      if (inBounds(rx, ry) && s.road[idx(rx, ry)]) { sides.push({ away: (d + 2) % 4, base: 0 }); break; }
-    }
+    const q = nearestSeg(s, a.x, a.z, 0.6, (sg) => ROADS[sg.type].zonable && !sg.br && !sg.tn);
+    if (q) for (const side of [0, 1]) { const st = Z.strips.get(`${q.id}:${side}`); if (st?.cols) sides.push({ seg: q.id, side, at: colNear(st, a.x, a.z) }); }
   }
   const lots = [];
-  for (const { away, base } of sides) {
-    const [ax, ay] = DIRS[away];
+  for (const { seg, side, at } of sides) {
+    const strip = Z.strips.get(`${seg}:${side}`);
+    const end = colNear(strip, b.x, b.z);
+    const dir = Math.sign(end - at) || 1;
+    const count = Math.max(1, Math.floor((Math.abs(end - at) + 1) / W));
     for (let k = 0; k < count; k++) {
-      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-      const yard = new Set();
-      for (let j = 0; j < W; j++) {
-        for (let m = 0; m < D; m++) {
-          const x = a.cx + sx * (k * W + j) + ax * (base + m), y = a.cy + sy * (k * W + j) + ay * (base + m);
-          x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
-          if (m < S && inBounds(x, y)) yard.add(idx(x, y));
-        }
-      }
-      const rect = [x0, y0, x1, y1];
-      const reason = plotBlocker(s, zonable, rect, t.zone);
-      lots.push({ rect, rot: (away + 2) % 4, yard, ok: !reason, reason });
+      const col = dir > 0 ? at + k * W : at - k * W - (W - 1);
+      const lot = { seg, side, col, w: W, d: D, setback: S };
+      const cells = [];
+      for (let j = 0; j < W; j++) for (let r = 0; r < D; r++) { const c = cellOf(Z, seg, side, col + j, r); if (c) cells.push(c); }
+      const reason = plotBlocker(s, lot, t.zone);
+      lots.push({ ...lot, cells, ok: !reason, reason });
     }
   }
   return lots;
 }
 
-// Flood fill for zoning: from the clicked cell through the connected patch of the same zone
-// (or of unzoned land), stopping at roads and at other zones. So re-zoning one patch never
-// spills into the zone next to it.
-function floodZone(app, sx, sy) {
-  const { state, ctx } = app;
-  const z = ctx.zonable;
-  if (!z || !inBounds(sx, sy)) return [];
-  const start = idx(sx, sy);
-  if (z[start] === 0 || z[start] === 255) return [];
-  const same = state.zone[start];
-  const seen = new Set([start]);
+// Flood fill for zoning: from the clicked zone cell through the joined-up patch of the same
+// zone (or of unzoned cells). So re-zoning one patch never spills into the zone next to it.
+function floodZone(app, p) {
+  const { state } = app;
+  const Z = zoneLayout(state);
+  const start = cellAt(Z, p.x, p.z);
+  if (!start || !isOwned(state, start.g % N, (start.g / N) | 0)) return [];
+  const same = zoneOf(state, start);
+  const seen = new Set([start.k]);
   const out = [];
   const q = [start];
   for (let h = 0; h < q.length && out.length < 900; h++) {
-    const i = q[h];
-    const x = i % N, y = (i / N) | 0;
-    out.push([x, y]);
-    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      const nx = x + dx, ny = y + dy;
-      if (!inBounds(nx, ny)) continue;
-      const j = idx(nx, ny);
-      if (seen.has(j) || z[j] === 0 || z[j] === 255 || !isOwned(state, nx, ny) || state.zone[j] !== same) continue;
-      seen.add(j);
-      q.push(j);
+    const c = q[h];
+    out.push(c);
+    for (const o of cellsNear(Z, c.x, c.z, 1.15)) {
+      if (seen.has(o.k) || zoneOf(state, o) !== same || !isOwned(state, o.g % N, (o.g / N) | 0)) continue;
+      seen.add(o.k);
+      q.push(o);
     }
   }
   return out;
@@ -522,8 +507,7 @@ registerTool('bulldoze', {
     if (!e) return null;
     const what = e.building ? (e.building.name || e.building.def.name) : ({ road: ROADS[s.road[i]]?.name || 'road', rail: 'railway', power: 'power line', pipe: 'water pipe', path: 'footpath', subway: 'subway' })[e.what] || e.what;
     const b = e.building;
-    const cells = b ? [] : [[x, y]];
-    if (b) for (let yy = b.y0; yy <= b.y1; yy++) for (let xx = b.x0; xx <= b.x1; xx++) cells.push([xx, yy]);
+    const cells = b ? buildingCells(b) : [[x, y]];
     return { cells, text: `Remove ${b ? '' : 'this piece of '}${what}`, refund: e.refund };
   },
   // Remove the thing at (x, y) (once per cell in a stroke). Returns the refund.

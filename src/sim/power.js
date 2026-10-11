@@ -12,7 +12,7 @@
 // A wire's ends are pylon cells, or "terminals": a road cell with a Power Connector, or a cell
 // of a power plant or battery.
 import { N, idx, inBounds, DIRS } from '../core/grid.js';
-import { isOwned, spend, refund, REFUND_RATE, clearZoneCell } from './build.js';
+import { isOwned, spend, refund, REFUND_RATE, clearZoneCell, bldCells } from './build.js';
 import { UPG, UPGRADES } from '../data/roads.js';
 import { bus } from '../core/events.js';
 import { setCellUpgrade } from './roadnet.js';
@@ -94,9 +94,9 @@ export function planPowerLine(state, fromIdx, tx, ty) {
     const b = state.buildings.get(state.bld[to]);
     const [fx, fy] = cellXY(fromIdx);
     let best = to, bd = 1e9;
-    for (let y = b.y0; y <= b.y1; y++) for (let x = b.x0; x <= b.x1; x++) {
-      const d = Math.hypot(x - fx, y - fy);
-      if (d < bd) { bd = d; best = idx(x, y); }
+    for (const i of bldCells(b)) {
+      const d = Math.hypot((i % N) - fx, ((i / N) | 0) - fy);
+      if (d < bd) { bd = d; best = i; }
     }
     to = best;
     plan.end = 'building';
