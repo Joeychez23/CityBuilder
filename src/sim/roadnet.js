@@ -53,6 +53,7 @@ const bucketKey = (bx, bz) => (bz + 1) * BW + (bx + 1);
 // (the cache is also checked against the network's size and id counter, so it can't go stale
 // even if the network is changed some other way)
 const sigOf = (R) => R.nextId * 1e6 + R.segs.length * 1e3 + R.nodes.length;
+let geoKeep = { R: null, map: new Map() };
 export function rn(state) {
   const R = state.roads;
   if (IX && IX.R === R && IX.ver === ver && IX.sig === sigOf(R)) return IX;
@@ -64,9 +65,16 @@ export function rn(state) {
     at.get(s.b)?.push(s.id);
   }
   IX = { R, ver, sig: sigOf(R), node, seg, at, geo, hash };
+  // (a road whose curve hasn't changed keeps what was worked out for it)
+  if (geoKeep.R !== R) geoKeep = { R, map: new Map() };
+  const keep = new Map();
   for (const s of R.segs) {
     if (!node.has(s.a) || !node.has(s.b)) continue;
-    const g = makeGeo(curveOf(IX, s));
+    const c = curveOf(IX, s);
+    const key = c.join(',');
+    const old = geoKeep.map.get(s.id);
+    const g = old && old.key === key ? old.g : makeGeo(c);
+    keep.set(s.id, { key, g });
     geo.set(s.id, g);
     for (let bz = Math.floor((g.box[1] - 1) / BUCKET); bz <= Math.floor((g.box[3] + 1) / BUCKET); bz++) {
       for (let bx = Math.floor((g.box[0] - 1) / BUCKET); bx <= Math.floor((g.box[2] + 1) / BUCKET); bx++) {
@@ -76,6 +84,7 @@ export function rn(state) {
       }
     }
   }
+  geoKeep.map = keep;
   return IX;
 }
 

@@ -29,9 +29,12 @@ const charOf = (z) => ZC[z] || '0';
 const zoneOfChar = (c) => Math.max(0, ZC.indexOf(c));
 const FINE = 4;          // the road mask: points per cell each way
 const SPACING = 0.8;     // zone cells closer than this overlap
+// points across a cell tested for a road: along it, and out from its road
+const ALONG = [-0.4, 0, 0.4], OUT = [-0.15, 0.2, 0.45];
 
 let L = null, dirty = true;
-bus.on('network:changed', () => { dirty = true; });
+// (pipes and the subway are underground: they don't get in the way)
+bus.on('network:changed', ({ layer } = {}) => { if (layer !== 'pipe' && layer !== 'subway') dirty = true; });
 bus.on('terrain:changed', () => { dirty = true; });
 bus.on('tiles:changed', () => { dirty = true; });
 bus.on('building:add', (b) => { if (b.kind !== 'zone') dirty = true; });
@@ -41,8 +44,11 @@ export const zonesDirty = () => { dirty = true; };
 const owned = (state, x, y) => x >= 0 && y >= 0 && x < N && y < N && state.tiles[((y / TILE) | 0) * TILES + ((x / TILE) | 0)] === 1;
 const zonableSeg = (s) => ROADS[s.type].zonable && !s.br && !s.tn;
 
-// The strips as they are now (worked out again if anything changed)
-export function zoneLayout(state) {
+// The strips as they are now (worked out again if anything changed). stale: the strips as
+// they were last worked out will do (to clear the zoning under something being built, before
+// the change is finished)
+export function zoneLayout(state, { stale = false } = {}) {
+  if (stale && L && L.state === state) return L;
   if (!L || L.state !== state || dirty || L.X !== rn(state)) rebuild(state);
   return L;
 }
@@ -80,7 +86,7 @@ function columns(X, s, side) {
   const e = roadWidth(ROADS[s.type]) / 2;
   const sg = side ? -1 : 1;
   // the length of the line through the first row's middles
-  const n = Math.max(2, Math.ceil(g.len / 0.1));
+  const n = Math.max(2, Math.ceil(g.len / 0.25));
   const ss = new Float32Array(n + 1), ls = new Float32Array(n + 1);
   const p = [0, 0], d = [0, 0];
   let px = 0, pz = 0;
@@ -170,24 +176,31 @@ function rebuild(state) {
       }
     }
   }
-  // what's in the way, cell by cell of the grid
-  const blocked = (gx, gz) => {
-    if (!owned(state, gx, gz)) return true;
-    const i = gz * N + gx;
-    if (state.water[i] || state.power[i] || state.path[i] || (state.rail[i] && !state.railH[i])) return true;
-    const b = state.bld[i] && state.buildings.get(state.bld[i]);
-    return !!(b && b.kind !== 'zone');
-  };
+  // what's in the way, cell by cell of the grid (worked out once: 1 in the way, 2 too steep)
+  const block = new Uint8Array(N * N);
+  for (let gz = 0; gz < N; gz++) {
+    for (let gx = 0; gx < N; gx++) {
+      const i = gz * N + gx;
+      let v = 0;
+      if (!owned(state, gx, gz) || state.water[i] || state.power[i] || state.path[i] || (state.rail[i] && !state.railH[i])) v = 1;
+      else if (state.bld[i]) { const b = state.buildings.get(state.bld[i]); if (b && b.kind !== 'zone') v = 1; }
+      if (!v && cellSlope(state, gx, gz) > maxSlopeAt(state, gx, gz)) v = 2;
+      block[i] = v;
+    }
+  }
+  const blocked = (gx, gz) => gx < 0 || gz < 0 || gx >= N || gz >= N || block[gz * N + gx] === 1;
   // row by row (the first rows of every road first), each road in the order it was built
-  const cells = [], hash = new Map(), strips = new Map();
+  // (the cells by the grid cell under their middle: head[grid cell] -> the last one, next[k] ->
+  // the one before it)
+  const cells = [], head = new Int32Array(N * N).fill(-1), next = [], strips = new Map();
   for (const F of frames) strips.set(`${F.seg}:${F.side}`, { ...F, idx: new Int32Array(F.cols * DEPTH).fill(-1) });
   // (a cell of a strip facing the same way or the opposite way, too close)
   const near = (x, z, nx, nz) => {
     const gx = Math.floor(x), gz = Math.floor(z);
     for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
-      const list = hash.get(gx + dx + (gz + dz) * N);
-      if (!list) continue;
-      for (const k of list) {
+      const x2 = gx + dx, z2 = gz + dz;
+      if (x2 < 0 || z2 < 0 || x2 >= N || z2 >= N) continue;
+      for (let k = head[z2 * N + x2]; k >= 0; k = next[k]) {
         const o = cells[k];
         if ((o.x - x) ** 2 + (o.z - z) ** 2 < SPACING * SPACING && Math.abs(o.nx * nx + o.nz * nz) > 0.5) return true;
       }
@@ -202,27 +215,25 @@ function rebuild(state) {
         if (f.x < 0.5 || f.z < 0.5 || f.x > N - 0.5 || f.z > N - 0.5) continue;
         // (the cell behind it in its own strip has to be there: a strip doesn't jump a gap)
         if (r > 0 && S.idx[c * DEPTH + r - 1] < 0) continue;
+        const gx = Math.floor(f.x), gz = Math.floor(f.z);
+        if (block[gz * N + gx] || near(f.x, f.z, f.nx, f.nz)) continue;
         // (on a road: tested at points across the cell, those on the side toward its own road
         // a little in from the edge, as the road mask is only so fine)
         let bad = false;
-        for (const a of [-0.4, 0, 0.4]) for (const b of [-0.15, 0.2, 0.45]) {
-          if (bad) break;
-          const px = f.x + f.tx * a + f.nx * b, pz = f.z + f.tz * a + f.nz * b;
-          if (onRoad(px, pz)) bad = true;
+        for (let m = 0; m < 9 && !bad; m++) {
+          const a = ALONG[m % 3], b = OUT[(m / 3) | 0];
+          if (onRoad(f.x + f.tx * a + f.nx * b, f.z + f.tz * a + f.nz * b)) bad = true;
         }
-        for (const [a, b] of [[-0.42, -0.42], [0.42, -0.42], [-0.42, 0.42], [0.42, 0.42]]) {
-          if (bad) break;
-          const px = f.x + f.tx * a + f.nx * b, pz = f.z + f.tz * a + f.nz * b;
-          if (blocked(Math.floor(px), Math.floor(pz))) bad = true;
+        for (let m = 0; m < 4 && !bad; m++) {
+          const a = m & 1 ? 0.42 : -0.42, b = m & 2 ? 0.42 : -0.42;
+          if (blocked(Math.floor(f.x + f.tx * a + f.nx * b), Math.floor(f.z + f.tz * a + f.nz * b))) bad = true;
         }
-        const gx = Math.floor(f.x), gz = Math.floor(f.z);
-        if (bad || blocked(gx, gz) || cellSlope(state, gx, gz) > maxSlopeAt(state, gx, gz) || near(f.x, f.z, f.nx, f.nz)) continue;
+        if (bad) continue;
         const k = cells.length;
         cells.push({ k, seg: F.seg, side: F.side, col: c, row: r, x: f.x, z: f.z, nx: f.nx, nz: f.nz, tx: f.tx, tz: f.tz, g: gz * N + gx, gs: null });
         S.idx[c * DEPTH + r] = k;
-        const hk = gx + gz * N;
-        if (!hash.has(hk)) hash.set(hk, []);
-        hash.get(hk).push(k);
+        next.push(head[gz * N + gx]);
+        head[gz * N + gx] = k;
       }
     }
   }
@@ -248,7 +259,7 @@ function rebuild(state) {
   // lots laid out on a strip that changed shape (or on the grid, before the strips) are undone
   // (their cells keep their zone)
   if (state.plots?.length) state.plots = state.plots.filter((p) => p.seg != null && X.seg.has(p.seg) && !reshaped.has(`${p.seg}:${p.side}`));
-  L = { state, X, cells, strips, hash, owner, ver: (L?.ver || 0) + 1 };
+  L = { state, X, cells, strips, head, next, owner, ver: (L?.ver || 0) + 1 };
   dirty = false;
   syncGrid(state);
   bus.emit('zones:layout');
@@ -278,6 +289,12 @@ export function zonableGrid(state) {
   return out;
 }
 
+// The zone cells whose middles are in grid cell (x, z)
+function* inCell(Z, x, z) {
+  if (x < 0 || z < 0 || x >= N || z >= N) return;
+  for (let k = Z.head[z * N + x]; k >= 0; k = Z.next[k]) yield k;
+}
+
 // The zone cell at column c, row r of a strip (or null)
 export function cellOf(Z, seg, side, c, r) {
   const S = Z.strips.get(`${seg}:${side}`);
@@ -290,8 +307,7 @@ export function cellsNear(Z, x, z, r) {
   const out = [];
   const R = Math.ceil(r) + 1;
   for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
-    const list = Z.hash.get(Math.floor(x) + dx + (Math.floor(z) + dz) * N);
-    if (list) for (const k of list) { const c = Z.cells[k]; if ((c.x - x) ** 2 + (c.z - z) ** 2 <= r * r) out.push(c); }
+    for (const k of inCell(Z, Math.floor(x) + dx, Math.floor(z) + dz)) { const c = Z.cells[k]; if ((c.x - x) ** 2 + (c.z - z) ** 2 <= r * r) out.push(c); }
   }
   return out;
 }
@@ -308,9 +324,7 @@ export function cellsInRect(Z, x0, z0, x1, z1) {
   const out = [];
   for (let gz = Math.floor(Math.min(z0, z1)) - 1; gz <= Math.floor(Math.max(z0, z1)) + 1; gz++) {
     for (let gx = Math.floor(Math.min(x0, x1)) - 1; gx <= Math.floor(Math.max(x0, x1)) + 1; gx++) {
-      const list = Z.hash.get(gx + gz * N);
-      if (!list) continue;
-      for (const k of list) {
+      for (const k of inCell(Z, gx, gz)) {
         const c = Z.cells[k];
         if (c.x >= Math.min(x0, x1) && c.x <= Math.max(x0, x1) && c.z >= Math.min(z0, z1) && c.z <= Math.max(z0, z1)) out.push(c);
       }
@@ -324,8 +338,7 @@ export function cellsOnGrid(Z, gridCells) {
   for (const i of gridCells) {
     const k = Z.owner[i];
     if (k >= 0) out.add(Z.cells[k]);
-    const list = Z.hash.get(i);
-    if (list) for (const j of list) out.add(Z.cells[j]);
+    for (const j of inCell(Z, i % N, (i / N) | 0)) out.add(Z.cells[j]);
   }
   return [...out];
 }

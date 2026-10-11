@@ -20,7 +20,7 @@ export const isOwned = (state, x, y) => inBounds(x, y) && state.tiles[((y / TILE
 
 // Something is built on cell i: its zoning (and any lot laid out over it) goes
 export function clearZoneCell(state, i) {
-  const Z = zoneLayout(state);
+  const Z = zoneLayout(state, { stale: true });
   const cells = cellsOnGrid(Z, [i]).filter((c) => zoneOf(state, c));
   for (const c of cells) { const p = plotOfCell(state, c); if (p) dissolvePlot(state, p.id); }
   if (cells.length) paintCells(state, cells, 0);
@@ -142,7 +142,7 @@ export function zoneCells(state, cells, zoneId) {
     if (p) dissolvePlot(state, p.id);
   }
   const n = paintCells(state, change, zoneId);
-  if (n) bus.emit('zones:changed', { count: n });
+  if (n) bus.emit('zones:changed', { count: n, cells: change });
   return n;
 }
 // (by grid cells: the zone cells over them)

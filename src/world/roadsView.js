@@ -2,12 +2,13 @@
 // curve: the kerb-and-pavement base (an embankment skirt on the ground, a deck on a bridge),
 // the asphalt on top, and its lines. Where roads meet, their ends are cut back and the gap
 // filled with one surface whose corners are rounded from one road's kerb to the next; a road
-// that ends gets a round end. Raised roads get girders, railings and piers. Everything is
-// built into one mesh, coloured per vertex, so info views can recolour each road.
+// that ends gets a round end. Raised roads get girders, railings and piers. It's all built in
+// chunks of the map (a change rebuilds only the chunks it touches), coloured per vertex so info
+// views can recolour each road.
 import * as THREE from 'three';
 import { N, clamp } from '../core/grid.js';
 import { ROADS, UPG } from '../data/roads.js';
-import { rn, segY, nodeY, leaveDir, groundAt, profileAt, openAt, nearestSeg } from '../sim/roadnet.js';
+import { rn, segY, nodeY, leaveDir, groundAt, profileAt, profileOf, openAt, nearestSeg } from '../sim/roadnet.js';
 import { bez, bezTan, tAtS, arcTable } from '../sim/roadgeom.js';
 import { chainCells } from '../sim/roadraster.js';
 import { BRIDGE_STYLE } from './networksView.js';
@@ -62,9 +63,10 @@ export function createRoadsView(view, state) {
   const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, side: THREE.DoubleSide });
   // (lines are pulled toward the camera in the depth test so they never flicker into the asphalt)
   const lineMat = new THREE.MeshBasicMaterial({ vertexColors: true, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2, side: THREE.DoubleSide });
-  let mesh = null, lines = null;
   const rv = { dirty: true, roadColorFn: null };
-  let paint = []; // [first vertex, vertex count, seg id] of each piece of asphalt (for recolouring)
+  // the chunk being built: [first vertex, vertex count, seg id] of each piece of its asphalt
+  // (for recolouring)
+  let paint = [];
 
   function roadColor(sid) {
     const X = rn(state);
@@ -371,25 +373,44 @@ export function createRoadsView(view, state) {
 
   // tunnels, seen while you look underground
   const tubeMat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.55, depthTest: false, depthWrite: false, side: THREE.DoubleSide });
-  let tubes = null, underground = false;
-  rv.setUnderground = (on) => { underground = on; if (tubes) tubes.visible = on; };
+  let underground = false;
+  rv.setUnderground = (on) => { underground = on; for (const c of chunks.values()) if (c.tubes) c.tubes.visible = on; };
 
-  rv.rebuild = () => {
-    for (const m of [mesh, lines, tubes]) if (m) { view.scene.remove(m); m.geometry.dispose(); }
-    mesh = lines = tubes = null;
-    paint = [];
-    const X = rn(state);
+  // ------------------------------------------------------------- chunks
+  // The roads are built in square chunks of the map, each with its own meshes, so a change
+  // rebuilds only the chunks it touches: a chunk is rebuilt when anything drawn in it, or near
+  // enough to change how it's drawn (the roads meeting at its junctions, a road passing under
+  // one of its bridges), has changed.
+  const CH = 32, CN = Math.ceil(N / CH);
+  const chunks = new Map(); // chunk -> { sig, mesh, lines, tubes, paint }
+  let filterGen = 0;
+  const chunkAt = (x, z) => clamp(Math.floor(z / CH), 0, CN - 1) * CN + clamp(Math.floor(x / CH), 0, CN - 1);
+  function chunksNear(x0, z0, x1, z1, out) {
+    for (let cz = clamp(Math.floor(z0 / CH), 0, CN - 1); cz <= clamp(Math.floor(z1 / CH), 0, CN - 1); cz++) {
+      for (let cx = clamp(Math.floor(x0 / CH), 0, CN - 1); cx <= clamp(Math.floor(x1 / CH), 0, CN - 1); cx++) out(cz * CN + cx);
+    }
+  }
+  // what a road's drawing depends on, as text
+  function segSig(s, g, trims) {
+    const prof = profileOf(state, s.id);
+    let h = 0;
+    for (let k = 0; k < prof.hs.length; k++) h += prof.hs[k] * ((k % 7) + 1);
+    return `${s.id}:${s.a}:${s.b}:${s.type}:${s.k.join(',')}:${s.br ? 1 : 0}${s.tn ? 1 : 0}:${s.upg || 0}:${s.style || ''}:${(trims.get(`${s.id}:${s.a}`) || 0).toFixed(3)}:${(trims.get(`${s.id}:${s.b}`) || 0).toFixed(3)}:${h.toFixed(2)}`;
+  }
+  function disposeChunk(c) {
+    for (const m of [c.mesh, c.lines, c.tubes]) if (m) { view.scene.remove(m); m.geometry.dispose(); }
+  }
+  function buildChunk(X, trims, shown, d, sig) {
+    const c = { sig, mesh: null, lines: null, tubes: null, paint: [] };
+    paint = c.paint;
     const B = new Builder(), L = new Builder();
-    const { trims, shapes } = junctionLayout(state);
-    // (the time-lapse shows only the roads there were on the day it's at)
-    const shown = (sid) => !rv.filter || rv.filter(X.seg.get(sid));
-    for (const s of X.seg.values()) {
-      if (!X.geo.has(s.id) || !shown(s.id)) continue;
+    for (const s of d.segs) {
+      if (!shown(s.id)) continue;
       drawSegment(B, X, s, trims);
       drawLines(L, X, s, trims);
     }
     const kerbHalf = (e) => e.w, asphaltHalf = (e) => e.a;
-    for (const sh of shapes) {
+    for (const sh of d.shapes) {
       if (!sh.ends.every((e) => shown(e.id))) continue;
       // the junction takes the colours of its biggest road
       const top = sh.ends.reduce((a, e) => (ROADS[X.seg.get(e.id).type].capacity > ROADS[X.seg.get(a.id).type].capacity ? e : a), sh.ends[0]);
@@ -411,43 +432,84 @@ export function createRoadsView(view, state) {
         B.box(sh.n.x, g - 0.2, sh.n.z, 0.4, nodeY(state, sh.n) - 0.2, 0.4, 0, PIER_C);
       }
     }
-    for (const n of X.node.values()) if (n.out && shown(X.at.get(n.id)?.[0])) drawOutside(B, X, n);
+    for (const n of d.outs) if (shown(X.at.get(n.id)?.[0])) drawOutside(B, X, n);
+    // tunnels, seen while you look underground
     const T = new Builder(), tc = new THREE.Color('#ffb84f');
-    for (const sg of X.seg.values()) {
+    for (const sg of d.segs) {
       const g = X.geo.get(sg.id);
       if (!sg.tn || !g?.portals?.length) continue;
       const a = g.portals.length === 2 ? g.portals[0] : 0, b = g.portals.length === 2 ? g.portals[1] : g.len;
       if (b - a > 0.2) strip(T, stations(X, sg.id, a, b), 0, roadWidth(ROADS[sg.type]) * 0.8, 0.1, tc);
     }
-    if (T.n) { tubes = new THREE.Mesh(T.geometry(), tubeMat); tubes.renderOrder = 12; tubes.visible = underground; view.scene.add(tubes); }
+    if (T.n) { c.tubes = new THREE.Mesh(T.geometry(), tubeMat); c.tubes.renderOrder = 12; c.tubes.visible = underground; view.scene.add(c.tubes); }
     if (B.n) {
-      mesh = new THREE.Mesh(B.geometry(), mat);
-      mesh.receiveShadow = true;
-      mesh.castShadow = false;
-      view.scene.add(mesh);
+      c.mesh = new THREE.Mesh(B.geometry(), mat);
+      c.mesh.receiveShadow = true;
+      c.mesh.castShadow = false;
+      c.mesh.visible = rv.visible !== false;
+      view.scene.add(c.mesh);
     }
     if (L.n) {
-      lines = new THREE.Mesh(L.geometry(), lineMat);
-      lines.renderOrder = 1;
-      view.scene.add(lines);
+      c.lines = new THREE.Mesh(L.geometry(), lineMat);
+      c.lines.renderOrder = 1;
+      c.lines.visible = rv.visible !== false;
+      view.scene.add(c.lines);
+    }
+    return c;
+  }
+
+  rv.rebuild = () => {
+    const X = rn(state);
+    const { trims, shapes } = junctionLayout(state);
+    // (the time-lapse shows only the roads there were on the day it's at)
+    const shown = (sid) => !rv.filter || rv.filter(X.seg.get(sid));
+    const sigs = new Map(), draws = new Map();
+    const sigIn = (key, text) => { let a = sigs.get(key); if (!a) sigs.set(key, (a = [])); a.push(text); };
+    const drawIn = (key) => { let d = draws.get(key); if (!d) draws.set(key, (d = { segs: [], shapes: [], outs: [] })); return d; };
+    const p = [0, 0];
+    for (const s of X.seg.values()) {
+      const g = X.geo.get(s.id);
+      if (!g) continue;
+      const text = segSig(s, g, trims) + (shown(s.id) ? '' : '-');
+      chunksNear(g.box[0] - 1.5, g.box[1] - 1.5, g.box[2] + 1.5, g.box[3] + 1.5, (key) => sigIn(key, text));
+      bez(g.c, 0.5, p);
+      drawIn(chunkAt(p[0], p[1])).segs.push(s);
+    }
+    for (const sh of shapes) {
+      const n = sh.n;
+      const text = `n${n.id}:${n.x.toFixed(3)},${n.z.toFixed(3)}:${n.elev || 0}:${n.ctrl || ''}:${sh.ends.map((e) => `${e.id}/${e.trim.toFixed(3)}`).join(',')}`;
+      chunksNear(n.x - 1.5, n.z - 1.5, n.x + 1.5, n.z + 1.5, (key) => sigIn(key, text));
+      drawIn(chunkAt(n.x, n.z)).shapes.push(sh);
+    }
+    for (const n of X.node.values()) if (n.out) drawIn(chunkAt(n.x, n.z)).outs.push(n);
+    // rebuild the chunks whose roads changed; drop the ones left empty
+    for (const key of new Set([...sigs.keys(), ...chunks.keys()])) {
+      const sig = sigs.has(key) ? `${filterGen}#${sigs.get(key).join('|')}` : null;
+      const old = chunks.get(key);
+      if (old && old.sig === sig) continue;
+      if (old) disposeChunk(old);
+      if (!sig) { chunks.delete(key); continue; }
+      chunks.set(key, buildChunk(X, trims, shown, draws.get(key) || { segs: [], shapes: [], outs: [] }, sig));
     }
     rv.dirty = false;
   };
 
   // Cheap recolour of the asphalt only (traffic info view, snow, condition)
   rv.recolorRoads = () => {
-    if (!mesh) return;
-    const attr = mesh.geometry.getAttribute('color');
-    for (const [first, count, sid] of paint) {
-      const c = roadColor(sid);
-      for (let k = first; k < first + count; k++) attr.setXYZ(k, c.r, c.g, c.b);
+    for (const c of chunks.values()) {
+      if (!c.mesh) continue;
+      const attr = c.mesh.geometry.getAttribute('color');
+      for (const [first, count, sid] of c.paint) {
+        const k = roadColor(sid);
+        for (let j = first; j < first + count; j++) attr.setXYZ(j, k.r, k.g, k.b);
+      }
+      attr.needsUpdate = true;
     }
-    attr.needsUpdate = true;
   };
   rv.setRoadColorFn = (fn) => { rv.roadColorFn = fn; rv.recolorRoads(); };
   // Draw only the roads fn(segment) says (null: all of them)
-  rv.setFilter = (fn) => { rv.filter = fn; rv.dirty = true; };
-  rv.setVisible = (v) => { if (mesh) mesh.visible = v; if (lines) lines.visible = v; };
+  rv.setFilter = (fn) => { rv.filter = fn; filterGen++; rv.dirty = true; };
+  rv.setVisible = (v) => { rv.visible = v; for (const c of chunks.values()) { if (c.mesh) c.mesh.visible = v; if (c.lines) c.lines.visible = v; } };
 
   // ------------------------------------------------------------- tool ghost
   // The road a tool is about to build, see-through: items are
