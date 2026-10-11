@@ -15,6 +15,7 @@ import { N, idx, inBounds, DIRS } from '../core/grid.js';
 import { isOwned, spend, refund, REFUND_RATE, clearZoneCell } from './build.js';
 import { UPG, UPGRADES } from '../data/roads.js';
 import { bus } from '../core/events.js';
+import { setCellUpgrade } from './roadnet.js';
 
 export const PYLON_COST = 80;
 export const SPAN_COST = 6; // per cell of wire
@@ -164,7 +165,7 @@ export function placePylon(state, x, y, ctx = null) {
 export function buildPowerLine(state, plan) {
   if (!plan.ok || !spend(state, plan.cost, 'electricity')) return false;
   for (const i of plan.pylons) { state.power[i] = 1; clearZoneCell(state, i); state.tree[i] = 0; }
-  if (plan.connector != null) state.roadUpg[plan.connector] |= UPG.POWER;
+  if (plan.connector != null) setCellUpgrade(state, plan.connector, UPG.POWER, true, { silent: true });
   state.powerSpans.push(...plan.spans);
   bus.emit('network:changed', { layer: 'power' });
   if (plan.connector != null) bus.emit('network:changed', { layer: 'road' });
@@ -212,7 +213,7 @@ export function addLegacyConnectors(state) {
       const nx = x + dx, ny = y + dy;
       if (!inBounds(nx, ny)) continue;
       const j = idx(nx, ny);
-      if (state.road[j] && !state.bridgeH[j]) { state.roadUpg[j] |= UPG.POWER; n++; break; }
+      if (state.road[j] && !state.bridgeH[j]) { setCellUpgrade(state, j, UPG.POWER, true, { silent: true }); n++; break; }
     }
   }
   return n;

@@ -6,23 +6,24 @@ import '@fontsource/ibm-plex-mono/latin-600.css';
 import '@fontsource/instrument-serif/latin-400.css';
 import { createState } from './core/state.js';
 import { bus } from './core/events.js';
-import { generateMap, applyCustomMap, addPowerConnection, recomputeWater, bridgeConnections } from './sim/mapgen.js';
-import { gradeAlongSegment } from './sim/grade.js';
-import { isOwned } from './sim/build.js';
-import { bridgeWaterRuns, migrateRoadNodes, reshapeOverpasses } from './sim/bridges.js';
+import { generateMap, applyCustomMap, addPowerConnection } from './sim/mapgen.js';
+import { bridgeWaterRuns } from './sim/bridges.js';
+import { commitRoads } from './sim/roadnet.js';
 import { createScene } from './world/scene.js';
 import { N } from './core/grid.js';
 import { createTerrainView } from './world/terrainView.js';
 import { createBuildingsView } from './world/buildingsView.js';
 import { createNetworksView } from './world/networksView.js';
+import { createRoadsView } from './world/roadsView.js';
 import { createTreesView } from './world/treesView.js';
 import { createOverlays } from './world/overlays.js';
 import { createPreview } from './world/preview.js';
 import { createPowerView } from './world/powerView.js';
-import { migratePowerLines, addLegacyConnectors } from './sim/power.js';
+import { migratePowerLines } from './sim/power.js';
 import { createSimulation, createContext, registerSystem, hourOf, seasonOf } from './sim/simulation.js';
 import { growthStep } from './sim/growth.js';
 import { createTools } from './ui/tools.js';
+import './ui/toolsRoad.js';
 import './ui/toolsExtra.js';
 import './ui/toolsPower.js';
 import './ui/categories.js';
@@ -54,52 +55,22 @@ function startGame(state, isNew) {
   app.terrain = createTerrainView(view, state);
   app.buildings = createBuildingsView(view, state);
   app.networks = createNetworksView(view, state);
+  app.roads = createRoadsView(view, state);
+  // (the info views and traffic recolour roads through the networks view: pass it on)
+  for (const k of ['setRoadColorFn', 'recolorRoads']) {
+    const own = app.networks[k];
+    app.networks[k] = (...a) => { own(...a); app.roads[k](...a); };
+  }
   app.trees = createTreesView(view, state);
   app.overlays = createOverlays(app);
   app.preview = createPreview(view, state);
   app.power = createPowerView(view, state);
   if (!isNew) {
-    for (const layer of ['road', 'rail', 'path']) bridgeWaterRuns(state, layer);
+    // the per-cell road layers aren't saved: they're worked out from the road network
+    commitRoads(state, { silent: true });
+    for (const layer of ['rail', 'path']) bridgeWaterRuns(state, layer);
     migratePowerLines(state);
-    addPowerConnection(state); // older cities get the outside power line too
-    if ((state.version || 2) < 3) { addLegacyConnectors(state); state.version = 3; }
-    if (state.version < 4) { migrateRoadNodes(state); state.version = 4; }
-    if (state.version < 5) {
-      for (const sg of state.roadSegs || []) gradeAlongSegment(state, sg);
-      recomputeWater(state);
-      app.terrain.updateHeights();
-      state.version = 5;
-    }
-    if (state.version < 6) {
-      // road off your land is now kept up by the region: it starts out mended
-      for (let i = 0; i < N * N; i++) if (state.road[i] && !isOwned(state, i % N, (i / N) | 0)) state.roadCond[i] = 1;
-      // the old flat bridges on the outside highway and railway, with a sudden ramp at each
-      // end, are rebuilt like the player's own (any that already meet that are kept)
-      if (bridgeConnections(state, { onlyBad: true })) {
-        recomputeWater(state);
-        app.terrain.updateHeights();
-        bus.emit('network:changed', { layer: 'road' });
-        bus.emit('network:changed', { layer: 'rail' });
-      }
-      state.version = 6;
-    }
-    if (state.version < 7) {
-      // forest used to grow back over railway track and footpaths: clear it off them
-      let cleared = 0;
-      for (let i = 0; i < N * N; i++) {
-        if (!state.rail[i] && !state.path[i]) continue;
-        if (state.tree[i]) cleared++;
-        state.tree[i] = 0;
-        state.forestMax[i] = 0;
-      }
-      if (cleared) bus.emit('trees:changed');
-      state.version = 7;
-    }
-    if (state.version < 8) {
-      // overpasses came to a peak over the road below: they level off over it now
-      if (reshapeOverpasses(state)) bus.emit('network:changed', { layer: 'road' });
-      state.version = 8;
-    }
+    addPowerConnection(state);
   }
   app.sim = createSimulation(state, ctx);
   app.sim.refreshNetworks();
@@ -148,7 +119,7 @@ function startGame(state, isNew) {
   bus.on('building:add', (b) => { app.buildings.add(b); app.overlays.dirty = true; if (plant(b)) app.power.dirty = true; });
   bus.on('building:remove', (b) => { app.buildings.remove(b); app.overlays.dirty = true; if (plant(b)) app.power.dirty = true; });
   bus.on('building:changed', (b) => { app.buildings.refresh(b); if (plant(b)) app.power.dirty = true; });
-  bus.on('network:changed', () => { app.networks.dirty = true; app.trees.dirty = true; app.overlays.dirty = true; app.power.dirty = true; });
+  bus.on('network:changed', (e) => { app.networks.dirty = true; if (!e || e.layer === 'road') app.roads.dirty = true; app.trees.dirty = true; app.overlays.dirty = true; app.power.dirty = true; });
   bus.on('network:recomputed', () => { app.overlays.dirty = true; });
   bus.on('zones:changed', () => { app.overlays.dirty = true; });
   bus.on('trees:changed', () => { app.trees.dirty = true; });
@@ -180,6 +151,7 @@ function startGame(state, isNew) {
       app.terrain.updateHeights();
       app.features?.climate?.recolorTerrain?.();
       app.networks.dirty = true;
+      app.roads.dirty = true;
       app.power.dirty = true;
       app.trees.dirty = true;
       app.overlays.dirty = true;
@@ -189,6 +161,7 @@ function startGame(state, isNew) {
     app.trees.setSeason(seasonOf(state));
     app.buildings.update();
     app.networks.update();
+    app.roads.update();
     app.power.update();
     app.trees.update(now);
     app.overlays.update();
@@ -217,14 +190,21 @@ function newGame(map, options) {
 const hasSave = (() => { try { return !!localStorage.getItem(SAVE_KEY); } catch { return false; } })();
 
 async function loadFrom(text, cloudId = null) {
-  const { unpack } = await import('./sim/save.js');
+  const { unpack, LegacyCityError } = await import('./sim/save.js');
   try {
     const state = await unpack(text);
     if (cloudId) state.cloudId = cloudId;
     startGame(state, false);
   } catch (err) {
-    console.error(err);
-    alert(`Couldn't load that city: ${err.message}`);
+    if (err instanceof LegacyCityError) {
+      // an old city: kept (never deleted), and offered as a download on the start screen
+      const { keepLegacy, nameOf } = await import('./sim/legacy.js');
+      await keepLegacy(text, await nameOf(text)).catch((e) => console.warn(e));
+      alert(`${err.message} You can download it from the start screen.`);
+    } else {
+      console.error(err);
+      alert(`Couldn't load that city: ${err.message}`);
+    }
     location.reload();
   }
 }
@@ -265,11 +245,13 @@ if (pending) {
   if (params.has('demo')) import('./dev/demoCity.js').then((m) => m.buildDemo(window.city));
   if (params.has('stress')) import('./dev/stressCity.js').then((m) => { window.__stress = m.buildStress(window.city, { days: +params.get('stress') || 7, road: +params.get('road') || 4 }); });
 } else {
-  showMenu({
-    hasSave,
+  // the city saved in this browser may be from before the road network update: it's kept
+  // (see sim/legacy.js) and can't be continued
+  import('./sim/legacy.js').then((m) => m.checkSavedCity()).catch(() => false).then((legacy) => showMenu({
+    hasSave: hasSave && !legacy,
     onNew: newGame,
     onContinue: () => loadFrom(localStorage.getItem(SAVE_KEY)),
     onLoadFile: loadFrom,
     onLoadCloud: (city) => loadFrom(city.data, city.id),
-  });
+  }));
 }

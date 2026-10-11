@@ -5,6 +5,7 @@ import { makeNoise } from '../core/noise.js';
 import { makeRng } from '../core/rng.js';
 import { gradeCells } from './grade.js';
 import { bridgeWaterRuns, bridgeConnection, bridgeLayers } from './bridges.js';
+import { planRoad, buildRoad, emptyRoads, commitRoads, rn } from './roadnet.js';
 
 const smooth = (e0, e1, x) => {
   const t = clamp((x - e0) / (e1 - e0), 0, 1);
@@ -178,20 +179,21 @@ export function generateMap(state, map) {
 
   carveHighway(state);
   recomputeWater(state);
+  buildHighway(state);
   generateResources(state, map, noise, rnd);
   setupStartTiles(state);
   startResources(state, map, noise, rnd);
   setupConnections(state, map);
   addPowerConnection(state);
-  // Grade the pre-built highway and railway into the terrain like player-built roads
+  // Grade the pre-built railway into the terrain like player-built track (the highway was
+  // graded as it was built)
   const cellsOf = (layer) => { const out = []; for (let i = 0; i < N * N; i++) if (layer[i]) out.push([i % N, (i / N) | 0]); return out; };
-  gradeCells(state, state.road, cellsOf(state.road));
   gradeCells(state, state.rail, cellsOf(state.rail));
   recomputeWater(state);
   bridgeConnections(state);
   // (anything left on the water that couldn't be planned still gets a deck)
-  bridgeWaterRuns(state, 'road');
   bridgeWaterRuns(state, 'rail');
+  commitRoads(state, { silent: true });
 }
 
 // How much of each style's relief is kept (1 = all of it). Maps are mostly flat to build on;
@@ -266,7 +268,7 @@ export function connectionLine(state, c) {
 // (see bridgeConnection). Returns how many it built.
 export function bridgeConnections(state, opts) {
   let built = 0;
-  for (const c of state.connections) if (c.type === 'road' || c.type === 'rail') built += bridgeConnection(state, c.type, connectionLine(state, c), opts);
+  for (const c of state.connections) if (c.type === 'rail') built += bridgeConnection(state, c.type, connectionLine(state, c), opts);
   return built;
 }
 
@@ -304,8 +306,23 @@ function carveHighway(state) {
       H[i] = lerp(H[i], prof[x], ease[dy]);
     }
   }
-  for (let x = 0; x <= end; x++) state.road[idx(x, y)] = 6;
-  state.connections.push({ type: 'road', x: 0, y, dir: 2, name: 'West Highway' });
+}
+
+// The highway itself: a road of the network from the map edge in to the starting area, built
+// like any other (it bridges the water on its way). Its end on the map edge is the outside
+// connection; none of it can be bulldozed.
+function buildHighway(state) {
+  const y = CENTER, end = HIGHWAY_END;
+  const plan = planRoad(state, { a: { x: 0.02, z: y + 0.5 }, b: { x: end + 0.5, z: y + 0.5 }, type: 6, anywhere: true, waterEnds: true });
+  if (!plan.ok) console.warn('The highway could not be built:', plan.reason, plan.bad);
+  else {
+    const res = buildRoad(state, plan, { free: true, silent: true });
+    const X = rn(state);
+    for (const id of res.segs) X.seg.get(id).locked = 1;
+    const edge = [...X.node.values()].find((n) => n.x < 0.1);
+    if (edge) edge.out = 1;
+  }
+  if (!state.connections.some((c) => c.type === 'road')) state.connections.push({ type: 'road', x: 0, y, dir: 2, name: 'West Highway' });
 }
 
 function generateResources(state, map, noise, rnd) {
@@ -453,9 +470,13 @@ export function applyCustomMap(state, custom) {
     }
   }
   recomputeWater(state);
-  // the pre-built highway and railway: graded and bridged again over this map's own land and water
+  // the pre-built highway: built again on this map's own land and water
+  state.roads = emptyRoads();
+  commitRoads(state, { silent: true });
+  buildHighway(state);
+  // the pre-built railway: graded and bridged again over this map's own land and water
   for (const c of state.connections) {
-    if (c.type !== 'road' && c.type !== 'rail') continue;
+    if (c.type !== 'rail') continue;
     const [net, H, dir] = bridgeLayers(state, c.type);
     const line = connectionLine(state, c);
     for (const [x, y] of line) { H[idx(x, y)] = 0; dir[idx(x, y)] = 0; }
@@ -463,6 +484,6 @@ export function applyCustomMap(state, custom) {
   }
   recomputeWater(state);
   bridgeConnections(state);
-  bridgeWaterRuns(state, 'road');
   bridgeWaterRuns(state, 'rail');
+  commitRoads(state, { silent: true });
 }

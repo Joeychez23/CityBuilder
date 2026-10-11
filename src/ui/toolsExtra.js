@@ -7,6 +7,7 @@ import { bus } from '../core/events.js';
 import { lineCells, snapEnd, onDiagonal } from '../sim/roadsegs.js';
 import { dropSpansAt } from '../sim/power.js';
 import { roadLinks } from '../sim/bridges.js';
+import { setCellUpgrade, segAtCell, rn } from '../sim/roadnet.js';
 
 // Roads this cell connects to (3 or more = a junction)
 const roadNeighbours = (state, x, y) => roadLinks(state, idx(x, y));
@@ -33,7 +34,7 @@ registerTool('upgrade', {
     const u = UPGRADES.find((k) => k.bit === t.bit);
     el.innerHTML = `<h4>${u.name}</h4>`;
     segButtons(el, 'Mode', [['add', 'Add'], ['remove', 'Remove']], t.mode || 'add', (v) => { t.mode = v; rerender(); });
-    el.insertAdjacentHTML('beforeend', `<p class="muted">${money(u.cost)} ${u.single ? 'each' : 'per cell'}.${u.intersectionOnly ? ' Click an intersection.' : u.single ? ' Click a road (not a junction).' : ' Drag along roads.'}${u.desc ? ` ${u.desc}` : ''}</p>`);
+    el.insertAdjacentHTML('beforeend', `<p class="muted">${money(u.cost)} ${u.single || u.intersectionOnly ? 'each' : 'per cell of road'}.${u.intersectionOnly ? ' Click an intersection.' : u.single ? ' Click a road (not a junction).' : ' Click or drag along roads: each road you touch gets it from end to end.'}${u.desc ? ` ${u.desc}` : ''}</p>`);
   },
   cells(app, t, a, b) {
     if (UPGRADES.find((k) => k.bit === t.bit)?.single) return [[b.cx, b.cy]];
@@ -49,16 +50,27 @@ registerTool('upgrade', {
   up(app, t, a, b) {
     const s = app.state;
     const u = UPGRADES.find((k) => k.bit === t.bit);
+    const add = (t.mode || 'add') === 'add';
     let n = 0;
+    // street trees, lights, barriers, bus lanes and tram tracks go on whole roads (priced by
+    // their length); booths, connectors and roundabouts at a point
+    const done = new Set();
     for (const [x, y] of this.cells(app, t, a, b)) {
       if (!upgradeAllowed(s, x, y, u)) continue;
       const i = idx(x, y);
-      if ((t.mode || 'add') === 'add') {
-        if (s.roadUpg[i] & u.bit) continue;
-        if (!spend(s, u.cost, 'roads')) { app.toast('Not enough money', 'bad'); break; }
-        s.roadUpg[i] |= u.bit;
+      const seg = segAtCell(s, i);
+      const whole = !u.single && !u.intersectionOnly;
+      if (whole && (!seg || done.has(seg.id))) continue;
+      if (whole) done.add(seg.id);
+      const has = whole ? (seg.upg || 0) & u.bit : s.roadUpg[i] & u.bit;
+      if (add) {
+        if (has) continue;
+        const cost = whole ? u.cost * Math.max(1, Math.round(rn(s).geo.get(seg.id).len)) : u.cost;
+        if (!spend(s, cost, 'roads')) { app.toast('Not enough money', 'bad'); break; }
+        setCellUpgrade(s, i, u.bit, true, { silent: true });
       } else {
-        s.roadUpg[i] &= ~u.bit;
+        if (!has) continue;
+        setCellUpgrade(s, i, u.bit, false, { silent: true });
         if (u.bit === UPG.POWER) dropSpansAt(s, [i]);
       }
       n++;

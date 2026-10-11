@@ -5,14 +5,12 @@
 // (until you choose one yourself). Each road's own tool has a Bridge mode that does the same
 // (see bridgeSteps.js), and roads drawn across water get their bridges by themselves.
 import { registerTool, segButtons } from './tools.js';
-import { ROAD_LIST, ROADS, CLASS_NAMES } from '../data/roads.js';
+import { ROADS } from '../data/roads.js';
 import { idx } from '../core/grid.js';
 import { bridgeHover, bridgeClick } from './bridgeSteps.js';
 
-const KINDS = (app) => [
-  ...ROAD_LIST.filter((r) => !app.lockReason(r)).map((r) => [`road:${r.id}`, r.name.replace(' Road', ''), `${r.name} bridge: ${CLASS_NAMES[r.cls].toLowerCase()}, ${r.lanes} lane${r.lanes > 1 ? 's' : ''}${r.oneway ? ' one way' : ' each way'}`]),
-  ['rail', 'Railway'], ['path', 'Footpath'],
-];
+// (road bridges are drawn with the road tool's Bridge mode, see toolsRoad.js)
+const KINDS = () => [['rail', 'Railway'], ['path', 'Footpath']];
 const parseKind = (k) => (k.startsWith('road:') ? { layer: 'road', type: +k.slice(5) } : { layer: k, type: null });
 
 function describe(t) {
@@ -21,7 +19,7 @@ function describe(t) {
 }
 
 registerTool('bridge', {
-  enter(app, t) { t.kindKey = t.kindKey || 'road:2'; t.start = null; },
+  enter(app, t) { t.kindKey = t.kindKey?.startsWith('road') ? 'rail' : t.kindKey || 'rail'; t.start = null; },
   exit(app) { app.preview.clearCells(); },
   options(app, t, el, rerender) {
     el.innerHTML = `<h4>🌉 ${describe(t)}</h4>`;

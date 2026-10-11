@@ -1,6 +1,6 @@
 // Save / load: typed-array layers become base64 strings, Maps become arrays, and building
 // definitions are re-linked by id on load.
-import { createState } from '../core/state.js';
+import { createState, ROAD_RASTER } from '../core/state.js';
 import { MAPS } from '../data/maps.js';
 import { defFor } from '../data/registry.js';
 import { N, TILE, TILES, DIRS, inBounds } from '../core/grid.js';
@@ -10,6 +10,25 @@ export const SAVE_KEY = 'gridlock-city-save';
 export const MAPS_KEY = 'gridlock-custom-maps';
 
 const TRANSIENT_BUILDING_KEYS = new Set(['def', 'vis', 'baseColors']);
+const NOT_SAVED = new Set(ROAD_RASTER);
+
+// A city from before roads became a network of nodes and segments (its roads are cells). It
+// can't be opened in this version; it's kept, untouched, wherever it was saved.
+export class LegacyCityError extends Error {
+  constructor() {
+    super('This city was built before the road network update, and can\'t be opened in this version. It hasn\'t been changed or deleted.');
+    this.name = 'LegacyCityError';
+  }
+}
+// Is this save text (or parsed save) from before the road network?
+export const isLegacyData = (data) => !data || !data.roads || (data.version || 0) < 9;
+export async function isLegacySave(text) {
+  try {
+    if (!text) return false;
+    const json = text.startsWith('GZ:') ? await gunzip(text) : text;
+    return !json.includes('"roads":{"nodes":');
+  } catch { return false; }
+}
 
 function toB64(arr) {
   const bytes = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
@@ -27,6 +46,7 @@ function fromB64(str, Type) {
 export function serialize(state) {
   const out = {};
   for (const [k, v] of Object.entries(state)) {
+    if (NOT_SAVED.has(k)) continue;
     if (ArrayBuffer.isView(v)) out[k] = { $ta: v.constructor.name, d: toB64(v) };
     else if (v instanceof Map) {
       out[k] = {
@@ -43,8 +63,9 @@ const TYPES = { Float32Array, Uint8Array, Int32Array, Uint16Array };
 
 export function deserialize(text) {
   const data = JSON.parse(text);
+  if (isLegacyData(data)) throw new LegacyCityError();
   const map = MAPS.find((m) => m.id === data.mapId) || MAPS[0];
-  const side = data.gridN || (data.road?.$ta ? Math.round(Math.sqrt(fromB64(data.road.d, Uint8Array).length)) : N);
+  const side = data.gridN || (data.zone?.$ta ? Math.round(Math.sqrt(fromB64(data.zone.d, Uint8Array).length)) : N);
   const resized = side !== N && resizeSave(data, map, side);
   const state = createState(map, data.options);
   for (const [k, v] of Object.entries(data)) {
@@ -63,8 +84,9 @@ export function deserialize(text) {
     for (let y = b.y0; y <= b.y1; y++) for (let x = b.x0; x <= b.x1; x++) if (state.bld?.[y * N + x] === b.id) state.bld[y * N + x] = 0;
     state.buildings.delete(b.id);
   }
-  // Core layers must exist; newer layers (e.g. bridges) default to empty for older saves
-  for (const k of ['height', 'road', 'zone', 'bld']) if (!data[k]) throw new Error(`Save is missing layer ${k}`);
+  // Core layers must exist; newer layers default to empty for older saves (the per-cell road
+  // layers are worked out from the road network when the city starts)
+  for (const k of ['height', 'zone', 'bld']) if (!data[k]) throw new Error(`Save is missing layer ${k}`);
   return state;
 }
 
@@ -152,11 +174,14 @@ export async function pack(state) {
   for (let i = 0; i < gz.length; i += 0x8000) s += String.fromCharCode.apply(null, gz.subarray(i, i + 0x8000));
   return `GZ:${btoa(s)}`;
 }
-export async function unpack(text) {
-  if (!text.startsWith('GZ:')) return deserialize(text);
+async function gunzip(text) {
   const bin = atob(text.slice(3));
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   const raw = await streamBytes(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip')));
-  return deserialize(new TextDecoder().decode(raw));
+  return new TextDecoder().decode(raw);
+}
+export async function unpack(text) {
+  if (!text.startsWith('GZ:')) return deserialize(text);
+  return deserialize(await gunzip(text));
 }

@@ -7,11 +7,11 @@ import { cellHeight, cellSlope, recomputeWater } from './mapgen.js';
 import { newId } from '../core/state.js';
 import { bus } from '../core/events.js';
 import { makeRng } from '../core/rng.js';
-import { gradeCells, cornerTouches, gradeAlongSegment } from './grade.js';
-import { clearBridgeCell, pruneBridges, roadLinks, restoreUnderRoad, pruneUnderpasses, roadUnderBridges } from './bridges.js';
+import { gradeCells, cornerTouches } from './grade.js';
+import { clearBridgeCell, pruneBridges } from './bridges.js';
 import { removePylon, pylonValue, dropSpansAt } from './power.js';
-import { lineCells, isAxisLine, stepDirs, segIndex, clipToCell } from './roadsegs.js';
 import { maxSlopeAt } from './projects.js';
+import { segAtCell, segValue, removeSeg } from './roadnet.js';
 
 export const MAX_BUILD_SLOPE = 1.3; // height change across one cell (~10 m over 8 m): anything less is buildable
 
@@ -38,110 +38,7 @@ export function spend(state, amount, category = 'construction') {
 
 export const canAfford = (state, amount) => state.options.unlimitedMoney || state.money >= amount;
 
-// ---------------------------------------------------------------------------- roads
-export function planRoad(state, cells, type, { diagonal = false } = {}) {
-  const def = ROADS[type];
-  let cost = 0, water = 0;
-  const ok = [], bad = [];
-  for (const [x, y] of cells) {
-    const i = idx(x, y);
-    const b = state.bld[i] && state.buildings.get(state.bld[i]);
-    // Water needs the Bridge tool; existing bridge decks can still be re-surfaced (Replace)
-    if (state.water[i] && !state.bridgeH[i]) { bad.push([x, y]); water++; continue; }
-    // diagonal roads don't run onto bridge decks (bridges only connect along their axis)
-    if (diagonal && state.bridgeH[i]) { bad.push([x, y]); continue; }
-    const blocked = !isOwned(state, x, y) || (b && b.kind !== 'zone') || state.power[i] || (state.rail[i] && !state.railH[i] && !state.bridgeH[i]) || (!state.bridgeH[i] && cellSlope(state, x, y) > 2.4);
-    if (blocked) { bad.push([x, y]); continue; }
-    ok.push([x, y]);
-    if (state.road[i] === type) continue;
-    const bridge = state.bridgeH[i] ? 3 : 1;
-    const existing = state.road[i] ? ROADS[state.road[i]].cost * 0.5 : 0;
-    cost += Math.max(def.cost * bridge - existing, def.cost * 0.25);
-  }
-  return { ok, bad, water, cost: Math.round(cost) };
-}
-
-// Junctions a new road makes (call before building it): road cells it runs through, and a
-// road at an angle that it ends right against (roads at an angle only connect at junctions,
-// see linked() in bridges.js)
-export function markJunctions(state, path) {
-  if (!path?.length) return;
-  const SG = segIndex(state);
-  for (const [x, y] of path) { const i = idx(x, y); if (inBounds(x, y) && state.road[i]) state.roadNode[i] = 1; }
-  for (const [x, y] of [path[0], path[path.length - 1]]) {
-    for (const [dx, dy] of DIRS) {
-      const nx = x + dx, ny = y + dy;
-      if (!inBounds(nx, ny)) continue;
-      const j = idx(nx, ny);
-      if (state.road[j] && SG.byCell.has(j) && !SG.ends.has(j)) state.roadNode[j] = 1;
-    }
-  }
-}
-
-// dir: one-way direction for every cell, or a function (x, y) -> direction.
-// opts.path: the whole stretch drawn (including road already there), for its junctions
-export function placeRoad(state, cells, type, dir = 0, opts = {}) {
-  const plan = planRoad(state, cells, type, opts);
-  if (!plan.ok.length || !spend(state, plan.cost, 'roads')) return null;
-  if (opts.path) markJunctions(state, opts.path);
-  for (const [x, y] of plan.ok) {
-    const i = idx(x, y);
-    if (state.bld[i]) removeBuilding(state, state.bld[i]);
-    if (state.road[i] !== type) state.roadCond[i] = 1;
-    state.road[i] = type;
-    state.roadDir[i] = typeof dir === 'function' ? dir(x, y) : dir;
-    clearZoneCell(state, i);
-    state.tree[i] = 0;
-    state.forestMax[i] = 0;
-    if (!ROADS[type].zonable) state.roadUpg[i] &= ~(UPG.TREES);
-  }
-  regrade(state, state.road, plan.ok);
-  bus.emit('network:changed', { layer: 'road' });
-  bus.emit('xp', { amount: Math.max(1, Math.round(plan.ok.length * 0.4)), reason: 'roads' });
-  return plan;
-}
-
-// A straight road from cell a to cell b at any angle. Cells that already have a road are
-// kept (they become junctions); `replace` re-surfaces existing road instead.
-export function planRoadLine(state, a, b, type, { replace = false } = {}) {
-  const line = lineCells(a[0], a[1], b[0], b[1]).filter(([x, y]) => inBounds(x, y));
-  const diagonal = !isAxisLine(a[0], a[1], b[0], b[1]);
-  const cells = replace
-    ? line.filter(([x, y]) => state.road[idx(x, y)] && state.road[idx(x, y)] !== type)
-    : line.filter(([x, y]) => !state.road[idx(x, y)]);
-  const plan = planRoad(state, cells, type, { diagonal });
-  // existing road cells on a new diagonal still have to be ones it can join
-  if (diagonal && !replace) for (const [x, y] of line) if (state.road[idx(x, y)] && state.bridgeH[idx(x, y)]) plan.bad.push([x, y]);
-  plan.line = line;
-  plan.diagonal = diagonal;
-  plan.cells = cells;
-  return plan;
-}
-
-export function placeRoadLine(state, a, b, type, opts = {}) {
-  const plan = planRoadLine(state, a, b, type, opts);
-  if (plan.bad.length && plan.diagonal) return { error: 'blocked', plan };
-  const dirs = new Map();
-  stepDirs(plan.line).forEach((d, k) => dirs.set(idx(...plan.line[k]), d));
-  const path = opts.replace ? null : plan.line;
-  const placed = plan.cells.length ? placeRoad(state, plan.cells, type, (x, y) => dirs.get(idx(x, y)) ?? 0, { diagonal: plan.diagonal, path }) : plan;
-  if (!placed) return { error: 'money', plan };
-  if (!plan.cells.length && path) { markJunctions(state, path); bus.emit('network:changed', { layer: 'road' }); }
-  // drawn straight under a bridge (high enough, square to it): it carries on underneath
-  if (!plan.diagonal && !opts.replace && roadUnderBridges(state, plan.line, type, stepDirs(plan.line))) bus.emit('network:changed', { layer: 'road' });
-  if (plan.diagonal && !opts.replace) {
-    state.roadSegs = state.roadSegs || [];
-    const same = (s) => (s.a[0] === a[0] && s.a[1] === a[1] && s.b[0] === b[0] && s.b[1] === b[1]) || (s.a[0] === b[0] && s.a[1] === b[1] && s.b[0] === a[0] && s.b[1] === a[1]);
-    let seg = state.roadSegs.find(same);
-    if (!seg) { seg = { a: [...a], b: [...b] }; state.roadSegs.push(seg); }
-    else delete seg.cut; // drawn again over a stretch that was bulldozed: it's whole again
-    // the ground under the whole width of the road, not just its staircase of cells
-    const r = gradeAlongSegment(state, seg);
-    if (r) { recomputeWater(state, r.x0, r.y0, r.x1, r.y1); bus.emit('terrain:changed', r); }
-    bus.emit('network:changed', { layer: 'road' });
-  }
-  return { plan: placed };
-}
+// (roads: see sim/roadnet.js)
 
 // Pull a cell's four corners toward their average so buildings sit flat. Corners shared
 // with roads, rails or paths are left alone: those are graded to the network's surface.
@@ -459,7 +356,8 @@ export function demolishBuilding(state, b) {
   return r;
 }
 
-// What bulldozing this cell would remove and give back (without doing it)
+// What bulldozing this cell would remove and give back (without doing it). A road goes a
+// segment at a time (from one junction or bend to the next): { seg } says which.
 export function bulldozePreview(state, x, y, layers = ['building', 'road', 'rail', 'power', 'pipe', 'path', 'subway']) {
   const i = idx(x, y);
   if (layers.includes('building') && state.bld[i]) {
@@ -468,6 +366,11 @@ export function bulldozePreview(state, x, y, layers = ['building', 'road', 'rail
   }
   for (const layer of layers) {
     if (layer === 'building' || !state[layer]?.[i]) continue;
+    if (layer === 'road') {
+      const s = segAtCell(state, i);
+      if (!s || s.locked) continue;
+      return { what: 'road', refund: Math.round(segValue(state, s.id) * REFUND_RATE), seg: s.id };
+    }
     return { what: layer, refund: Math.round(networkValue(state, layer, i) * REFUND_RATE) };
   }
   return null;
@@ -482,7 +385,7 @@ export function clearRoadCell(state, i) {
   if (connector) dropSpansAt(state, [i]);
 }
 
-// Bulldoze whatever is on a cell (building first, then networks).
+// Bulldoze whatever is on a cell (building first, then networks; a road a segment at a time).
 // Returns { removed, refund } or null when there was nothing to remove.
 export function bulldozeCell(state, x, y, layers = ['building', 'road', 'rail', 'power', 'pipe', 'path', 'subway']) {
   const i = idx(x, y);
@@ -493,44 +396,22 @@ export function bulldozeCell(state, x, y, layers = ['building', 'road', 'rail', 
   for (const layer of layers) {
     if (layer === 'building') continue;
     if (!state[layer]?.[i]) continue;
-    if (layer === 'road' && x === 0 && state.road[i] === 6) return null; // keep the outside connection
+    if (layer === 'road') {
+      const s = segAtCell(state, i);
+      if (!s || s.locked) return null; // (the outside connection stays)
+      const r = removeSeg(state, s.id);
+      return r ? { removed: 'road', refund: r.refund } : null;
+    }
     if (layer === 'rail' && y === 0) return null;
     if (layer === 'power') {
       if (state.connections.some((c) => c.type === 'power' && idx(c.x, c.y) === i)) return null; // keep the outside power line's end
       return { removed: 'power', refund: removePylon(state, i) };
     }
     let r = refund(state, networkValue(state, layer, i) * REFUND_RATE);
-    if (layer === 'road') {
-      clearRoadCell(state, i);
-      // a piece taken out of a road at an angle: the road ends either side of it. Cells
-      // beside it that the road only grazed at a corner would be left as stubs you can't
-      // see, so they go too.
-      const SG = segIndex(state);
-      for (const sg of SG.byCell.get(i) || []) {
-        (sg.cut = sg.cut || []).push([x, y]);
-        const cells = SG.cellsOf.get(sg), k = SG.orderOf.get(sg)?.get(i);
-        const len = Math.hypot(sg.b[0] - sg.a[0], sg.b[1] - sg.a[1]);
-        for (const step of [-1, 1]) {
-          const nb = k == null ? null : cells[k + step];
-          if (!nb || !inBounds(nb[0], nb[1])) continue;
-          const j = idx(nb[0], nb[1]);
-          const c = clipToCell(sg, nb[0], nb[1]);
-          if (!state.road[j] || (c && (c[1] - c[0]) * len > 0.15) || SG.byCell.get(j)?.length > 1 || SG.ends.has(j) || state.roadNode[j] || roadLinks(state, j) > 2 || state.bridgeH[j]) continue;
-          r += refund(state, networkValue(state, 'road', j) * REFUND_RATE);
-          clearRoadCell(state, j);
-          state.road[j] = 0;
-          sg.cut.push([nb[0], nb[1]]);
-        }
-      }
-    }
     state[layer][i] = 0;
-    if (layer === 'road' || layer === 'rail' || layer === 'path') {
+    if (layer === 'rail' || layer === 'path') {
       clearBridgeCell(state, layer, i);
       r += pruneBridges(state, layer); // spans that lost an end come down too (and refund)
-    }
-    if (layer === 'road') {
-      restoreUnderRoad(state, i); // a bridge taken off a road: the road below stays
-      r += pruneUnderpasses(state); // a road under a bridge that lost one side goes
     }
     bus.emit('network:changed', { layer });
     return { removed: layer, refund: r };

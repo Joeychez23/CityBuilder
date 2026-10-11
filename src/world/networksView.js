@@ -37,7 +37,7 @@ function slabMatrix(ax, ay, az, bx, by, bz, width, thick, out = m) {
 //   deck: kerb/deck colour · girder: depth under the deck (girderW: its width, girderC colour)
 //   pier: thickness along the deck (pierW: width across it), every: a pier every n cells,
 //   cap: a cap beam on top of each pier · rail: parapet width, height, colour · lamps
-const BRIDGE_STYLE = {
+export const BRIDGE_STYLE = {
   track: { deck: '#bdb9b0', girder: 0.16, girderW: 0.7, girderC: '#8f8a82', pier: 0.26, pierW: 0.55, pierC: '#a29d93', every: 2, rail: { w: 0.04, h: 0.16, c: '#d9d6cf' } },
   local: { deck: '#c4c0b7', girder: 0.11, girderW: 0.62, girderC: '#6f7f8c', pier: 0.15, pierW: 0.5, pierC: '#8e959b', every: 2, rail: { w: 0.03, h: 0.15, c: '#8d9aa4' } },
   collector: { deck: '#bdb9b0', girder: 0.18, girderW: 0.74, girderC: '#8f8a82', pier: 0.24, pierW: 0.6, pierC: '#a29d93', every: 2, rail: { w: 0.05, h: 0.13, c: '#d1cdc4' } },
@@ -331,124 +331,17 @@ export function createNetworksView(view, state) {
     const D = getDeck(state);
     const R = D.road, RL = D.rail, P = D.path;
     const G = groundLayer(D.ground);
-    const SG = segIndex(state);
-    // Cells of roads at an angle: the grid arms toward other roads joining there (ext), and
-    // how many of those roads really run through (not just touching a corner)
-    const cellInfo = new Map();
-    for (const [i, segs] of SG.byCell) {
-      const type = state.road[i];
-      if (!type) continue;
-      const x = i % N, y = (i / N) | 0;
-      let ext = R.masks[i];
-      if (x === 0 && type === 6) ext |= 4;
-      for (let d = 0; d < 4; d++) if (SG.internal.has(i * 4 + d)) ext &= ~(1 << d);
-      const through = segs.filter((sg) => { const c = clipToCell(sg, x, y); return c && (c[1] - c[0]) * Math.hypot(sg.b[0] - sg.a[0], sg.b[1] - sg.a[1]) > 0.05; }).length;
-      cellInfo.set(i, { ext, through });
-    }
     for (let y = 0; y < N; y++) {
       for (let x = 0; x < N; x++) {
         const i = idx(x, y);
         const type = state.road[i];
         if (type) {
-          const def = ROADS[type];
-          let mask = R.masks[i];
-          if (x === 0 && type === 6) mask |= 4; // outside connection runs off the map edge
-          const handles = [];
-          const raised = state.bridgeH[i] > 0;
-          const st = raised ? BRIDGE_STYLE[def.cls] : null;
+          // (roads themselves are drawn by world/roadsView.js: here, what stands beside them)
           const h = R.center[i];
-          // Diagonal roads through this cell draw their own straight piece; the grid arms
-          // between cells on the same diagonal are left out
-          const segs = SG.byCell.get(i);
-          const info = segs ? cellInfo.get(i) : null;
-          const ext = info ? info.ext : mask;
-          const through = info ? info.through : 0;
-          // grid pieces get a square pad at junctions, bends and ends; where roads at an angle
-          // bend, cross or end on their own, a round joint fills the gap between them
-          const pad = !segs || ext !== 0;
-          const joint = segs && !pad && through > 0 && SG.ends.has(i);
-          const junction = ext !== 0 && segs ? true : through > 1;
-          const kerb = raised ? st.deck : def.key === 'highway' ? '#7d7f84' : '#b8b5ae';
-          const thick = raised ? 0.2 : 0.4;
-          const asphalt = roadColor(i, type);
-          // a round joint (kerb and asphalt discs) centred on (px, pz) at height hc
-          const roundJoint = (px, hc, pz) => {
-            pools.jointKerb.add(boxMatrix(px, hc + 0.03 - thick, pz, 1, thick, 1, 0, m), kerb);
-            const hd = pools.jointAsphalt.add(boxMatrix(px, hc + 0.065 - 0.1, pz, def.width * 0.82, 0.1, def.width * 0.82, 0, m), asphalt);
-            if (!roadJoints.has(i)) roadJoints.set(i, []);
-            roadJoints.get(i).push(hd);
-          };
-          // the kerb layer doubles as an embankment on slopes and the deck on bridges
-          drawCross(pools.sidewalk, R, x, y, ext, 1, thick, 0.03, kerb, null, pad);
-          drawCross(pools.asphalt, R, x, y, ext, def.width * 0.82, 0.1, 0.065, asphalt, handles, pad);
-          if (joint) roundJoint(x + 0.5, h, y + 0.5);
-          const lineC = def.oneway || def.key === 'highway' ? '#e8e8e8' : '#f1c94a';
-          // where the road was bulldozed right beside this cell it ends here, in the middle
-          // of the cell, with a rounded end
-          const ranges = new Map();
-          if (segs) {
-            for (const sg of segs) {
-              const back = looseEnd(SG, sg, i, -1), fwd = looseEnd(SG, sg, i, 1);
-              let range = null;
-              const c = (back || fwd) && clipToCell(sg, x, y);
-              if (c) {
-                const tm = Math.min(c[1], Math.max(c[0], segParam(sg, x + 0.5, y + 0.5)));
-                range = [back ? tm : 0, fwd ? tm : 1];
-                const [px, pz] = segPoint(sg, tm);
-                roundJoint(px, profileAt(profileOf(R, sg), tm), pz);
-              }
-              ranges.set(sg, range);
-              // a road at an angle keeps its own width and colour through the cells it shares
-              // with the roads it crosses
-              const st2 = segTypeOf(SG, sg) || type;
-              const sdef = ROADS[st2];
-              const own = st2 === type ? handles : [];
-              drawDiagonal(pools.sidewalk, R, sg, x, y, 1, thick, 0.03, kerb, null, 0, range);
-              drawDiagonal(pools.asphalt, R, sg, x, y, sdef.width * 0.82, 0.1, 0.065, st2 === type ? asphalt : roadColor(i, st2), own, 0, range);
-              if (st2 !== type) { if (!segArms.has(i)) segArms.set(i, []); for (const hd of own) segArms.get(i).push([hd, st2]); }
-              // no centre line painted across a junction
-              if (sdef.key !== 'gravel' && !junction) drawDiagonal(pools.marking, R, sg, x, y, 0.04, 0.02, 0.075, sdef.oneway || sdef.key === 'highway' ? '#e8e8e8' : '#f1c94a', null, 0, range);
-              // lane lines along roads with more than one lane each way
-              if (sdef.lanes > 1 && !junction) for (const o of laneOffsets(sdef)) drawDiagonal(pools.marking, R, sg, x, y, 0.025, 0.02, 0.076, '#e8e8e8', null, o, range);
-              if (raised) {
-                // a bridge at an angle: girder under the deck, railings either side
-                drawDiagonal(pools.girder, R, sg, x, y, st.girderW, st.girder, -0.17, st.girderC, null, 0, range);
-                for (const side of [-0.5 + st.rail.w / 2, 0.5 - st.rail.w / 2]) drawDiagonal(pools.railing, R, sg, x, y, st.rail.w, st.rail.h, st.rail.h, st.rail.c, null, side, range);
-              }
-            }
-          }
-          roadArms.set(i, handles);
-          if (raised) drawBridge(R, D.ground, x, y, segs ? ext : mask, 1, state.bridgeH, mask, st, segs && !ext ? { sg: segs[0] } : null);
-          if (raised && state.underRoad[i] && R.under) drawUnder(R.under, x, y, i);
-          const straightX = ext === 5 || ext === 1 || ext === 4;
-          const straightZ = ext === 10 || ext === 2 || ext === 8;
-          if ((straightX || straightZ) && def.key !== 'gravel') drawCross(pools.marking, R, x, y, ext, 0.04, 0.02, 0.075, lineC);
-          // lane lines on roads with more than one lane each way, dashed on the grid (each
-          // dash follows the slope of the road)
-          if (def.lanes > 1 && (straightX || straightZ)) {
-            const hc = h + 0.075;
-            for (let d = 0; d < 4; d++) {
-              if (!(ext & (1 << d))) continue;
-              const [dx, dz] = DIRS[d];
-              const he = hc + (R.edge[i * 4 + d] - h) * (0.17 / 0.51);
-              for (const o of laneOffsets(def)) {
-                const ox = straightZ ? o : 0, oz = straightZ ? 0 : o;
-                pools.marking.add(slabMatrix(x + 0.5 + ox, hc, y + 0.5 + oz, x + 0.5 + ox + dx * 0.17, he, y + 0.5 + oz + dz * 0.17, 0.03, 0.02), '#e8e8e8');
-              }
-            }
-          }
-          if (raised && st.lamps && (x + y) % 2 === 0) {
-            // street lamps along big bridges
-            const alongX = (mask & 5) !== 0;
-            const [[lx, lz], [rx, rz]] = segs ? roadsideSpots(state, i, 0.45) : alongX ? [[x + 0.5, y + 0.06], [x + 0.5, y + 0.94]] : [[x + 0.06, y + 0.5], [x + 0.94, y + 0.5]];
-            const [px, pz] = (x + y) % 4 === 0 ? [lx, lz] : [rx, rz];
-            pools.lampPost.add(boxMatrix(px, h + 0.03, pz, 0.045, 0.7, 0.045, 0, m), '#6b6e73');
-            pools.lampPost.add(boxMatrix(px, h + 0.7, pz, 0.12, 0.05, 0.12, 0, m), '#e8e2c8');
-          }
           if (state.roadUpg[i] & UPG.LIGHTS) {
             const [[lx, lz]] = roadsideSpots(state, i);
             pools.lampPost.add(boxMatrix(lx, h, lz, 0.05, 0.75, 0.05, 0, m), '#555');
-            lamps.set(i, pools.lamp.add(boxMatrix(lx + (segs ? 0 : 0.04), h + 0.7, lz + (segs ? 0 : 0.04), 0.14, 0.07, 0.14, 0, m), '#5a5a5a'));
+            lamps.set(i, pools.lamp.add(boxMatrix(lx + 0.04, h + 0.7, lz + 0.04, 0.14, 0.07, 0.14, 0, m), '#5a5a5a'));
           }
           if (state.roadUpg[i] & UPG.POWER) {
             // Power Connector: a pole the wires come down to, and a green transformer box
@@ -458,35 +351,13 @@ export function createNetworksView(view, state) {
             pools.pillar.add(boxMatrix(px, h, pz, 0.24, 0.3, 0.24, 0, m), '#4f7a52');
             pools.pillar.add(boxMatrix(px, h + 0.3, pz, 0.12, 0.08, 0.12, 0, m), '#ffd300');
           }
-          if (state.roadUpg[i] & UPG.BARRIER) {
-            for (const d of [1, 3]) {
-              if (mask & (1 << d)) continue;
-              pools.pillar.add(boxMatrix(x + 0.5, h, y + 0.5 + DIRS[d][1] * 0.47, 1, 0.45, 0.05, 0, m), '#8fa3a8');
-            }
-            for (const d of [0, 2]) {
-              if (mask & (1 << d)) continue;
-              pools.pillar.add(boxMatrix(x + 0.5 + DIRS[d][0] * 0.47, h, y + 0.5, 0.05, 0.45, 1, 0, m), '#8fa3a8');
-            }
-          }
           if (state.roadUpg[i] & UPG.TOLL) {
-            // toll gantry across the road: two posts, a yellow beam and a booth on each side
-            const alongX = straightX || (!straightZ && (mask & 5));
-            const across = (o) => (alongX ? [x + 0.5, y + 0.5 + o] : [x + 0.5 + o, y + 0.5]);
-            for (const o of [-0.47, 0.47]) {
-              const [px, pz] = across(o);
-              pools.pillar.add(boxMatrix(px, h, pz, 0.06, 0.95, 0.06, 0, m), '#d9d6cf');
-            }
-            const [bx, bz] = across(0);
-            pools.pillar.add(boxMatrix(bx, h + 0.86, bz, alongX ? 0.1 : 1, 0.14, alongX ? 1 : 0.1, 0, m), '#ffd300');
-            pools.pillar.add(boxMatrix(bx, h + 0.86, bz, alongX ? 0.11 : 0.34, 0.1, alongX ? 0.34 : 0.11, 0, m), '#2f55ff');
-            for (const o of [-0.3, 0.3]) {
-              const [px, pz] = across(o);
-              pools.pillar.add(boxMatrix(px, h, pz, alongX ? 0.2 : 0.12, 0.3, alongX ? 0.12 : 0.2, 0, m), '#f5f5f0');
-            }
-          }
-          if (state.roadUpg[i] & UPG.TRAM) {
-            for (const off of [-0.12, 0.12]) {
-              pools.rail.add(boxMatrix(x + 0.5 + (straightZ ? off : 0), h + 0.07, y + 0.5 + (straightZ ? 0 : off), straightZ ? 0.03 : 1, 0.03, straightZ ? 1 : 0.03, 0, m), '#6b6157');
+            // toll booth beside the road
+            const [[px, pz], [qx, qz]] = roadsideSpots(state, i, 0.47);
+            for (const [bx, bz] of [[px, pz], [qx, qz]]) {
+              pools.pillar.add(boxMatrix(bx, h, bz, 0.06, 0.95, 0.06, 0, m), '#d9d6cf');
+              pools.pillar.add(boxMatrix(bx, h, bz, 0.16, 0.3, 0.16, 0, m), '#f5f5f0');
+              pools.pillar.add(boxMatrix(bx, h + 0.86, bz, 0.14, 0.14, 0.14, 0, m), '#ffd300');
             }
           }
         }

@@ -1,6 +1,14 @@
 // Development helper: a bigger town (roads, zones, power, water, garbage, parking) grown for
 // a week, for testing traffic and performance. Load with ?map=prairie&rich&unlock&alltiles&stress
-import { placeRoadLine, setZone } from '../sim/build.js';
+import { setZone } from '../sim/build.js';
+import { planRoad, buildRoad } from '../sim/roadnet.js';
+
+// A straight road between the middles of two cells
+function placeRoadLine(s, a, b, type) {
+  const plan = planRoad(s, { a: { x: a[0] + 0.5, z: a[1] + 0.5 }, b: { x: b[0] + 0.5, z: b[1] + 0.5 }, type });
+  if (!plan.ok) { console.warn('stress road', a, b, plan.reason); return null; }
+  return buildRoad(s, plan);
+}
 import { placeService } from '../sim/services.js';
 import { SERVICES } from '../data/services.js';
 import { TRANSPORT } from '../data/transport.js';

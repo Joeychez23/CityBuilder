@@ -8,8 +8,9 @@ import { N, idx, hidx, inBounds, DIRS } from '../core/grid.js';
 import { lineCells, isAxisLine, segIndex, snapEnd, segParam, stepDirs } from './roadsegs.js';
 import { ROADS, UPGRADES } from '../data/roads.js';
 import { cellHeight } from './mapgen.js';
-import { isOwned, spend, removeBuilding, LAYER_COST, refund, networkValue, REFUND_RATE, clearZoneCell, planRoadLine, placeRoadLine, canAfford, clearRoadCell } from './build.js';
+import { isOwned, spend, removeBuilding, LAYER_COST, refund, networkValue, REFUND_RATE, clearZoneCell, canAfford, clearRoadCell } from './build.js';
 import { gradeCells } from './grade.js';
+import { cellLinks } from './roadraster.js';
 import { bus } from '../core/events.js';
 
 export const WATER_CLEARANCE = 0.9;  // deck above the water
@@ -27,12 +28,9 @@ export function bridgeLayers(state, layer) {
 }
 
 // May network cells i and j (j is i's neighbour in direction d) connect?
-// Roads: a road at an angle only connects along its own line, at its two ends, and where
-// another road was built across it (a "node", see state.roadNode). So a road drawn at an angle
-// never snaps sideways onto the roads it passes beside or the one it ends on: junctions are
-// only where you made them. Worked out once per network change (see roadMasks).
+// Roads: only along a road of the network, or through a node's cell (see roadMasks)
 export function linked(state, layer, i, j, d) {
-  if (layer === 'road') return (roadMasks(state)[i] >> d) & 1;
+  if (layer === 'road') return (cellLinks(state)[i] >> d) & 1;
   return baseLinked(state, layer, i, j, d);
 }
 
@@ -57,37 +55,9 @@ function baseLinked(state, layer, i, j, d) {
   return true;
 }
 
-// Per road cell, a bitmask of the neighbours it connects to (1 = E, 2 = S, 4 = W, 8 = N)
-let masks = null, masksState = null, masksDirty = true;
-bus.on('network:changed', () => { masksDirty = true; });
-export function roadMasks(state) {
-  if (!masksDirty && masks && masksState === state) return masks;
-  const NN = N * N;
-  if (!masks || masks.length !== NN) masks = new Uint8Array(NN);
-  else masks.fill(0);
-  masksState = state;
-  masksDirty = false;
-  const SG = segIndex(state);
-  const node = state.roadNode;
-  // a cell in the middle of a road at an angle (not one of its ends or a junction you built)
-  const inner = (i) => SG.byCell.has(i) && !SG.ends.has(i) && !(node && node[i]);
-  const road = state.road;
-  for (let i = 0; i < NN; i++) {
-    if (!road[i]) continue;
-    const x = i % N, y = (i / N) | 0;
-    for (let d = 0; d < 2; d++) { // east and south; the other side gets the mirror bit
-      const nx = x + (d === 0 ? 1 : 0), ny = y + (d === 1 ? 1 : 0);
-      if (nx >= N || ny >= N) continue;
-      const j = ny * N + nx;
-      if (!road[j] || !baseLinked(state, 'road', i, j, d)) continue;
-      if (inner(i) && !SG.internal.has(i * 4 + d)) continue;
-      if (inner(j) && !SG.internal.has(j * 4 + d + 2)) continue;
-      masks[i] |= 1 << d;
-      masks[j] |= 1 << (d + 2);
-    }
-  }
-  return masks;
-}
+// Per road cell, a bitmask of the neighbours it connects to (1 = E, 2 = S, 4 = W, 8 = N):
+// along each road of the network, and through the cell of each node (sim/roadraster.js)
+export const roadMasks = (state) => cellLinks(state);
 
 // How many roads a road cell connects to (3 or more = a junction)
 export const roadLinks = (state, i) => { const m = roadMasks(state)[i]; return (m & 1) + ((m >> 1) & 1) + ((m >> 2) & 1) + ((m >> 3) & 1); };
@@ -388,99 +358,6 @@ export function buildBridge(state, plan, { free = false } = {}) {
   return true;
 }
 
-// A road from cell a to cell b that crosses water: ordinary road on the land, and a bridge
-// of the same road type over each stretch of water, from the last land cell before it to the
-// first one after it. A road at an angle can only be split where its line passes exactly
-// through the middle of a cell (so every piece runs along the same line); where it can't be,
-// the bridge reaches further, up to the whole road. Returns null when the road stays on land,
-// else { ok, reason, pieces: [{ kind: 'road' | 'bridge', a, b, plan }], cost, span }.
-const gcd = (p, q) => (q ? gcd(q, p % q) : Math.abs(p));
-export function planRoadCrossing(state, a, b, type) {
-  const line = lineCells(a[0], a[1], b[0], b[1]);
-  const wet = ([x, y]) => inBounds(x, y) && state.water[idx(x, y)] && !state.bridgeH[idx(x, y)];
-  if (!line.some(wet)) return null;
-  const fail = (reason) => ({ ok: false, reason, pieces: [], cost: 0, span: 0 });
-  // the points it can be split at, and where each one is along its staircase of cells
-  const dx = b[0] - a[0], dy = b[1] - a[1], g = gcd(Math.abs(dx), Math.abs(dy)) || 1;
-  const at = new Map(line.map(([x, y], k) => [x * 1e5 + y, k]));
-  const marks = [];
-  for (let j = 0; j <= g; j++) { const m = [a[0] + (dx / g) * j, a[1] + (dy / g) * j]; marks.push({ m, k: at.get(m[0] * 1e5 + m[1]) }); }
-  // each stretch of water, bridged from the last split point on land before it to the first after
-  const spans = [];
-  for (let k = 0; k < line.length; k++) {
-    if (!wet(line[k])) continue;
-    let e = k;
-    while (e + 1 < line.length && wet(line[e + 1])) e++;
-    let j0 = -1, j1 = -1;
-    marks.forEach((mk, j) => {
-      if (mk.k < k && !wet(mk.m)) j0 = j;
-      if (mk.k > e && !wet(mk.m) && j1 < 0) j1 = j;
-    });
-    if (j0 < 0 || j1 < 0) return fail('A bridge needs land at both ends: start and end the road on land');
-    const last = spans[spans.length - 1];
-    if (last && j0 <= last[1]) last[1] = Math.max(last[1], j1); else spans.push([j0, j1]);
-    k = e;
-  }
-  // where the banks are high, a bridge that only just spans the water would be too steep:
-  // it starts further back on the land instead (a longer ramp up to it)
-  const tryPlan = (j0, j1) => planBridge(state, 'road', type, { cx: marks[j0].m[0], cy: marks[j0].m[1] }, { cx: marks[j1].m[0], cy: marks[j1].m[1] });
-  // does the stretch of line k0..k1 already have road on it? (it would go up onto the bridge)
-  const roadIn = (k0, k1) => { for (let k = k0; k <= k1; k++) if (state.road[idx(...line[k])]) return true; return false; };
-  for (let n = 0; n < spans.length; n++) {
-    let [j0, j1] = spans[n];
-    const lo = n ? spans[n - 1][1] : 0, hi = n + 1 < spans.length ? spans[n + 1][0] : marks.length - 1;
-    for (let grow = 0; grow < 12; grow++) {
-      const p = tryPlan(j0, j1);
-      if (p.ok || !/steep/i.test(p.reason || '')) break;
-      let canA = j0 - 1 >= lo && !wet(marks[j0 - 1].m), canB = j1 + 1 <= hi && !wet(marks[j1 + 1].m);
-      if (!canA && !canB) break;
-      // reach back over open land first, not over a road already there (say the bigger road
-      // this one starts from): that road would end up raised onto the bridge
-      const roadA = canA && roadIn(marks[j0 - 1].k + 1, marks[j0].k), roadB = canB && roadIn(marks[j1].k, marks[j1 + 1].k - 1);
-      if (canA && canB && roadA !== roadB) { canA = !roadA; canB = !roadB; }
-      if (canA && (grow % 2 === 0 || !canB)) j0--; else j1++;
-    }
-    spans[n] = [j0, j1];
-  }
-  const pieces = [];
-  let from = 0;
-  for (const [j0, j1] of spans) {
-    if (j0 > from) pieces.push({ kind: 'road', a: marks[from].m, b: marks[j0].m });
-    pieces.push({ kind: 'bridge', a: marks[j0].m, b: marks[j1].m });
-    from = j1;
-  }
-  if (from < marks.length - 1) pieces.push({ kind: 'road', a: marks[from].m, b: marks[marks.length - 1].m });
-  let cost = 0, span = 0;
-  const unit = ROADS[type].cost;
-  for (let p = 0; p < pieces.length; p++) {
-    const pc = pieces[p];
-    if (pc.kind === 'road') {
-      pc.plan = planRoadLine(state, pc.a, pc.b, type);
-      if (pc.plan.bad.length && pc.plan.diagonal) return fail('Something is in the way of the road (a steep slope, a railway or a building)');
-      cost += pc.plan.cost;
-      continue;
-    }
-    pc.plan = planBridge(state, 'road', type, { cx: pc.a[0], cy: pc.a[1] }, { cx: pc.b[0], cy: pc.b[1] });
-    if (!pc.plan.ok) return { ...fail(pc.plan.reason), pieces: pieces.filter((q) => q.plan) };
-    cost += pc.plan.cost;
-    span += pc.plan.cells.length - 2;
-    // an end shared with the road piece beside it is only paid for once
-    for (const [q, e] of [[p - 1, pc.a], [p + 1, pc.b]]) if (pieces[q]?.kind === 'road' && !state.road[idx(e[0], e[1])]) cost -= unit;
-  }
-  return { ok: true, reason: null, pieces, cost: Math.round(cost), span };
-}
-
-export function placeRoadCrossing(state, plan, type) {
-  if (!plan.ok) return { error: 'blocked' };
-  if (!canAfford(state, plan.cost)) return { error: 'money' };
-  for (const pc of plan.pieces) {
-    if (pc.kind === 'road') placeRoadLine(state, pc.a, pc.b, type);
-    else buildBridge(state, planBridge(state, 'road', type, { cx: pc.a[0], cy: pc.a[1] }, { cx: pc.b[0], cy: pc.b[1] }));
-  }
-  return { ok: true };
-}
-
-// Clear bridge data when a cell's track is removed
 export function clearBridgeCell(state, layer, i) {
   const [, H, dir] = bridgeLayers(state, layer);
   H[i] = 0;

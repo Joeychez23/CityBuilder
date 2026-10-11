@@ -1,6 +1,7 @@
 // Development helper: lays out a small starter town so features can be tested quickly.
 // Load with ?map=prairie&rich&demo
-import { placeRoad, setZone } from '../sim/build.js';
+import { setZone } from '../sim/build.js';
+import { planRoad, buildRoad, nearestNode } from '../sim/roadnet.js';
 import { placeService } from '../sim/services.js';
 import { SERVICES } from '../data/services.js';
 import { TRANSPORT } from '../data/transport.js';
@@ -14,11 +15,12 @@ export function buildDemo(app) {
   const s = app.state;
   const instant = s.options.instantBuild;
   s.options.instantBuild = true; // the starter town is laid out finished
+  // (an end next to the end of a road already there joins it, as roads on the grid did)
+  const end = (x, z) => { const n = nearestNode(s, x + O + 0.5, z + O + 0.5, 1.05); return n ? { x: n.x, z: n.z, node: n.id } : { x: x + O + 0.5, z: z + O + 0.5 }; };
   const road = (x0, y0, x1, y1, t = 2) => {
-    x0 += O; y0 += O; x1 += O; y1 += O;
-    const c = [];
-    for (let x = Math.min(x0, x1); x <= Math.max(x0, x1); x++) for (let y = Math.min(y0, y1); y <= Math.max(y0, y1); y++) c.push([x, y]);
-    return placeRoad(s, c, t);
+    const plan = planRoad(s, { a: end(x0, y0), b: end(x1, y1), type: t });
+    if (!plan.ok) console.warn('demo road', x0, y0, x1, y1, plan.reason);
+    return plan.ok && buildRoad(s, plan);
   };
   road(53, 72, 80, 72); road(61, 58, 61, 88); road(70, 58, 70, 88, 4); road(53, 58, 80, 58); road(53, 88, 80, 88); road(80, 58, 80, 88);
   app.sim.refreshNetworks();

@@ -8,6 +8,7 @@ import { idx } from '../core/grid.js';
 import { planPowerLine, buildPowerLine, placePylon, pylonBlocker, pylonSourceReason, terminalAt, hasConnector, PYLON_COST, MAX_SPAN, CONNECTOR } from '../sim/power.js';
 import { spend, isOwned } from '../sim/build.js';
 import { UPG } from '../data/roads.js';
+import { setCellUpgrade } from '../sim/roadnet.js';
 import { bus } from '../core/events.js';
 
 const plantName = (s, i) => { const b = s.buildings.get(s.bld[i]); return b ? b.name || b.def.name : 'the plant'; };
@@ -61,8 +62,7 @@ registerTool('powerline', {
         if (!isOwned(s, p.cx, p.cy)) { app.toast('Not your land', 'bad'); return; }
         if (!hasConnector(s, i)) {
           if (!spend(s, CONNECTOR.cost, 'electricity')) { app.toast('Not enough money', 'bad'); return; }
-          s.roadUpg[i] |= UPG.POWER;
-          bus.emit('network:changed', { layer: 'road' });
+          setCellUpgrade(s, i, UPG.POWER, true);
         }
         t.last = i;
         app.tools.renderOptions();
