@@ -70,7 +70,7 @@ registerPanel({
       const r = ROADS[t];
       const vol = s.roadVol[i];
       const cap = cellCapacity(s, i), jk = junctionKind(s, i);
-      const dw = drivewaysAt(i);
+      const dw = drivewaysAt(i, s);
       body.innerHTML = `<h3 style="margin:0 0 2px">${r.name}</h3><div class="muted" style="margin-bottom:8px">${CLASS_NAMES[r.cls]} · ${r.role}</div>
         ${row('Lanes', lanesText(r))}${row('Speed limit', `${r.speed} km/h`)}${row('Condition', pct(s.roadCond[i]), s.roadCond[i] < 0.5 ? 'bad' : '')}
         ${jk ? row('Junction', ['', 'Traffic lights', 'Roundabout', 'Give way (one car at a time)', 'Merge', 'Side street gives way (main road keeps going)'][jk]) : ''}

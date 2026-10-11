@@ -1,23 +1,28 @@
 // Traffic: sampled trips (commutes, shopping, trucks, service vehicles, tourists) are routed
-// with A* over roads. Each sampled trip stands for many real ones and adds to the road's
-// volume; congestion raises travel cost, so later trips route around jams. What a road can
-// carry depends on its lanes, and junctions carry less (cars take turns at the lights).
-// Where a road is over capacity the queue backs up onto the roads leading into it.
+// with A* over the road network (sim/roadgraph.js: each road is an edge each way it can be
+// driven, meeting at junctions). Each sampled trip stands for many real ones and adds to the
+// volume on each road (each way) it drives; congestion raises travel cost, so later trips
+// route around jams. What a road can carry depends on its lanes, and a road into a junction
+// carries less (cars take turns at the lights). Where a road is over capacity the queue
+// backs up onto the roads leading into it. The volumes are also written onto the road's
+// cells (state.roadVol), for the noise, the info views and anything else that works by cell.
 import { N, idx, DIRS, inBounds, clamp } from '../core/grid.js';
 import { ROADS, UPG, rankOf } from '../data/roads.js';
-import { astar } from './pathfind.js';
 import { buildingRoadComp } from './networks.js';
 import { isService, center } from './services.js';
 import { hourOf } from './simulation.js';
 import { rng } from '../core/rng.js';
 import { bus } from '../core/events.js';
 import { transitOption } from './transit.js';
-import { linked, roadLinks, roadMasks } from './bridges.js';
+import { linked, roadLinks } from './bridges.js';
 import { hasPerk } from '../data/progression.js';
 import { earn } from './economy.js';
 import { isOwned } from './build.js';
 import { waterTaxiOption } from './projects.js';
-import { jumpLinks, isJump } from './tunnels.js';
+import { isJump } from './tunnels.js';
+import { graph, findRoute, routeCost, routeCells, pointAtCell, segOfEdge } from './roadgraph.js';
+import { rn } from './roadnet.js';
+import { chainCells } from './roadraster.js';
 
 const NN = N * N;
 
@@ -28,53 +33,11 @@ export const roadNeighbours = (state, i) => roadLinks(state, i);
 // roads: one car at a time), 4 merge (highways and one-way roads), 5 priority (a local street
 // joins a bigger through road and gives way to it: the main road keeps most of its flow).
 // That's the road hierarchy at work: local streets should feed collectors, collectors feed
-// avenues; where bigger roads meet there are lights.
-// (worked out for every road cell once per network change: routing asks constantly)
-let kinds = null, kindsState = null, kindsDirty = true;
-bus.on('network:changed', () => { kindsDirty = true; });
+// avenues; where bigger roads meet there are lights. (By the node of the network in cell i.)
 export function junctionKind(state, i) {
-  if (kindsDirty || !kinds || kindsState !== state) {
-    if (!kinds || kinds.length !== NN) kinds = new Uint8Array(NN);
-    kindsState = state;
-    kindsDirty = false;
-    for (let k = 0; k < NN; k++) kinds[k] = state.road[k] ? computeKind(state, k) : 0;
-  }
-  return kinds[i];
-}
-function computeKind(state, i) {
-  const t = state.road[i];
-  if (!t || roadNeighbours(state, i) < 3) return 0;
-  if (state.roadUpg[i] & UPG.ROUNDABOUT) return 2;
-  if (ROADS[t].key === 'highway') return 4;
-  const x = i % N, y = (i / N) | 0;
-  const links = roadMasks(state)[i];
-  let big = 0, oneway = true, top = -1, topCount = 0, n = 0, sideMax = -1;
-  for (let d = 0; d < 4; d++) {
-    if (!(links & (1 << d))) continue;
-    const nt = state.road[idx(x + DIRS[d][0], y + DIRS[d][1])];
-    if (!nt) continue;
-    n++;
-    big = Math.max(big, ROADS[nt].capacity);
-    if (!ROADS[nt].oneway) oneway = false;
-    const r = rankOf(nt);
-    if (r > top) { top = r; topCount = 1; } else if (r === top) topCount++;
-  }
-  if (oneway) return 4;
-  for (let d = 0; d < 4; d++) {
-    if (!(links & (1 << d))) continue;
-    const r = rankOf(state.road[idx(x + DIRS[d][0], y + DIRS[d][1])]);
-    if (r < top) sideMax = Math.max(sideMax, r);
-  }
-  // a collector or bigger runs straight through and only local streets join it from the side
-  if (topCount === 2 && top > 0 && n > 2 && sideMax === 0 && throughRoad(state, i, links, top)) return 5;
-  return big <= 10 ? 3 : 1;
-}
-
-// Do the two biggest roads at a junction line up (enter on one side, leave on the other)?
-function throughRoad(state, i, links, rank) {
-  const x = i % N, y = (i / N) | 0;
-  const isTop = (d) => (links & (1 << d)) && rankOf(state.road[idx(x + DIRS[d][0], y + DIRS[d][1])]) === rank;
-  return (isTop(0) && isTop(2)) || (isTop(1) && isTop(3));
+  const Gr = graph(state);
+  const n = Gr.cellNode.get(i);
+  return n == null ? 0 : Gr.kind.get(n) || 0;
 }
 
 // Is this a side street arriving at a priority junction (it has to give way)?
@@ -82,36 +45,110 @@ export function givesWay(state, from, junction) {
   return junctionKind(state, junction) === 5 && rankOf(state.road[from]) < rankOf(state.road[junction]);
 }
 
-// Vehicles per cell this road cell carries before slowing down. Driveways onto an avenue
-// (and, less, onto a collector) take some of it: cars slowing to turn in and out.
+// Vehicles per cell a road carries before slowing down. A road into a junction carries less
+// (by the junction's kind), and driveways onto an avenue (and, less, onto a collector) take
+// some of it: cars slowing to turn in and out.
 const JUNCTION_SHARE = [1, 0.55, 0.85, 0.5, 0.9, 0.82];
-let driveways = null;
-export const drivewaysAt = (i) => (driveways ? driveways[i] : 0);
+let driveways = new Map(); // segment -> buildings whose driveway is on it
+export const drivewaysAt = (i, state = null) => (state ? driveways.get(state.roadSeg[i]) || 0 : 0);
+const drivewayShare = (def, dw) => (dw && (def.cls === 'arterial' || def.cls === 'collector') ? 1 - Math.min(0.3, dw * (def.cls === 'arterial' ? 0.08 : 0.04)) : 1);
+// ...each way along road edge e
+export function edgeCapacity(state, e) {
+  const Gr = graph(state);
+  return e.def.capacity * (e.def.oneway ? 1 : 0.5) * JUNCTION_SHARE[Gr.kind.get(e.to) || 0] * drivewayShare(e.def, driveways.get(e.seg));
+}
+// ...both ways, on a road cell
 export function cellCapacity(state, i) {
   const t = state.road[i];
   if (!t) return 1;
   const def = ROADS[t];
-  let cap = def.capacity * JUNCTION_SHARE[junctionKind(state, i)];
-  const dw = driveways ? driveways[i] : 0;
-  if (dw && (def.cls === 'arterial' || def.cls === 'collector')) cap *= 1 - Math.min(0.3, dw * (def.cls === 'arterial' ? 0.08 : 0.04));
-  return cap;
+  return def.capacity * JUNCTION_SHARE[junctionKind(state, i)] * drivewayShare(def, driveways.get(state.roadSeg[i]));
 }
 
-// Count the buildings whose driveway meets each road cell (hourly)
+// Count the buildings whose driveway meets each road (hourly)
 function countDriveways(state, ctx) {
-  if (!driveways || driveways.length !== NN) driveways = new Uint8Array(NN);
-  else driveways.fill(0);
+  driveways = new Map();
   for (const b of state.buildings.values()) {
     if (b.cons) continue;
     const a = accessCell(state, ctx, b);
-    if (a >= 0 && driveways[a] < 255) driveways[a]++;
+    if (a < 0) continue;
+    const sid = state.roadSeg[a];
+    if (sid) driveways.set(sid, (driveways.get(sid) || 0) + 1);
   }
 }
 // Travel time multiplier for a volume/capacity ratio (gentle until full, then steep)
 export const jamFactor = (r) => 1 + 1.2 * r * r + 0.8 * r * r * r * r;
 export const congestion = (state, i) => state.roadVol[i] / cellCapacity(state, i);
 
-// Build the travel-cost function for a vehicle type
+// ---------------------------------------------------------------- volumes
+// Each way along each road: ctx.ev[edge id] (edge ids are the segment's id × 2, +1 the
+// way back; see roadgraph.js)
+function volumes(state, ctx) {
+  const need = state.roads.nextId * 2 + 2;
+  if (!ctx.ev || ctx.ev.length < need) { const v = new Float32Array(Math.max(need, (ctx.ev?.length || 0) * 2, 256)); if (ctx.ev) v.set(ctx.ev); ctx.ev = v; }
+  return ctx.ev;
+}
+export const edgeVolume = (ctx, eid) => (ctx.ev ? ctx.ev[eid] || 0 : 0);
+export const edgeCongestion = (state, ctx, e) => edgeVolume(ctx, e.id) / edgeCapacity(state, e);
+
+// A cell of each road that speaks for it (for its condition, snow, district...)
+function midCell(X, sid) {
+  const g = X.geo.get(sid);
+  if (!g) return -1;
+  if (!g.chain) g.chain = chainCells(g.c, g.tab);
+  const c = g.chain.cells;
+  return c[c.length >> 1] >= 0 ? c[c.length >> 1] : c.find((k) => k >= 0) ?? -1;
+}
+
+// What driving costs, by road edge, for a vehicle type: { unit(e): per cell along it,
+// turn(from, to): at the junction between two edges, ok(e): may it drive there at all }
+export function makeEdgeCost(state, ctx, vehicle = 'car') {
+  const X = rn(state), Gr = graph(state);
+  const highSpeed = state.policies.highSpeedHighways;
+  const dists = state.districts;
+  const closedSegs = new Set();
+  if (state.closed) for (const c of state.closures || []) for (const i of c.cells) if (state.road[i] && state.closed[i]) closedSegs.add(state.roadSeg[i]);
+  const acc = ctx.segAccident || new Set();
+  const units = new Map();
+  const unit = (e) => {
+    let u = units.get(e.id);
+    if (u != null) return u;
+    const sg = X.seg.get(e.seg);
+    const rc = midCell(X, e.seg);
+    const speed = e.def.speed * (highSpeed && e.def.key === 'highway' ? 1.2 : 1);
+    u = 50 / speed;
+    const busLane = (vehicle === 'bus' || vehicle === 'tram') && (sg.upg || 0) & UPG.BUSLANE;
+    if (!busLane) u *= jamFactor(edgeCongestion(state, ctx, e));
+    u *= 1 + (rc >= 0 ? state.roadSnow[rc] : 0) * 0.8 + (1 - (sg.cond ?? 1)) * 0.4;
+    if (acc.has(e.seg)) u += 25 / Math.max(1, e.len);
+    const p = rc >= 0 && state.district[rc] ? dists.find((d) => d.id === state.district[rc])?.policies : null;
+    if (p) {
+      if (p.speedBumps) u *= 1.3;
+      if (p.heavyBan && vehicle === 'truck') u *= 6;
+      if (p.combustionBan && vehicle !== 'service') u *= 2.5;
+      if (p.gated && vehicle !== 'service') u *= 3;
+    }
+    units.set(e.id, u);
+    return u;
+  };
+  const turn = (prev, e) => {
+    let c = 0;
+    const kind = Gr.kind.get(e.from) || 0;
+    if (kind === 2) c += 0.1;
+    else if (kind === 1) c += e.def.id >= 4 ? 0.35 : 0.15;
+    else if (kind === 3) c += 0.15;
+    else if (kind === 4) c += 0.05;
+    // pulling out of a side street onto a busy main road takes a gap in the traffic
+    else if (kind === 5 && prev && rankOf(prev.def.id) < rankOf(e.def.id)) c += 0.3 + 1.5 * Math.min(2, edgeCongestion(state, ctx, e));
+    const sg = X.seg.get(e.seg);
+    if (sg.toll != null && vehicle !== 'service') c += (state.fees.toll ?? 3) * (vehicle === 'truck' ? 0.8 : 0.45);
+    return c;
+  };
+  const ok = (e) => !closedSegs.has(e.seg) && (vehicle !== 'tram' || ((X.seg.get(e.seg).upg || 0) & UPG.TRAM) > 0);
+  return { unit, turn, ok };
+}
+
+// The travel cost cell by cell, for the vehicles you see while they still drive cell paths
 export function makeRoadCost(state, ctx, vehicle = 'car') {
   const highSpeed = state.policies.highSpeedHighways;
   const dists = state.districts;
@@ -177,22 +214,25 @@ export function pathCost(path, cost, links = null) {
 // Routes are remembered, but drivers keep an eye on the traffic: once a remembered route has
 // got noticeably slower than when it was chosen (a jam built up on it), it's planned again,
 // so trips take the longer way round when that's quicker than sitting in the queue.
+// a, b: road cells (where the trip joins and leaves the road). Returns the cells it drives
+// through, with the route itself (its road edges, see roadgraph.js) as .route; or null.
 const cache = new Map(); // "a-b-vehicle" -> { path, stamp, step, cost }
 const FRESH = 3, MAX_AGE = 48, SLOWER = 1.2;
 export function route(state, ctx, a, b, vehicle = 'car') {
   if (a < 0 || b < 0) return null;
   const key = `${a}-${b}-${vehicle}`;
   const hit = cache.get(key);
-  const cost = makeRoadCost(state, ctx, vehicle);
+  const cost = makeEdgeCost(state, ctx, vehicle);
   const age = hit ? ctx.stepCount - hit.step : Infinity;
-  const links = jumpLinks(state, 'road');
   if (hit && hit.stamp === ctx.netStamp && age < MAX_AGE &&
-    (age < FRESH || !hit.path || pathCost(hit.path, cost, links) <= hit.cost * SLOWER)) return hit.path;
-  if (ctx.routeBudget <= 0) return hit?.path ?? null;
+    (age < FRESH || !hit.path || routeCost(state, hit.path.route, cost) <= hit.cost * SLOWER)) return hit.path;
+  if (ctx.routeBudget <= 0) return hit?.stamp === ctx.netStamp ? hit.path : null;
   ctx.routeBudget--;
-  const path = astar(a, b, (i) => state.road[i] > 0, cost, 0.4, undefined, links);
+  const r = findRoute(state, pointAtCell(state, a), pointAtCell(state, b), cost);
+  let path = null;
+  if (r) { path = routeCells(state, r); path.route = r; }
   cache.delete(key);
-  cache.set(key, { path, stamp: ctx.netStamp, step: ctx.stepCount, cost: path ? pathCost(path, cost, links) : 0 });
+  cache.set(key, { path, stamp: ctx.netStamp, step: ctx.stepCount, cost: r ? r.cost : 0 });
   if (cache.size > 3000) cache.delete(cache.keys().next().value);
   return path;
 }
@@ -259,7 +299,7 @@ function sampleTrip(state, ctx) {
   return null;
 }
 
-// Road cells as a list (rebuilt when the network changes), so per-step passes stay cheap
+// Road cells as a list (rebuilt when the network changes), so per-cell passes stay cheap
 function roadCells(state, ctx) {
   if (ctx.roadCellsStamp === ctx.netStamp && ctx.roadCells) return ctx.roadCells;
   const out = [];
@@ -269,37 +309,40 @@ function roadCells(state, ctx) {
   return ctx.roadCells;
 }
 
-// Queues back up: a cell carrying more than it can pushes part of the excess onto the road
-// cells around it (the roads leading into a jammed junction fill up first)
-function spillBack(state, ctx, cells) {
-  const vol = state.roadVol;
-  for (const i of cells) {
-    const ex = vol[i] - cellCapacity(state, i);
+// Queues back up: a road carrying more than it can pushes part of the excess onto the roads
+// leading into it (the roads into a jammed junction fill up first)
+function spillBack(state, ctx) {
+  const Gr = graph(state), ev = ctx.ev;
+  for (const e of Gr.edges.values()) {
+    const ex = ev[e.id] - edgeCapacity(state, e);
     if (ex <= 0) continue;
-    const x = i % N, y = (i / N) | 0;
-    let n = 0;
-    for (let d = 0; d < 4; d++) {
-      const nx = x + DIRS[d][0], ny = y + DIRS[d][1];
-      if (inBounds(nx, ny) && linked(state, 'road', i, idx(nx, ny), d)) n++;
-    }
-    if (!n) continue;
+    const into = (Gr.inc.get(e.from) || []).filter((k) => segOfEdge(k) !== e.seg);
+    if (!into.length) continue;
     const push = ex * 0.22;
-    for (let d = 0; d < 4; d++) {
-      const nx = x + DIRS[d][0], ny = y + DIRS[d][1];
-      if (inBounds(nx, ny) && linked(state, 'road', i, idx(nx, ny), d)) vol[idx(nx, ny)] += push / n;
-    }
-    vol[i] -= push * 0.5;
+    for (const k of into) ev[k] += push / into.length;
+    ev[e.id] -= push * 0.5;
   }
 }
 
-// Every simulation step: sample and route trips, accumulate road volume
+// The volume each way along each road, onto its cells (both ways together, as before)
+function volumesToCells(state, ctx) {
+  const X = rn(state), ev = ctx.ev;
+  for (const sg of X.seg.values()) {
+    const g = X.geo.get(sg.id);
+    if (!g) continue;
+    if (!g.chain) g.chain = chainCells(g.c, g.tab);
+    const v = (ev[sg.id * 2] || 0) + (ev[sg.id * 2 + 1] || 0);
+    for (const i of g.chain.cells) if (i >= 0 && state.roadSeg[i] === sg.id) state.roadVol[i] = v;
+  }
+}
+
+// Every simulation step: sample and route trips, add up the traffic on each road
 export function trafficStep(state, ctx) {
   if (!ctx.trips) rebuildTripPools(state, ctx);
-  const vol = state.roadVol;
-  const cells = roadCells(state, ctx);
-  for (const i of cells) if (vol[i] > 0) vol[i] *= 0.88;
+  const ev = volumes(state, ctx);
+  for (let k = 0; k < ev.length; k++) if (ev[k] > 0) ev[k] *= 0.88;
   const pop = state.citizens.size;
-  if (pop < 5) return;
+  if (pop < 5) { volumesToCells(state, ctx); return; }
   const h = hourOf(state);
   const real = pop * 0.012 * rushFactor(h) + (state.stats.tourists || 0) * 0.004;
   // more trips are sampled (and drawn) as the city grows: each one stands for about two
@@ -307,6 +350,7 @@ export function trafficStep(state, ctx) {
   const W = real / samples;
   ctx.routeBudget = 18;
   const out = outsideCell(state);
+  const X = rn(state);
   let parking = 0, transitRiders = 0, tolls = 0;
   for (let k = 0; k < samples; k++) {
     const trip = sampleTrip(state, ctx);
@@ -339,7 +383,7 @@ export function trafficStep(state, ctx) {
     if (!path) continue;
     const truckWeight = trip.type === 'truck' ? 1.8 / (1 + (ctx.cargoCapacity || 0) / 1500) : 1;
     let booths = 0;
-    for (const c of path) { vol[c] += W * 0.12 * truckWeight; if (state.roadUpg[c] & UPG.TOLL) booths++; }
+    for (const eid of path.route.edges) { ev[eid] += W * 0.12 * truckWeight; if (X.seg.get(segOfEdge(eid))?.toll != null) booths++; }
     if (booths && trip.type !== 'service') tolls += W * booths * (state.fees.toll ?? 3) * (trip.type === 'truck' ? 2 : 1);
     if (trip.purpose === 'shopping' || trip.purpose === 'leisure' || trip.purpose === 'tourism') {
       const dest = trip.to !== 'outside' ? trip.to : null;
@@ -349,7 +393,8 @@ export function trafficStep(state, ctx) {
     // commuters you see are drawn by the people layer (they park and walk); the rest here
     if (trip.purpose !== 'commute') bus.emit('vehicle:spawn', { path, type: trip.type, svc: trip.svc, owner: trip.type === 'service' ? trip.from?.id : undefined });
   }
-  spillBack(state, ctx, cells);
+  spillBack(state, ctx);
+  volumesToCells(state, ctx);
   earn(state, 'parking', parking);
   earn(state, 'tolls', tolls);
   ctx.transitRidersStep = transitRiders;
@@ -363,37 +408,56 @@ export function roadsHourly(state, ctx) {
   const night = h < 6 || h > 20;
   const maint = ctx.coverage.roadMaint;
   const highSpeed = state.policies.highSpeedHighways;
-  let flowSum = 0, flowW = 0, booths = 0, worst = -1, worstR = 0;
-  for (let i = 0; i < NN; i++) {
-    const t = state.road[i];
-    if (!t) continue;
-    if (state.roadUpg[i] & UPG.TOLL) booths++;
-    const def = ROADS[t];
-    const v = state.roadVol[i];
-    // road off your land (the outside connections) is the region's to look after: it's kept
-    // up and cleared of snow as if a maintenance depot covered it
-    const m = !isOwned(state, i % N, (i / N) | 0) ? 1 : maint ? maint[i] : 0;
-    const wear = hasPerk(state, 'roads_asphalt') ? 0.6 : 1;
-    state.roadCond[i] = clamp(state.roadCond[i] - (v * 0.00004 + 0.0002) * wear + m * 0.012, 0, 1);
+  const X = rn(state), Gr = graph(state), ev = volumes(state, ctx);
+  // road off your land (the outside connections) is the region's to look after: it's kept up
+  // and cleared of snow as if a maintenance depot covered it
+  const care = (i) => (!isOwned(state, i % N, (i / N) | 0) ? 1 : maint ? maint[i] : 0);
+  // snow and accidents, cell by cell
+  const accident = new Set();
+  for (const i of roadCells(state, ctx)) {
+    const m = care(i);
     if (w.snow > 0.05 && w.temp < 1) state.roadSnow[i] = Math.min(1, state.roadSnow[i] + w.snow * 0.05);
     if (w.temp > 2) state.roadSnow[i] = Math.max(0, state.roadSnow[i] - 0.06);
     state.roadSnow[i] = Math.max(0, state.roadSnow[i] - m * 0.15);
     if (state.accident[i] > 0) state.accident[i] = Math.max(0, state.accident[i] - 60 * (1 + (ctx.coverage.police?.[i] || 0)));
-    if (v > 1.5) {
-      const dist = state.district[i] ? state.districts.find((d) => d.id === state.district[i])?.policies : null;
-      let p = v * 0.000015 * (night && !(state.roadUpg[i] & UPG.LIGHTS) ? 2 : 1) * (1 + w.rain + w.snow * 2 + w.fog) *
-        (1 + (1 - state.roadCond[i]) * 2) * (highSpeed && def.key === 'highway' ? 1.6 : 1) * (dist?.speedBumps ? 0.5 : 1);
+    if (state.accident[i] > 0) accident.add(state.roadSeg[i]);
+  }
+  // wear, and new accidents, road by road
+  let booths = 0;
+  const wear = hasPerk(state, 'roads_asphalt') ? 0.6 : 1;
+  for (const sg of X.seg.values()) {
+    const g = X.geo.get(sg.id);
+    const rc = midCell(X, sg.id);
+    if (!g || rc < 0) continue;
+    const def = ROADS[sg.type];
+    const v = (ev[sg.id * 2] || 0) + (ev[sg.id * 2 + 1] || 0);
+    sg.cond = clamp((sg.cond ?? 1) - (v * 0.00004 + 0.0002) * wear + care(rc) * 0.012, 0, 1);
+    const cells = g.chain.cells;
+    for (const i of cells) if (i >= 0 && state.roadSeg[i] === sg.id) state.roadCond[i] = sg.cond;
+    if (sg.toll != null) booths++;
+    if (v > 1.5 && !sg.tn) {
+      const dist = state.district[rc] ? state.districts.find((d) => d.id === state.district[rc])?.policies : null;
+      const p = v * 0.000015 * g.len * (night && !((sg.upg || 0) & UPG.LIGHTS) ? 2 : 1) * (1 + w.rain + w.snow * 2 + w.fog) *
+        (1 + (1 - sg.cond) * 2) * (highSpeed && def.key === 'highway' ? 1.6 : 1) * (dist?.speedBumps ? 0.5 : 1);
       if (rng.chance(p)) {
+        const own = cells.filter((i) => i >= 0 && state.roadSeg[i] === sg.id);
+        const i = own[Math.floor(rng.next() * own.length)] ?? rc;
         state.accident[i] = 120 + rng.next() * 120;
+        accident.add(sg.id);
         ctx.accidents = (ctx.accidents || 0) + 1;
         bus.emit('accident', { cell: i });
       }
     }
-    const r = v / cellCapacity(state, i);
-    const flow = 1 / jamFactor(r);
-    flowSum += flow * (v + 0.1);
+  }
+  ctx.segAccident = accident;
+  // how freely the traffic flows, weighted by how much of it there is
+  let flowSum = 0, flowW = 0, worst = -1, worstR = 0;
+  for (const e of Gr.edges.values()) {
+    const v = ev[e.id] || 0;
+    const r = v / edgeCapacity(state, e);
+    flowSum += (1 / jamFactor(r)) * (v + 0.1);
     flowW += v + 0.1;
-    if (r > worstR) { worstR = r; worst = i; }
+    if (r > worstR) { worstR = r; worst = midCell(X, e.seg); }
   }
   state.stats.trafficFlow = flowW ? flowSum / flowW : 1;
   state.stats.worstJam = worst >= 0 && worstR > 1 ? { cell: worst, ratio: worstR } : null;

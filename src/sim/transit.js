@@ -8,7 +8,8 @@ import { isService, center, serviceEfficiency } from './services.js';
 import { hourOf } from './simulation.js';
 import { rng } from '../core/rng.js';
 import { newId } from '../core/state.js';
-import { makeRoadCost } from './traffic.js';
+import { makeEdgeCost } from './traffic.js';
+import { findRoute, routeCells, pointAtCell } from './roadgraph.js';
 import { linked } from './bridges.js';
 import { hasPerk } from '../data/progression.js';
 import { earn, charge } from './economy.js';
@@ -46,23 +47,33 @@ export function stopCellFor(state, type, cell) {
 }
 
 export function computeLinePath(state, ctx, line) {
-  const pass = passableFor(state, line.type);
-  const cost = line.type === 'bus' || line.type === 'tram' ? makeRoadCost(state, ctx, 'bus')
-    : line.type === 'train' ? (f, t, d) => (state.rail[f] && state.rail[t] && !linked(state, 'rail', f, t, d) ? Infinity : 1) : () => 1;
   const path = [];
   const stopIndex = [];
   const n = line.stops.length;
   if (n < 2) { line.path = null; line.valid = false; return; }
+  // buses and trams drive the road network (trams only where it has tram tracks)
+  const onRoads = line.type === 'bus' || line.type === 'tram';
+  const roadCost = onRoads ? makeEdgeCost(state, ctx, line.type) : null;
+  const edges = [];
+  const pass = onRoads ? null : passableFor(state, line.type);
+  const cost = line.type === 'train' ? (f, t, d) => (state.rail[f] && state.rail[t] && !linked(state, 'rail', f, t, d) ? Infinity : 1) : () => 1;
   for (let k = 0; k < n; k++) {
     const a = line.stops[k], b = line.stops[(k + 1) % n];
-    const links = line.type === 'train' ? jumpLinks(state, 'rail') : line.type === 'bus' || line.type === 'tram' ? jumpLinks(state, 'road') : null;
-    const seg = astar(a, b, pass, (f, t, d) => (Number.isFinite(cost(f, t, d)) ? Math.max(0.3, cost(f, t, d)) : 3), 0.3, N * N, links);
+    let seg = null;
+    if (onRoads) {
+      const r = findRoute(state, pointAtCell(state, a), pointAtCell(state, b), roadCost);
+      if (r) { seg = routeCells(state, r); edges.push(...r.edges); if (seg[0] !== a) seg.unshift(a); if (seg[seg.length - 1] !== b) seg.push(b); }
+    } else {
+      const links = line.type === 'train' ? jumpLinks(state, 'rail') : null;
+      seg = astar(a, b, pass, (f, t, d) => (Number.isFinite(cost(f, t, d)) ? Math.max(0.3, cost(f, t, d)) : 3), 0.3, N * N, links);
+    }
     if (!seg) { line.path = null; line.valid = false; line.problem = `No ${LINE_TYPES[line.type].name.toLowerCase()} route between stops ${k + 1} and ${((k + 1) % n) + 1}`; return; }
     stopIndex.push(path.length);
     path.push(...(k === 0 ? seg : seg.slice(1)));
   }
   line.path = path;
   line.stopIndex = stopIndex;
+  line.edges = onRoads ? edges : null;
   line.length = path.length;
   line.valid = true;
   line.problem = null;

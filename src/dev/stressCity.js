@@ -3,12 +3,18 @@
 import { setZone } from '../sim/build.js';
 import { planRoad, buildRoad } from '../sim/roadnet.js';
 
-// A straight road between the middles of two cells
+// A straight road between the middles of two cells (taking down any pylons in the way)
 function placeRoadLine(s, a, b, type) {
-  const plan = planRoad(s, { a: { x: a[0] + 0.5, z: a[1] + 0.5 }, b: { x: b[0] + 0.5, z: b[1] + 0.5 }, type });
+  const spec = { a: { x: a[0] + 0.5, z: a[1] + 0.5 }, b: { x: b[0] + 0.5, z: b[1] + 0.5 }, type };
+  let plan = planRoad(s, spec);
+  if (!plan.ok && plan.bad.some(([x, y]) => s.power[idx(x, y)])) {
+    for (const [x, y] of plan.bad) if (s.power[idx(x, y)]) removePylon(s, idx(x, y));
+    plan = planRoad(s, spec);
+  }
   if (!plan.ok) { console.warn('stress road', a, b, plan.reason); return null; }
   return buildRoad(s, plan);
 }
+import { removePylon } from '../sim/power.js';
 import { placeService } from '../sim/services.js';
 import { SERVICES } from '../data/services.js';
 import { TRANSPORT } from '../data/transport.js';
@@ -22,7 +28,7 @@ export function buildStress(app, { days = 7, size = 49, spacing = 7, road = 4 } 
   const X0 = C - 36, X1 = X0 + size - 1 + 1, Y0 = C - 24, Y1 = Y0 + size - 1 + 1;
   for (let x = X0; x <= X1; x += spacing) placeRoadLine(s, [x, Y0], [x, Y1], road);
   for (let y = Y0; y <= Y1; y += spacing) placeRoadLine(s, [X0, y], [X1, y], road);
-  placeRoadLine(s, [X0, C], [C - 20, C], 4);
+  // (the highway already comes in along y = C, as far as C - 20)
   placeRoadLine(s, [X0, Y1 + 6], [X1, Y1 + 6], 4);
   placeRoadLine(s, [X0, Y1], [X0, Y1 + 6], 4);
   app.sim.refreshNetworks();

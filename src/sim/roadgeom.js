@@ -163,7 +163,9 @@ export function segX(ax, az, bx, bz, cx, cz, dx, dz) {
   if (Math.abs(den) < 1e-12) return null;
   const qx = cx - ax, qz = cz - az;
   const t = (qx * sz - qz * sx) / den, u = (qx * rz - qz * rx) / den;
-  return t >= 0 && t <= 1 && u >= 0 && u <= 1 ? [t, u] : null;
+  // (a little slack, so a road ending exactly on the other line still counts as crossing it)
+  const e = 1e-7;
+  return t >= -e && t <= 1 + e && u >= -e && u <= 1 + e ? [Math.min(1, Math.max(0, t)), Math.min(1, Math.max(0, u))] : null;
 }
 
 // Signed angle between two directions (radians, -π..π)
