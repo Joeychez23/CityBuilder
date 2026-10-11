@@ -11,6 +11,7 @@ import { rn, segY, nodeY, leaveDir, groundAt, profileAt, openAt, nearestSeg } fr
 import { bez, bezTan, tAtS, arcTable } from '../sim/roadgeom.js';
 import { chainCells } from '../sim/roadraster.js';
 import { BRIDGE_STYLE } from './networksView.js';
+import { roadWidth, asphaltWidth, laneOffset, tramLane, junctionLayout, edgeMeet, ROUND } from '../sim/lanes.js';
 
 const LIFT = { base: 0.03, asphalt: 0.065, line: 0.078 };
 const SKIRT = 0.4;
@@ -18,9 +19,7 @@ const col = new THREE.Color();
 const BARRIER_C = new THREE.Color('#8fa3a8'), PORTAL_C = new THREE.Color('#a9a49a'), MOUTH_C = new THREE.Color('#1d1f22'), ROOF_C = new THREE.Color('#8d877b');
 const PIER_C = new THREE.Color('#a29d93'), TRAM_C = new THREE.Color('#6b6157'), WHITE = new THREE.Color('#e8e8e8');
 
-// The kerb-to-kerb width of a road and of its asphalt
-export const roadWidth = (def) => (def.key === 'gravel' ? 0.8 : 1);
-export const asphaltWidth = (def) => def.width * 0.82;
+export { roadWidth, asphaltWidth };
 const kerbColor = (def) => (def.key === 'highway' ? '#7d7f84' : def.key === 'gravel' ? '#9a8b72' : '#b8b5ae');
 const lineColor = (def) => (def.oneway || def.key === 'highway' ? '#e8e8e8' : '#f1c94a');
 
@@ -87,60 +86,7 @@ export function createRoadsView(view, state) {
   }
 
   // ------------------------------------------------------------- junctions
-  // For each node: how far back each road meeting there is cut (by segment end), and the
-  // outline of the junction surface between them. Roads are taken anticlockwise round the
-  // node; between each road and the next, their facing kerbs meet (if the gap between them is
-  // less than a half turn), and that's how far both are cut back.
-  function junctions(X) {
-    const trims = new Map(); // `${sid}:${nid}` -> distance cut back
-    const shapes = [];
-    for (const n of X.node.values()) {
-      const ends = (X.at.get(n.id) || []).filter((id) => X.geo.has(id)).map((id) => {
-        const d = leaveDir(X, id, n.id);
-        const def = ROADS[X.seg.get(id).type];
-        return { id, d, ang: Math.atan2(d[1], d[0]), w: roadWidth(def) / 2, a: asphaltWidth(def) / 2, def, trim: 0 };
-      });
-      if (!ends.length) continue;
-      ends.sort((p, q) => p.ang - q.ang);
-      if (ends.length === 1) { shapes.push({ n, ends, cap: true }); continue; }
-      // a road carrying straight on through (two pieces in line) needs no junction
-      if (ends.length === 2 && ends[0].d[0] * ends[1].d[0] + ends[0].d[1] * ends[1].d[1] < -0.996) continue;
-      const m = ends.length;
-      for (let k = 0; k < m; k++) {
-        const e = ends[k], f = ends[(k + 1) % m];
-        const x = edgeMeet(e, f, e.w, f.w);
-        if (!x) continue;
-        e.trim = Math.max(e.trim, x[0]);
-        f.trim = Math.max(f.trim, x[1]);
-      }
-      for (const e of ends) {
-        e.trim = clamp(e.trim + 0.08, m > 2 ? e.w * 0.9 : 0.05, Math.min(3, X.geo.get(e.id).len * 0.45));
-        trims.set(`${e.id}:${n.id}`, e.trim);
-      }
-      shapes.push({ n, ends });
-    }
-    return { trims, shapes };
-  }
-  // The anticlockwise gap from end e round to end f (radians, 0..2π)
-  const gap = (e, f) => { let a = f.ang - e.ang; while (a <= 1e-6) a += Math.PI * 2; return a; };
-  // Where e's left kerb (the side toward f) meets f's right kerb: distances along each
-  // ([te, tf]), or null where the gap between them is a half turn or more (outside: for the
-  // outside of a bend, where those kerbs meet behind the node, at negative distances)
-  function edgeMeet(e, f, we, wf, outside = false) {
-    const g = gap(e, f);
-    if (!outside && g > Math.PI - 0.05) return null;
-    if (outside && (g < Math.PI + 0.05 || g > Math.PI * 2 - 0.2)) return null;
-    // n + e.d t + we (-e.dz, e.dx) = n + f.d u - wf (-f.dz, f.dx)
-    const ox = we * -e.d[1] + wf * -f.d[1], oz = we * e.d[0] + wf * f.d[0];
-    // e.d t - f.d u = -o
-    const det = e.d[0] * -f.d[1] - e.d[1] * -f.d[0];
-    if (Math.abs(det) < 1e-6) return null;
-    const t = (-ox * -f.d[1] - -oz * -f.d[0]) / det, u = (e.d[0] * -oz - e.d[1] * -ox) / det;
-    if (outside) return Math.abs(t) < 4 && Math.abs(u) < 4 ? [t, u] : null;
-    if (t < -0.01 || u < -0.01 || t > 6 || u > 6) return null;
-    return [Math.max(0, t), Math.max(0, u)];
-  }
-
+  // (laid out in sim/lanes.js: how far back each road is cut, and the junction's outline)
   // The junction surface at node n: a fan from the node through each road's cut-back kerbs,
   // with the corners between neighbouring roads rounded (half: kerb or asphalt half-width)
   function drawJunction(B, sh, half, y0, c, X) {
@@ -179,6 +125,21 @@ export function createRoadsView(view, state) {
       const lo = ring.map(([x, y, z]) => B.v(x, y - SKIRT, z, c));
       const hi = ring.map(([x, y, z]) => B.v(x, y, z, c));
       for (let k = 0; k < ring.length; k++) { const j = (k + 1) % ring.length; B.quad(lo[k], lo[j], hi[j], hi[k]); }
+    }
+  }
+
+  // A roundabout's island: a kerbed ring of grass in the middle of the junction
+  const GRASS_C = new THREE.Color('#5f8f4a'), ISLAND_KERB = new THREE.Color('#c9c5bb');
+  function drawIsland(B, n) {
+    const h = nodeY(state, n) + LIFT.asphalt;
+    for (const [r, top, c] of [[ROUND.island, 0.1, ISLAND_KERB], [ROUND.island - 0.05, 0.11, GRASS_C]]) {
+      const centre = B.v(n.x, h + top, n.z, c);
+      const hi = [], lo = [];
+      for (let j = 0; j < 20; j++) {
+        const a = (j / 20) * Math.PI * 2, x = n.x + Math.cos(a) * r, z = n.z + Math.sin(a) * r;
+        hi.push(B.v(x, h + top, z, c)); lo.push(B.v(x, h - 0.02, z, c));
+      }
+      for (let j = 0; j < 20; j++) { const k = (j + 1) % 20; B.tri(centre, hi[k], hi[j]); B.quad(lo[j], lo[k], hi[k], hi[j]); }
     }
   }
 
@@ -354,7 +315,10 @@ export function createRoadsView(view, state) {
     if (s1 - s0 < 0.1) return;
     for (const [r0, r1] of openRanges(X, s, s0, s1)) {
       const st = stations(X, s.id, r0, r1);
-      if ((s.upg || 0) & UPG.TRAM) for (const o of [-0.12, 0.12]) strip(L, st, o, 0.03, LIFT.line + 0.004, TRAM_C);
+      if ((s.upg || 0) & UPG.TRAM) {
+        const o = laneOffset(def, tramLane(def));
+        for (const c of def.oneway ? [o] : [o, -o]) for (const r of [-0.065, 0.065]) strip(L, st, c + r, 0.025, LIFT.line + 0.004, TRAM_C);
+      }
       if (def.key === 'gravel') continue;
       const lc = new THREE.Color(lineColor(def));
       // the centre line: dashed on local streets, solid on the rest (none on one-way roads)
@@ -416,7 +380,7 @@ export function createRoadsView(view, state) {
     paint = [];
     const X = rn(state);
     const B = new Builder(), L = new Builder();
-    const { trims, shapes } = junctions(X);
+    const { trims, shapes } = junctionLayout(state);
     for (const s of X.seg.values()) {
       if (!X.geo.has(s.id)) continue;
       drawSegment(B, X, s, trims);
@@ -436,7 +400,8 @@ export function createRoadsView(view, state) {
       const first = B.n;
       draw(B, sh, asphaltHalf, LIFT.asphalt, roadColor(top.id).clone(), X);
       paint.push([first, B.n - first, top.id]);
-      if (!sh.cap) drawCrossings(L, X, sh);
+      if (!sh.cap && !sh.round) drawCrossings(L, X, sh);
+      if (sh.round) drawIsland(B, sh.n);
       // a raised junction stands on a pier
       if (sh.n.elev > 0.3) {
         const g = Math.max(groundAt(state, sh.n.x, sh.n.z), state.seaLevel - 2);

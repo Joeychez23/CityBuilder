@@ -805,6 +805,15 @@ export function roadsideSpots(state, i, inset = 0.42) {
   return [[q.x - d[1] * inset, q.z + d[0] * inset], [q.x + d[1] * inset, q.z - d[0] * inset]];
 }
 
+// How high the road in a cell is (where its line passes nearest the cell's middle)
+export function roadLevel(state, i) {
+  const s = segAtCell(state, i);
+  const x = (i % N) + 0.5, z = ((i / N) | 0) + 0.5;
+  if (!s) return groundAt(state, x, z);
+  const g = rn(state).geo.get(s.id);
+  return segY(state, s.id, nearestOnCurve(g.c, g.tab, x, z).s);
+}
+
 // The segment under a cell (for code that still thinks in cells)
 export const segAtCell = (state, i) => (state.roadSeg?.[i] ? rn(state).seg.get(state.roadSeg[i]) || null : null);
 

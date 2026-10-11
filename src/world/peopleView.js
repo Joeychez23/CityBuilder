@@ -19,7 +19,10 @@ import { hourOf } from '../sim/simulation.js';
 import { center } from '../sim/services.js';
 import { makeRng } from '../core/rng.js';
 import { bus } from '../core/events.js';
-import { roadPathPoints } from '../sim/roadsegs.js';
+import { ROADS } from '../data/roads.js';
+import { rn, segY, pointOn, roadsideSpots } from '../sim/roadnet.js';
+import { pointAtCell } from '../sim/roadgraph.js';
+import { roadWidth, asphaltWidth } from '../sim/lanes.js';
 
 const CAP = 1600;
 const FACING_RY = [Math.PI / 2, 0, -Math.PI / 2, Math.PI]; // as buildings are turned (world/buildingsView.js)
@@ -54,12 +57,22 @@ export function createPeopleView(app) {
 
   const surfaceAt = (i) => {
     const D = getDeck(state);
-    if (state.road[i]) return D.road.center[i] + 0.075;
+    if (state.road[i]) { const r = roadPoint(i); if (r) return r.y; }
     if (state.path[i]) return D.path.center[i] + 0.05;
     return D.ground[i];
   };
+  // Beside a road cell: the point on its road nearest the cell, the road's direction there, its
+  // level, and how far out from its middle the pavement runs
+  function roadPoint(i) {
+    const A = pointAtCell(state, i);
+    if (!A) return null;
+    const { p, d } = pointOn(state, A.seg, A.s);
+    const def = ROADS[rn(state).seg.get(A.seg).type];
+    return { x: p[0], z: p[1], dx: d[0], dz: d[1], y: segY(state, A.seg, A.s) + 0.035, w: (roadWidth(def) + asphaltWidth(def)) / 4 };
+  }
 
-  // A walking route as points on the pavement (right-hand side), from door to door
+  // A walking route as points on the pavement (on the right of the way they walk, or the
+  // left: side), from door to door
   function walkPoints(from, to, doorA, doorB, side) {
     let cells;
     if (from === to) cells = [from];
@@ -71,16 +84,17 @@ export function createPeopleView(app) {
     if (!cells) return null;
     const pts = [];
     if (doorA) pts.push(doorA);
-    // along the pavement: the road's line (straightened on diagonal roads), off to one side
-    const mid = roadPathPoints(state, cells);
+    // along the pavement beside the road (footpaths down their middle)
+    const road = cells.map((i) => (state.road[i] ? roadPoint(i) : null));
+    const at = (k) => road[k] || { x: (cells[k] % N) + 0.5, z: ((cells[k] / N) | 0) + 0.5 };
     for (let k = 0; k < cells.length; k++) {
-      const i = cells[k];
-      const a = mid[Math.max(0, k - 1)], b = mid[Math.min(cells.length - 1, k + 1)];
-      let dx = b[0] - a[0], dz = b[1] - a[1];
-      const len = Math.hypot(dx, dz) || 1;
-      dx /= len; dz /= len;
-      const off = state.road[i] ? 0.4 * side : 0;
-      pts.push([mid[k][0] - dz * off, surfaceAt(i), mid[k][1] + dx * off]);
+      const i = cells[k], r = road[k];
+      if (!r) { pts.push([(i % N) + 0.5, surfaceAt(i), ((i / N) | 0) + 0.5]); continue; }
+      // which way along the road they're walking, and so which pavement is on their right
+      const a = at(Math.max(0, k - 1)), b = at(Math.min(cells.length - 1, k + 1));
+      const along = (b.x - a.x) * r.dx + (b.z - a.z) * r.dz >= 0 ? 1 : -1;
+      const o = r.w * side * along;
+      pts.push([r.x - r.dz * o, r.y, r.z + r.dx * o]);
     }
     if (doorB) pts.push(doorB);
     return pts;
@@ -302,7 +316,8 @@ export function createPeopleView(app) {
           continue;
         }
         if (n >= CAP) continue;
-        const x = (cell % N) + 0.82 - (k % 4) * 0.11, z = ((cell / N) | 0) + 0.8 - Math.floor(k / 4) * 0.11;
+        const [sx, sz] = roadsideSpots(state, cell, 0.5)[1];
+        const x = sx + 0.15 - (k % 4) * 0.1, z = sz + 0.1 - Math.floor(k / 4) * 0.1;
         p.set(x, surfaceAt(cell), z);
         q.identity();
         mesh.setMatrixAt(n, m.compose(p, q, s.set(1, 1, 1)));

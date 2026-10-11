@@ -7,8 +7,7 @@ import * as THREE from 'three';
 import { N, idx, DIRS, inBounds } from '../core/grid.js';
 import { cellHeight } from '../sim/mapgen.js';
 import { hasConnector, isPowerBuilding } from '../sim/power.js';
-import { roadsideSpots } from '../sim/roadsegs.js';
-import { getDeck } from '../sim/deck.js';
+import { roadsideSpots, roadLevel } from '../sim/roadnet.js';
 
 export const PYLON_H = 2.6; // tall enough to carry wires over roads and low buildings
 export const POLE_H = 1.15; // a Power Connector's pole
@@ -49,7 +48,7 @@ export function createPowerView(view, state) {
     }
     if (hasConnector(state, i)) {
       const [[px, pz]] = roadsideSpots(state, i, 0.46);
-      const h = getDeck(state).road.center[i] + POLE_H;
+      const h = roadLevel(state, i) + POLE_H;
       return { x: px, z: pz, low: h - 0.05, top: h, arm: 0.14 };
     }
     const b = state.buildings.get(state.bld[i]);

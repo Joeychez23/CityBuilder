@@ -141,9 +141,11 @@ class Heap {
 
 // A route from access point A to access point B. cost: { unit(edge) (cost per cell along it),
 // turn(prev edge, edge) (cost of the junction between them), ok(edge) }. minUnit: the least
-// unit cost there is (keeps the search admissible). Returns { edges, from, to, cost } (edges:
-// the directed edges driven, in order; the first and last only partly) or null.
-export function findRoute(state, A, B, cost, { minUnit = 0.4, maxExpand = 40000 } = {}) {
+// unit cost there is (keeps the search admissible); startDir: set off along A's road only this
+// way (1: toward its second node, -1: toward its first), e.g. a bus carrying on from a stop.
+// Returns { edges, from, to, cost } (edges: the directed edges driven, in order; the first and
+// last only partly) or null.
+export function findRoute(state, A, B, cost, { minUnit = 0.4, maxExpand = 40000, startDir = 0 } = {}) {
   if (!A || !B) return null;
   const Gr = graph(state);
   const X = Gr.X;
@@ -159,6 +161,7 @@ export function findRoute(state, A, B, cost, { minUnit = 0.4, maxExpand = 40000 
   // straight there along the same road
   if (A.seg === B.seg) {
     for (const d of ROADS[sa.type].oneway ? [1] : [1, -1]) {
+      if (startDir && d !== startDir) continue;
       if ((d > 0 && B.s >= A.s) || (d < 0 && B.s <= A.s)) {
         const e = Gr.edges.get(eidOf(A.seg, d));
         if (e && cost.ok(e)) { const c = Math.abs(B.s - A.s) * cost.unit(e); if (c < best) { best = c; bestFrom = { direct: e.id }; } }
@@ -167,6 +170,7 @@ export function findRoute(state, A, B, cost, { minUnit = 0.4, maxExpand = 40000 
   }
   // out of the start point to either end of its road
   for (const d of [1, -1]) {
+    if (startDir && d !== startDir) continue;
     const e = Gr.edges.get(eidOf(A.seg, d));
     if (!e || !cost.ok(e)) continue;
     const c = (d > 0 ? e.len - A.s : A.s) * cost.unit(e);
@@ -206,6 +210,19 @@ export function findRoute(state, A, B, cost, { minUnit = 0.4, maxExpand = 40000 
   for (let k = bestFrom.prev; k != null; k = came.get(k)) list.push(k);
   list.reverse();
   return { edges: list, from: A, to: B, cost: best };
+}
+
+// The same route driven the other way (null where a one-way road is on it)
+export function reverseRoute(state, r) {
+  if (!r) return null;
+  const Gr = graph(state);
+  const edges = [];
+  for (let k = r.edges.length - 1; k >= 0; k--) {
+    const b = reverseEdge(r.edges[k]);
+    if (!Gr.edges.has(b)) return null;
+    edges.push(b);
+  }
+  return { edges, from: r.to, to: r.from, cost: r.cost };
 }
 
 // What a route found earlier costs now (by the same cost functions)

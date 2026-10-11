@@ -8,7 +8,7 @@ import { N, idx, DIRS, inBounds, clamp } from '../core/grid.js';
 import { InstancedPool, boxMatrix, unitBox } from './instanced.js';
 import { ROADS, UPG } from '../data/roads.js';
 import { getDeck } from '../sim/deck.js';
-import { roadsideSpots } from '../sim/roadnet.js';
+import { roadsideSpots, roadLevel } from '../sim/roadnet.js';
 import { POLE_H } from './powerView.js';
 
 const m = new THREE.Matrix4();
@@ -160,7 +160,7 @@ export function createNetworksView(view, state) {
     for (const p of Object.values(pools)) p.clear();
     lamps.clear();
     const D = getDeck(state);
-    const R = D.road, RL = D.rail, P = D.path;
+    const RL = D.rail, P = D.path;
     const G = groundLayer(D.ground);
     for (let y = 0; y < N; y++) {
       for (let x = 0; x < N; x++) {
@@ -168,7 +168,7 @@ export function createNetworksView(view, state) {
         const type = state.road[i];
         if (type) {
           // (roads themselves are drawn by world/roadsView.js: here, what stands beside them)
-          const h = R.center[i];
+          const h = roadLevel(state, i);
           if (state.roadUpg[i] & UPG.LIGHTS) {
             const [[lx, lz]] = roadsideSpots(state, i);
             pools.lampPost.add(boxMatrix(lx, h, lz, 0.05, 0.75, 0.05, 0, m), '#555');
@@ -212,7 +212,7 @@ export function createNetworksView(view, state) {
     // Bus & tram stops: a pole with a coloured sign at the kerb
     for (const key of Object.keys(state.stops)) {
       const i = +key;
-      const y0 = R.center[i];
+      const y0 = roadLevel(state, i);
       const color = state.stops[key].type === 'tram' ? '#c94c4c' : '#3f8fd0';
       const [, [px, pz]] = roadsideSpots(state, i, 0.46);
       pools.pole.add(boxMatrix(px, y0, pz, 0.04, 0.55, 0.04, 0, m), '#cfcfcf');

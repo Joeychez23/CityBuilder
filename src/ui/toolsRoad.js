@@ -19,7 +19,7 @@ import { registerTool, money, segButtons, slider } from './tools.js';
 import { planRoad, buildRoad, nearestNode, nearestSeg, rn, leaveDir, retypeSeg, retypeCost, reverseSeg } from '../sim/roadnet.js';
 import { quadCurve, straightCurve, bezTan, isStraight } from '../sim/roadgeom.js';
 import { gridLayout } from '../sim/roadsegs.js';
-import { roadWidth } from '../world/roadsView.js';
+import { roadWidth } from '../sim/lanes.js';
 import { canAfford } from '../sim/build.js';
 import { landmarkSpanReason, landmarkCost, markLandmark } from '../sim/landmarkBridges.js';
 

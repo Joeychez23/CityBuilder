@@ -6,7 +6,7 @@
 // carries less (cars take turns at the lights). Where a road is over capacity the queue
 // backs up onto the roads leading into it. The volumes are also written onto the road's
 // cells (state.roadVol), for the noise, the info views and anything else that works by cell.
-import { N, idx, DIRS, inBounds, clamp } from '../core/grid.js';
+import { N, idx, clamp } from '../core/grid.js';
 import { ROADS, UPG, rankOf } from '../data/roads.js';
 import { buildingRoadComp } from './networks.js';
 import { isService, center } from './services.js';
@@ -14,20 +14,15 @@ import { hourOf } from './simulation.js';
 import { rng } from '../core/rng.js';
 import { bus } from '../core/events.js';
 import { transitOption } from './transit.js';
-import { linked, roadLinks } from './bridges.js';
 import { hasPerk } from '../data/progression.js';
 import { earn } from './economy.js';
 import { isOwned } from './build.js';
 import { waterTaxiOption } from './projects.js';
-import { isJump } from './tunnels.js';
-import { graph, findRoute, routeCost, routeCells, pointAtCell, segOfEdge } from './roadgraph.js';
+import { graph, findRoute, routeCost, routeCells, pointAtCell, segOfEdge, reverseRoute } from './roadgraph.js';
 import { rn } from './roadnet.js';
 import { chainCells } from './roadraster.js';
 
 const NN = N * N;
-
-// Roads a road cell connects to (3 or more = a junction)
-export const roadNeighbours = (state, i) => roadLinks(state, i);
 
 // How a junction is controlled: 0 none, 1 traffic lights, 2 roundabout, 3 give way (small
 // roads: one car at a time), 4 merge (highways and one-way roads), 5 priority (a local street
@@ -38,11 +33,6 @@ export function junctionKind(state, i) {
   const Gr = graph(state);
   const n = Gr.cellNode.get(i);
   return n == null ? 0 : Gr.kind.get(n) || 0;
-}
-
-// Is this a side street arriving at a priority junction (it has to give way)?
-export function givesWay(state, from, junction) {
-  return junctionKind(state, junction) === 5 && rankOf(state.road[from]) < rankOf(state.road[junction]);
 }
 
 // Vehicles per cell a road carries before slowing down. A road into a junction carries less
@@ -148,41 +138,6 @@ export function makeEdgeCost(state, ctx, vehicle = 'car') {
   return { unit, turn, ok };
 }
 
-// The travel cost cell by cell, for the vehicles you see while they still drive cell paths
-export function makeRoadCost(state, ctx, vehicle = 'car') {
-  const highSpeed = state.policies.highSpeedHighways;
-  const dists = state.districts;
-  const distPol = (i) => (state.district[i] ? dists.find((d) => d.id === state.district[i])?.policies : null);
-  const closed = state.closed;
-  return (from, to, d) => {
-    if (!linked(state, 'road', from, to, d)) return Infinity;
-    if (closed && closed[to]) return Infinity; // closed road (sim/closures.js)
-    const t = state.road[to];
-    const def = ROADS[t];
-    // one-way rules
-    if (ROADS[state.road[from]]?.oneway && state.roadDir[from] !== d) return Infinity;
-    if (def.oneway && (state.roadDir[to] + 2) % 4 === d) return Infinity;
-    let speed = def.speed * (highSpeed && def.key === 'highway' ? 1.2 : 1);
-    let c = 50 / speed;
-    // pulling out of a side street onto a busy main road takes a gap in the traffic
-    if (givesWay(state, from, to)) c += 0.3 + 1.5 * Math.min(2, congestion(state, to));
-    if (!(vehicle === 'bus' && state.roadUpg[to] & UPG.BUSLANE)) c *= jamFactor(congestion(state, to));
-    if (state.accident[to] > 0) c += 25;
-    if (state.roadUpg[to] & UPG.TOLL && vehicle !== 'service') c += (state.fees.toll ?? 3) * (vehicle === 'truck' ? 0.8 : 0.45);
-    c *= 1 + state.roadSnow[to] * 0.8 + (1 - state.roadCond[to]) * 0.4;
-    const nb = roadNeighbours(state, to);
-    if (nb >= 3) c += state.roadUpg[to] & UPG.ROUNDABOUT ? 0.1 : t >= 4 ? 0.35 : 0.15;
-    const p = distPol(to);
-    if (p) {
-      if (p.speedBumps) c *= 1.3;
-      if (p.heavyBan && vehicle === 'truck') c *= 6;
-      if (p.combustionBan && vehicle !== 'service') c *= 2.5;
-      if (p.gated && vehicle !== 'service') c *= 3;
-    }
-    return c;
-  };
-}
-
 // Road cell where a building's driveway meets the road (cached per network version)
 export function accessCell(state, ctx, b) {
   if (b.accessStamp !== ctx.netStamp) {
@@ -196,19 +151,6 @@ export function accessCell(state, ctx, b) {
 export function outsideCell(state) {
   const c = state.connections.find((k) => k.type === 'road');
   return c ? idx(c.x, c.y) : -1;
-}
-
-// What a route costs to drive right now (same units as the A* search). links: the tunnels and
-// underpasses it may go through (jumpLinks)
-const dirOf = (a, b) => (b === a + 1 ? 0 : b === a + N ? 1 : b === a - 1 ? 2 : 3);
-export function pathCost(path, cost, links = null) {
-  let c = 0;
-  for (let k = 1; k < path.length; k++) {
-    const a = path[k - 1], b = path[k];
-    if (isJump(a, b)) { const l = links?.get(a)?.find(([j]) => j === b); c += l ? l[1] : Infinity; continue; }
-    c += cost(a, b, dirOf(a, b));
-  }
-  return c;
 }
 
 // Routes are remembered, but drivers keep an eye on the traffic: once a remembered route has
@@ -235,6 +177,15 @@ export function route(state, ctx, a, b, vehicle = 'car') {
   cache.set(key, { path, stamp: ctx.netStamp, step: ctx.stepCount, cost: r ? r.cost : 0 });
   if (cache.size > 3000) cache.delete(cache.keys().next().value);
   return path;
+}
+
+// A route's cells the other way round, with the route itself reversed where it can be driven
+// back (no one-way roads on it)
+export function backAlong(state, path) {
+  const back = [...path].reverse();
+  const r = reverseRoute(state, path.route);
+  if (r) back.route = r;
+  return back;
 }
 
 export function rushFactor(h) {

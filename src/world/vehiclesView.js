@@ -1,28 +1,34 @@
-// Vehicles you can see. Cars, trucks, buses and service vehicles drive their routes in lanes
-// (one, two or three each way depending on the road), keep their distance from the vehicle
-// in front, and take turns at junctions: busy crossings have traffic lights that switch
-// between the two directions, roundabouts let cars in while there's room, small junctions
-// let one car through at a time, and nobody drives into a junction whose exit is backed up.
-// Where the simulation says a road carries more than it can, cars slow to a crawl, so queues
-// build up behind bottlenecks and spill back along the roads leading in. A driver stuck in a
-// queue, or about to join one, looks for another way and takes it when going round is quicker
-// than waiting. Trains and subways run on their tracks as a locomotive and its carriages (or
-// wagons), braking into each station; intercity trains come in from the outside railway to
-// your stations and freight trains to your cargo terminals, one at a time on the main line.
-// The occasional plane and ship visit. One InstancedMesh draws them all.
+// Vehicles you can see. Cars, trucks, buses and service vehicles drive their routes over the
+// road network in lanes (sim/lanes.js): along each road in the lane for their next turn (the
+// kerb lane to turn right, the inside lane to turn left), and through each junction on a curve
+// from the lane they came in on to the lane they leave on (round the island at a roundabout).
+// They keep their distance from the vehicle in front and take turns at junctions: busy
+// crossings have traffic lights that switch between the roads one way and the roads the other
+// way, roundabouts let cars in while there's room, small junctions let one car through at a
+// time, a side street gives way to the main road, and nobody drives into a junction whose
+// exit is backed up. Where the simulation says a road carries more than it can, cars slow to a
+// crawl, so queues build up behind bottlenecks and spill back along the roads leading in. A
+// driver stuck in a queue, or about to join one, looks for another way and takes it when going
+// round is quicker than waiting. Trains and subways run on their tracks as a locomotive and
+// its carriages (or wagons), braking into each station; intercity trains come in from the
+// outside railway to your stations and freight trains to your cargo terminals, one at a time
+// on the main line. The occasional plane and ship visit. One InstancedMesh draws them all.
 import * as THREE from 'three';
-import { N, clamp, DIRS, inBounds, idx } from '../core/grid.js';
-import { ROADS, UPG, rankOf } from '../data/roads.js';
+import { clamp, inBounds, idx } from '../core/grid.js';
+import { ROADS, UPG } from '../data/roads.js';
 import { LINE_TYPES } from '../data/transport.js';
 import { getDeck, deckBetween } from '../sim/deck.js';
 import { bus } from '../core/events.js';
 import { lineRunning } from '../sim/transit.js';
-import { roadPathPoints } from '../sim/roadsegs.js';
-import { roadMasks, linked } from '../sim/bridges.js';
-import { congestion, jamFactor, junctionKind, rushFactor, makeRoadCost, pathCost } from '../sim/traffic.js';
+import { linked } from '../sim/bridges.js';
+import { jamFactor, rushFactor, makeEdgeCost, edgeCongestion } from '../sim/traffic.js';
 import { astar } from '../sim/pathfind.js';
 import { hourOf } from '../sim/simulation.js';
-import { jumpLinks, isJump } from '../sim/tunnels.js';
+import { isJump } from '../sim/tunnels.js';
+import { rn, segY } from '../sim/roadnet.js';
+import { bez, bezTan, tAtS } from '../sim/roadgeom.js';
+import { graph, findRoute, routeCost, pointAtCell, reverseEdge } from '../sim/roadgraph.js';
+import { buildLegs, legPoint, junctionLayout, roadWidth, asphaltWidth } from '../sim/lanes.js';
 
 const CAP = 1800;
 const CAR_COLORS = ['#d9d9d9', '#3a3d42', '#b8302a', '#2f5ba8', '#e6e2d6', '#6b7b8c', '#2e6b46', '#c9a227', '#7a2f5a'];
@@ -33,7 +39,6 @@ const SIZES = {
 const SERVICE_COLORS = { garbage: '#4a8f3c', police: '#2a4fb5', health: '#f2f2f2', fire: '#d33a2c', comms: '#e7c34f', transport: '#e3a63a' };
 // Emergency vehicles: body colour and the two colours their lights flash between
 const SIREN = { fire: ['#d33a2c', '#ffd300', '#ff2a2a'], police: ['#2a4fb5', '#ff2a2a', '#2f6bff'], health: ['#f2f2f2', '#ff2a2a', '#f2f2f2'] };
-const ON_ROADS = new Set(['car', 'taxi', 'truck', 'service', 'emergency', 'bus', 'tram']);
 
 // Driving: speeds in cells per second of "visual time" (real time × game speed)
 const BASE_SPEED = 2.9;   // at 45 km/h
@@ -41,15 +46,18 @@ const HEADWAY = 0.4;      // seconds behind the car in front
 const MIN_GAP = 0.06;     // cells between bumpers when stopped
 const ACCEL = 2.5, BRAKE = 14;
 const GIVE_UP = 25;       // a car stuck this long (gridlock) is taken off the map
-// Traffic lights: a cycle of SIGNAL_CYCLE seconds, split between the two directions by how
-// much each road carries, with a short all-red between
+const LOOK = 8;           // how far ahead (cells) a driver looks for the car in front
+const DECIDE = 2.5;       // how close to a junction a driver decides whether to go or wait
+// Traffic lights: a cycle of SIGNAL_CYCLE seconds, split between the two groups of roads by
+// how much each carries, with a short all-red between
 const SIGNAL_CYCLE = 7, ALL_RED = 0.05;
 // Rerouting: a driver crawling this long (or seeing this many crawling cars just ahead) looks
 // for another way, at most every REROUTE_EVERY seconds, and takes it when it saves a fifth of
 // the time left. Each car crawling in a lane is about QUEUE_COST of route cost (≈ a second).
 const REROUTE_WAIT = 1.2, QUEUE_AHEAD = 4, REROUTE_EVERY = 4, BETTER = 0.8, QUEUE_COST = 3;
-const REROUTES_PER_FRAME = 4;
+const REROUTES_PER_FRAME = 4, SEARCHES_PER_FRAME = 6;
 const CAN_REROUTE = new Set(['car', 'taxi', 'truck', 'service', 'emergency']);
+const vehicleKind = (type) => (type === 'truck' ? 'truck' : type === 'service' || type === 'emergency' ? 'service' : type === 'bus' || type === 'tram' ? type : 'car');
 
 // Trains: cars [length, parts], each part a box { x along the car, y up from its floor, l, h, w }.
 // A train set has a driving end at each end, so it can set off back the way it came.
@@ -92,11 +100,8 @@ function turnsBack(path, s) {
   return path[s - 1] === path[s + 1];
 }
 
-// (through a tunnel or under a bridge the next cell on the way isn't a neighbour)
-const jumpDir = (a, b) => { const dx = (b % N) - (a % N), dy = ((b / N) | 0) - ((a / N) | 0); return Math.abs(dx) >= Math.abs(dy) ? (dx > 0 ? 0 : 2) : dy > 0 ? 1 : 3; };
-const dirOf = (a, b) => (b === a + 1 ? 0 : b === a + N ? 1 : b === a - 1 ? 2 : b === a - N ? 3 : jumpDir(a, b));
 
-export function createVehiclesView(view, state) {
+export function createVehiclesView(view, state, ctx) {
   const geo = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0);
   const mat = new THREE.MeshStandardMaterial({ roughness: 0.5, metalness: 0.3 });
   const mesh = new THREE.InstancedMesh(geo, mat, CAP + RAIL_CAP);
@@ -106,13 +111,14 @@ export function createVehiclesView(view, state) {
   mesh.setColorAt(0, new THREE.Color('#fff'));
   view.scene.add(mesh);
 
-  // Traffic light heads: two posts per signalled junction, each with a lamp for each direction
+  // Traffic lights: a post at the stop line of each road into a signalled junction, its lamp
+  // showing that road's light
   const lampMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0), new THREE.MeshBasicMaterial(), 2048);
   lampMesh.count = 0;
   lampMesh.frustumCulled = false;
   lampMesh.setColorAt(0, new THREE.Color('#fff'));
   view.scene.add(lampMesh);
-  const postMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0), new THREE.MeshStandardMaterial({ color: '#3a3c40', roughness: 0.7 }), 1024);
+  const postMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0), new THREE.MeshStandardMaterial({ color: '#3a3c40', roughness: 0.7 }), 2048);
   postMesh.count = 0;
   postMesh.frustumCulled = false;
   view.scene.add(postMesh);
@@ -129,34 +135,62 @@ export function createVehiclesView(view, state) {
   view.scene.add(ship);
 
   const agents = [];
-  const lineAgents = new Map(); // line id -> { version, agents }
+  const lineAgents = new Map(); // line id -> { version, parts, agents }
   const vv = { agents, visible: true, showUnderground: false, jams: 0, reroutes: 0 };
-  const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
+  const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
   const off = new THREE.Vector3(), euler = new THREE.Euler(), pf = { x: 0, y: 0, z: 0 }, pr = { x: 0, y: 0, z: 0 };
+  const pt = { x: 0, y: 0, z: 0, hx: 1, hz: 0, dy: 0 };
   const c = new THREE.Color();
 
-  // Vehicles ride on the same deck heights the roads and rails are drawn with
+  // Trains ride on the same deck heights the railways are drawn with
   const surface = (i0, i1, f, type) => {
     const D = getDeck(state);
     if (type === 'subway') return D.ground[i0] * (1 - f) + D.ground[i1] * f;
-    return deckBetween(type === 'train' ? D.rail : D.road, i0, i1, f);
+    return deckBetween(D.rail, i0, i1, f);
   };
 
-  function makeAgent(path, extra) {
-    const onRoad = ON_ROADS.has(extra.type);
-    const pts = onRoad ? roadPathPoints(state, path) : path.map((i) => [(i % N) + 0.5, ((i / N) | 0) + 0.5]);
+  // A vehicle on the roads, driving the routes in `parts` (see buildLegs in sim/lanes.js)
+  function roadAgent(parts, extra) {
+    const policy = extra.type === 'bus' ? 'kerb' : extra.type === 'tram' ? 'tram' : 'car';
+    const pref = extra.type === 'truck' ? 0 : Math.floor(Math.random() * 3);
+    const built = buildLegs(state, parts, { policy, pref, loop: !!extra.loop });
+    if (!built?.legs.length) return null;
+    return { legs: built.legs, starts: built.starts, k: 0, q: built.legs[0].q0, v: 0, wait: 0, policy, pref, route: parts.length === 1 ? parts[0] : null, len: (SIZES[extra.type] || SIZES.car)[0], ...extra };
+  }
+  // A trip handed over without its route (a route the simulation didn't keep): found again here
+  let searches = 0;
+  function partsFor(path, type) {
+    if (path.parts) return path.parts;
+    if (path.route) return [path.route];
+    if (searches <= 0) return null;
+    searches--;
+    const cost = makeEdgeCost(state, ctx, vehicleKind(type));
     const L = path.length - 1;
-    const seg = new Float32Array(Math.max(1, L));
-    for (let k = 0; k < L; k++) seg[k] = Math.max(0.05, Math.hypot(pts[k + 1][0] - pts[k][0], pts[k + 1][1] - pts[k][1]));
-    const big = extra.type === 'truck' || extra.type === 'bus' || extra.type === 'tram';
-    return { path, pts, seg, t: 0, v: 0, wait: 0, lane: big ? 0 : Math.floor(Math.random() * 3), onRoad, len: (SIZES[extra.type] || SIZES.car)[0], ...extra };
+    const A = pointAtCell(state, path[0]), B = pointAtCell(state, path[L]);
+    if (!A || !B) return null;
+    if (path[0] === path[L]) {
+      const M = pointAtCell(state, path[L >> 1]);
+      const r1 = M && findRoute(state, A, M, cost, { maxExpand: 8000 }), r2 = r1 && findRoute(state, M, A, cost, { maxExpand: 8000 });
+      return r1 && r2 ? [r1, r2] : null;
+    }
+    const r = findRoute(state, A, B, cost, { maxExpand: 8000 });
+    return r ? [r] : null;
+  }
+  // Where a vehicle pulls over beside the road in a cell (at the scene of a fire, an accident)
+  function kerbSpot(cell) {
+    const A = pointAtCell(state, cell);
+    if (!A) return null;
+    const X = rn(state), g = X.geo.get(A.seg), def = ROADS[X.seg.get(A.seg).type];
+    const t = tAtS(g.tab, A.s), P = bez(g.c, t), d = bezTan(g.c, t);
+    const o = asphaltWidth(def) / 2 - 0.1;
+    return { x: P[0] - d[1] * o, y: segY(state, A.seg, A.s) + 0.07, z: P[1] + d[0] * o, hx: d[0], hz: d[1] };
   }
 
   // How many cars and trucks to show: grows with the population and follows the rush hours
   // (at every game speed the same picture, rather than more cars the slower time runs)
   vv.target = () => Math.min(CAP - 120, 50 + state.citizens.size * 0.35) * Math.min(1, rushFactor(hourOf(state)) / 1.3);
   bus.on('vehicle:spawn', ({ path, type, svc, siren, patrol, color: forced, onArrive, speed, owner, limit }) => {
-    if (path.length < 2) return;
+    if (!path || path.length < 2) return;
     // a depot shows no more of its vehicles than it has (see showTruck in sim/garbage.js)
     if (owner != null && limit != null) {
       let mine = 0;
@@ -177,156 +211,162 @@ export function createVehiclesView(view, state) {
       if (siren) flash = SIREN[kind];
     }
     const factor = speed ?? (type === 'emergency' ? (siren ? 1.6 : patrol ? 0.7 : 1.05) : type === 'truck' ? 0.85 : 0.9 + Math.random() * 0.2);
-    agents.push(makeAgent(path, { type, color, flash, onArrive, factor, owner }));
+    const parts = partsFor(path, type);
+    const a = parts && roadAgent(parts, { type, color, flash, onArrive, factor, owner });
+    // (pulling out where a car is already standing: it waits for the next time)
+    if (!a || blocked(a)) { onArrive?.(); return; }
+    agents.push(a);
   });
+  function blocked(a) {
+    const key = a.legs[0].key;
+    for (const o of agents) if (o.legs && o.legs[o.k].key === key && Math.abs(o.q - a.q) < (o.len + a.len) / 2 + 0.05) return !a.flash;
+    return false;
+  }
   // A bulldozed depot or station takes its vehicles with it
   bus.on('building:remove', (b) => {
     for (let k = agents.length - 1; k >= 0; k--) if (agents[k].owner === b.id) agents.splice(k, 1);
   });
   // Fire engines and police cars stay at the scene, lights flashing, while they work
   bus.on('emergency:arrived', (inc) => {
-    const end = inc.path[inc.path.length - 1];
-    agents.push({ path: [end, end], t: 0, v: 0, type: 'emergency', color: SIREN[inc.kind][0], flash: SIREN[inc.kind], parked: true, until: () => inc.phase === 'scene' });
+    const at = kerbSpot(inc.path[inc.path.length - 1]);
+    if (at) agents.push({ at, parked: true, v: 0, type: 'emergency', color: SIREN[inc.kind][0], flash: SIREN[inc.kind], until: () => inc.phase === 'scene' });
   });
   bus.on('accident', ({ cell }) => {
-    agents.push({ path: [cell, cell], t: 0, v: 0, type: 'service', color: '#2a4fb5', parked: true, life: 6 });
+    const at = kerbSpot(cell);
+    if (at) agents.push({ at, parked: true, v: 0, type: 'service', color: '#2a4fb5', life: 6 });
   });
 
   // ------------------------------------------------------------- junctions
-  // kind per cell (see junctionKind), and for traffic lights how the cycle is split
-  let J = new Uint8Array(N * N), splitX = new Float32Array(N * N), offset = new Float32Array(N * N);
-  let signals = [];
-  let jDirty = true;
-  // A road removed under a vehicle's route: it leaves the map rather than driving over the gap
+  // The signalled junctions: when each one's cycle starts, and a post at each road into it
+  let posts = [], sigDirty = true;
+  const sigOffset = new Map();
+  // A road changed under a vehicle's route: it leaves the map rather than drive over the gap
   let routesDirty = false;
-  bus.on('network:changed', () => { jDirty = true; routesDirty = true; });
+  bus.on('network:changed', ({ layer } = {}) => { if (!layer || layer === 'road') { sigDirty = true; routesDirty = true; } });
   function dropBrokenRoutes() {
     routesDirty = false;
+    const X = rn(state);
+    const ok = (L) => (L.kind === 0 ? X.seg.has(L.seg) && Math.abs((X.geo.get(L.seg)?.len ?? -1) - L.slen) < 1e-6 : L.node < 0 || X.node.has(L.node));
     for (let k = agents.length - 1; k >= 0; k--) {
       const a = agents[k];
-      if (!a.onRoad || a.parked) continue;
-      const links = jumpLinks(state, 'road');
-      for (let j = Math.floor(a.t); j < a.path.length; j++) {
-        // (a tunnel or underpass on the way that's gone breaks the route too)
-        const gone = j > 0 && isJump(a.path[j - 1], a.path[j]) && !links?.get(a.path[j - 1])?.some(([n]) => n === a.path[j]);
-        if (!state.road[a.path[j]] || gone) { agents.splice(k, 1); a.onArrive?.(a); break; }
-      }
+      if (!a.legs) continue;
+      for (let j = a.k; j < a.legs.length; j++) if (!ok(a.legs[j])) { agents.splice(k, 1); a.onArrive?.(a); break; }
     }
   }
-  function rebuildJunctions() {
-    J = new Uint8Array(N * N);
-    signals = [];
-    for (let i = 0; i < N * N; i++) {
-      if (!state.road[i]) continue;
-      const k = junctionKind(state, i);
-      if (!k) continue;
-      J[i] = k;
-      if (k !== 1) continue;
-      // green time follows how much each direction's roads can carry
-      const x = i % N, y = (i / N) | 0;
-      const links = roadMasks(state)[i];
-      const capOf = (d) => (links & (1 << d) ? ROADS[state.road[idx(x + DIRS[d][0], y + DIRS[d][1])]].capacity : 0);
-      const cx = Math.max(capOf(0), capOf(2)), cz = Math.max(capOf(1), capOf(3));
-      splitX[i] = clamp(cx / Math.max(1, cx + cz), 0.3, 0.7);
-      offset[i] = (((i * 2654435761) >>> 0) / 4294967296) * SIGNAL_CYCLE;
-      signals.push(i);
+  function rebuildSignals() {
+    sigDirty = false;
+    const X = rn(state), Gr = graph(state), J = junctionLayout(state);
+    posts = [];
+    for (const sh of J.shapes) {
+      const n = sh.n;
+      if (sh.cap || (Gr.kind.get(n.id) || 0) !== 1) continue;
+      sigOffset.set(n.id, (((n.id * 2654435761) >>> 0) / 4294967296) * SIGNAL_CYCLE);
+      for (const e of sh.ends) {
+        const seg = X.seg.get(e.id);
+        // (a one-way road leaving the junction has no traffic coming in to stop)
+        if (e.def.oneway && seg.a === n.id) continue;
+        const w = roadWidth(e.def) / 2 - 0.05;
+        const y = segY(state, e.id, seg.a === n.id ? e.trim : X.geo.get(e.id).len - e.trim);
+        // at the stop line, on the right of the traffic coming in
+        posts.push({ node: n.id, grp: J.grp.get(`${e.id}:${n.id}`) || 0, x: n.x + e.d[0] * e.trim + e.d[1] * w, y, z: n.z + e.d[1] * e.trim - e.d[0] * w });
+      }
     }
-    jDirty = false;
     placeSignals();
   }
-  // phase in 0..1 of a signalled junction's cycle; X = the east-west road has green
-  const phase = (i) => (((clock + offset[i]) % SIGNAL_CYCLE) + SIGNAL_CYCLE) % SIGNAL_CYCLE / SIGNAL_CYCLE;
-  function green(i, d) {
-    const ph = phase(i), sx = splitX[i];
-    return d === 0 || d === 2 ? ph > ALL_RED && ph < sx : ph > sx + ALL_RED;
+  // phase in 0..1 of a signalled junction's cycle
+  const phase = (nid) => (((clock + (sigOffset.get(nid) || 0)) % SIGNAL_CYCLE) + SIGNAL_CYCLE) % SIGNAL_CYCLE / SIGNAL_CYCLE;
+  const splitOf = (nid) => junctionLayout(state).split.get(nid) ?? 0.5;
+  function green(nid, grp) {
+    const ph = phase(nid), sx = splitOf(nid);
+    return grp === 0 ? ph > ALL_RED && ph < sx : ph > sx + ALL_RED;
   }
-
   function placeSignals() {
-    const D = getDeck(state);
-    let n = 0, lamps = 0;
-    for (const i of signals) {
-      if (n >= 1000) break;
-      const x = i % N, y = (i / N) | 0, h = D.road.center[i];
-      for (const [ox, oz] of [[0.06, 0.06], [0.94, 0.94]]) {
-        postMesh.setMatrixAt(n++, m.compose(p.set(x + ox, h, y + oz), q.identity(), s.set(0.04, 0.62, 0.04)));
-        for (const [lx, lz] of [[0.07, 0], [0, 0.07]]) {
-          if (lamps >= 2040) break;
-          lampMesh.setMatrixAt(lamps++, m.compose(p.set(x + ox + (ox < 0.5 ? lx : -lx), h + 0.55, y + oz + (oz < 0.5 ? lz : -lz)), q.identity(), s.set(0.06, 0.08, 0.06)));
-        }
-      }
+    let n = 0;
+    for (const P of posts) {
+      if (n >= 2040) break;
+      postMesh.setMatrixAt(n, m.compose(p.set(P.x, P.y, P.z), q.identity(), s.set(0.04, 0.62, 0.04)));
+      lampMesh.setMatrixAt(n, m.compose(p.set(P.x, P.y + 0.55, P.z), q.identity(), s.set(0.07, 0.09, 0.07)));
+      n++;
     }
-    postMesh.count = n;
-    lampMesh.count = lamps;
+    postMesh.count = lampMesh.count = n;
     postMesh.instanceMatrix.needsUpdate = true;
     lampMesh.instanceMatrix.needsUpdate = true;
   }
   function colorSignals() {
-    let lamps = 0;
     const RED = '#ff3b2f', GREEN = '#39e07a', AMBER = '#ffb300';
-    for (const i of signals) {
-      if (lamps >= 2040) break;
-      const ph = phase(i), sx = splitX[i];
-      const xs = ph > ALL_RED && ph < sx ? (sx - ph < 0.08 ? AMBER : GREEN) : RED;
-      const zs = ph > sx + ALL_RED ? (1 - ph < 0.08 ? AMBER : GREEN) : RED;
-      // each post has a lamp facing the east-west road and one facing the north-south road
-      for (let k = 0; k < 2; k++) { lampMesh.setColorAt(lamps++, c.set(xs)); lampMesh.setColorAt(lamps++, c.set(zs)); }
+    let n = 0;
+    for (const P of posts) {
+      if (n >= 2040) break;
+      const ph = phase(P.node), sx = splitOf(P.node);
+      const end = P.grp === 0 ? sx : 1;
+      lampMesh.setColorAt(n++, c.set(green(P.node, P.grp) ? (end - ph < 0.08 ? AMBER : GREEN) : RED));
     }
     if (lampMesh.instanceColor) lampMesh.instanceColor.needsUpdate = true;
   }
 
-  // ------------------------------------------------------------- lanes
-  const lanesAt = (cell) => { const t = state.road[cell]; return t ? ROADS[t].lanes : 1; };
-  const laneOn = (a, k) => Math.min(a.lane, lanesAt(a.path[Math.min(k + 1, a.path.length - 1)]) - 1);
-  const edgeKey = (a, b, lane) => (a * 4 + dirOf(a, b)) * 4 + lane;
-  // how far right of the road's centre line a lane runs (lane 0 is next to the kerb)
-  function laneOffset(a, cell) {
-    const t = state.road[cell];
-    if (!t || !a.onRoad) return a.type === 'tram' ? 0 : 0.17;
-    const def = ROADS[t];
-    const lanes = def.lanes, lane = Math.min(a.lane, lanes - 1);
-    const w = def.width * 0.41;
-    if (def.oneway) return -w + (2 * w * (lanes - lane - 0.5)) / lanes;
-    return (w * (lanes - lane - 0.5)) / lanes + 0.02;
-  }
-
-  function speedCap(a, cell) {
-    const t = state.road[cell];
-    let v = (t ? ROADS[t].speed / 45 : 0.8) * BASE_SPEED * (a.factor ?? 1);
-    if (!t) return v;
-    // the simulation's congestion: over-capacity roads crawl (sirens push through)
-    const r = congestion(state, cell);
-    const busLane = (a.type === 'bus' || a.type === 'tram') && state.roadUpg[cell] & UPG.BUSLANE;
-    if (!busLane) v /= jamFactor(a.flash ? r * 0.4 : r);
-    if (state.accident[cell] > 0 && !a.flash) v *= 0.15;
-    return Math.max(v, 0.05);
-  }
-
+  // ------------------------------------------------------------- lines
   let clock = 0, rclock = 0; // driving time (follows the game speed) and real time (for flashing lights)
-  const occ = new Map();
-  const jOcc = new Map(); // (junction × 2 + axis) -> vehicles inside it moving east-west (0) or north-south (1)
-  const crawl = new Map(); // (cell entered × 4 + heading) -> cars crawling towards it
-
+  // Where along its loop a line vehicle is (distance from the first stop)
+  const loopDist = (a) => a.cum[a.k] + (a.q - a.legs[a.k].q0);
+  function setLoopDist(a, d) {
+    let k = 0;
+    while (k < a.legs.length - 1 && a.cum[k + 1] <= d) k++;
+    a.k = k;
+    a.q = a.legs[k].q0 + Math.min(a.legs[k].len, d - a.cum[k]);
+  }
   function syncLines() {
     const seen = new Set();
     for (const line of state.lines) {
       seen.add(line.id);
       const version = `${line.path?.length}-${line.vehicles}-${line.valid}-${line.stops.join(',')}`;
       const cur = lineAgents.get(line.id);
-      if (cur && cur.version === version) continue;
+      if (cur && cur.version === version && cur.parts === line.parts) continue;
       const list = [];
       if (line.valid && line.path) {
         const n = Math.min(line.vehicles, 10);
-        for (let k = 0; k < n; k++) {
-          const a = makeAgent(line.path, { type: line.type, color: line.type === 'bus' ? line.color : LINE_TYPES[line.type].color, factor: LINE_TYPES[line.type].speed, loop: true, line, pax: [] });
-          a.t = (k / n) * (line.path.length - 1);
-          a.lane = 0;
-          if (line.type === 'train' || line.type === 'subway') { a.cars = trainSet(line.type, line); a.setLen = setLength(a.cars); a.dwellTime = 1.2; }
-          list.push(a);
+        const road = line.type === 'bus' || line.type === 'tram';
+        const color = line.type === 'bus' ? line.color : LINE_TYPES[line.type].color;
+        const first = road && line.parts && roadAgent(line.parts, { type: line.type, color, loop: true });
+        if (first) {
+          // (the vehicles of a line share its legs)
+          const cum = new Float64Array(first.legs.length + 1);
+          for (let k = 0; k < first.legs.length; k++) cum[k + 1] = cum[k] + first.legs[k].len;
+          const total = cum[first.legs.length];
+          const stopD = first.starts.map((st) => cum[st.leg] + (st.q - first.legs[st.leg].q0));
+          for (let k = 0; k < n; k++) {
+            const a = { ...first, cum, total, stopD, factor: LINE_TYPES[line.type].speed, loop: true, line, pax: [], v: 0, wait: 0 };
+            setLoopDist(a, (k / n) * total);
+            list.push(a);
+          }
+        } else if (!road) {
+          for (let k = 0; k < n; k++) {
+            const a = { path: line.path, type: line.type, color, factor: LINE_TYPES[line.type].speed, loop: true, line, pax: [], t: (k / n) * (line.path.length - 1), v: 0 };
+            a.cars = trainSet(line.type, line); a.setLen = setLength(a.cars); a.dwellTime = 1.2;
+            list.push(a);
+          }
         }
       }
-      lineAgents.set(line.id, { version, agents: list });
+      lineAgents.set(line.id, { version, parts: line.parts, agents: list });
     }
     for (const id of [...lineAgents.keys()]) if (!seen.has(id)) lineAgents.delete(id);
+  }
+  // A bus or tram drives on, and stops at each stop it comes to while riders get on and off
+  function stepLineVehicle(a, dtv) {
+    if (a.dwell > 0) { a.dwell -= dtv; return; }
+    const before = loopDist(a);
+    const moved = drive(a, dtv);
+    a.wait = 0; // line vehicles never give up
+    const after = before + moved;
+    for (let si = 0; si < a.stopD.length; si++) {
+      const d = a.stopD[si];
+      // (round the end of the loop, the first stop again)
+      const hit = (d > before + 1e-6 && d <= after + 1e-6) || (after >= a.total - 1e-6 && d + a.total > before + 1e-6 && d + a.total <= after + 1e-6);
+      if (!hit) continue;
+      setLoopDist(a, d);
+      a.dwell = 0.6; a.v = 0;
+      vv.onStop?.(a, a.line.stops[si], si);
+      break;
+    }
   }
 
   // ------------------------------------------------------------- drawing
@@ -334,27 +374,16 @@ export function createVehiclesView(view, state) {
   function place(a) {
     if (a.cars) { placeTrain(a); return; }
     if (n >= CAP) return;
-    const L = a.path.length - 1;
-    const k = Math.min(Math.floor(a.t), Math.max(0, L - 1));
-    const f = L ? a.t - k : 0;
-    const i0 = a.path[k], i1 = a.path[Math.min(k + 1, L)];
-    const P0 = a.pts?.[k], P1 = a.pts?.[Math.min(k + 1, L)];
-    const x0 = P0 ? P0[0] : (i0 % N) + 0.5, z0 = P0 ? P0[1] : ((i0 / N) | 0) + 0.5;
-    const x1 = P1 ? P1[0] : (i1 % N) + 0.5, z1 = P1 ? P1[1] : ((i1 / N) | 0) + 0.5;
-    let fx = x1 - x0, fz = z1 - z0;
-    const len = Math.hypot(fx, fz);
-    if (len > 1e-6) { fx /= len; fz /= len; a.hx = fx; a.hz = fz; } else { fx = a.hx ?? 1; fz = a.hz ?? 0; }
-    const rail = a.type === 'train' || a.type === 'subway';
-    const lane = rail ? 0 : a.parked ? 0.32 : laneOffset(a, f < 0.5 ? i0 : i1);
-    const x = x0 + (x1 - x0) * f - fz * lane;
-    const z = z0 + (z1 - z0) * f + fx * lane;
-    const underground = a.type === 'subway';
-    if (underground && !vv.showUnderground) return;
-    if (L && isJump(i0, i1)) return; // inside a tunnel
-    const y = surface(i0, i1, f, a.type) + (underground ? 0.2 : 0.1);
+    let pitch = 0;
+    if (a.parked) Object.assign(pt, a.at);
+    else {
+      const L = a.legs[Math.min(a.k, a.legs.length - 1)];
+      if (!legPoint(L, a.q, pt)) return; // (in a tunnel)
+      pitch = Math.atan(pt.dy);
+    }
     const [sl, sh, sw] = SIZES[a.type] || SIZES.car;
-    q.setFromAxisAngle(up, Math.atan2(-fz, fx));
-    p.set(x, y, z); s.set(sl, sh, sw);
+    q.setFromEuler(euler.set(0, Math.atan2(-pt.hz, pt.hx), pitch, 'YZX'));
+    p.set(pt.x, pt.y, pt.z); s.set(sl, sh, sw);
     mesh.setMatrixAt(n, m.compose(p, q, s));
     mesh.setColorAt(n, c.set(a.flash && Math.floor(rclock * 5 + (a.phase || 0)) % 3 ? a.flash[1 + (Math.floor(rclock * 5) % 2)] : a.color));
     n++;
@@ -493,135 +522,188 @@ export function createVehiclesView(view, state) {
   }
 
   // ------------------------------------------------------------- driving
-  // Who is on which lane of which stretch, nose to tail; and how many are inside each junction
+  // Who is on which lane of which road (and on which curve through which junction), nose to
+  // tail; how many are inside each junction, by group; how many are crawling along each lane
+  // (and, at each junction, how long the first car waiting at each group's stop lines has waited)
+  // (and who is going round each roundabout)
+  const occ = new Map(), jOcc = new Map(), crawl = new Map(), jWait = new Map(), ring = new Map();
   function buildOccupancy(all) {
     occ.clear();
     jOcc.clear();
     crawl.clear();
+    jWait.clear();
+    ring.clear();
     for (const a of all) {
-      if (!a.onRoad || a.parked) continue;
-      const L = a.path.length - 1;
-      const k = Math.floor(a.t);
-      if (k >= L) continue;
-      const f = a.t - k;
-      a._f = f;
-      a._key = edgeKey(a.path[k], a.path[k + 1], laneOn(a, k));
-      let list = occ.get(a._key);
-      if (!list) occ.set(a._key, (list = []));
+      if (!a.legs || a.parked) continue;
+      const L = a.legs[a.k];
+      if (!L) continue;
+      let list = occ.get(L.key);
+      if (!list) occ.set(L.key, (list = []));
       list.push(a);
-      const inJ = f > 0.5 ? a.path[k + 1] : a.path[k];
-      if (J[inJ]) { const jk = inJ * 2 + (dirOf(a.path[k], a.path[k + 1]) & 1); jOcc.set(jk, (jOcc.get(jk) || 0) + 1); }
-      if (a.v < 0.6) {
-        const ck = a.path[k + 1] * 4 + dirOf(a.path[k], a.path[k + 1]);
-        crawl.set(ck, (crawl.get(ck) || 0) + 1);
-      }
+      if (L.kind === 1 && L.jk) { const jk = L.node * 2 + L.grp; jOcc.set(jk, (jOcc.get(jk) || 0) + 1); }
+      if (L.round) { let r = ring.get(L.node); if (!r) ring.set(L.node, (r = [])); r.push(a); }
+      if (a.v < 0.6) crawl.set(L.key, (crawl.get(L.key) || 0) + 1);
+      const M = L.kind === 0 && L.q1 - a.q < 0.7 && nextLeg(a, a.k + 1);
+      if (M && M.kind === 1 && M.jk) { const jk = M.node * 2 + M.grp; if (a.wait > (jWait.get(jk) || 0)) jWait.set(jk, a.wait); }
     }
     for (const list of occ.values()) {
-      list.sort((u, w) => u._f - w._f);
+      list.sort((u, w) => u.q - w.q);
       for (let r = 0; r < list.length; r++) list[r]._idx = r;
     }
   }
+  // the first vehicle at or past station q on a lane (other than me)
+  const firstFrom = (list, from, me) => { for (const o of list) if (o !== me && o.q >= from) return o; return null; };
+  const nextLeg = (a, j) => (j < a.legs.length ? a.legs[j] : a.loop ? a.legs[j - a.legs.length] : null);
 
   // How far this vehicle can go before it has to stop (cells)
   function room(a) {
-    const L = a.path.length - 1;
-    const k = Math.floor(a.t);
-    if (k >= L) return Infinity;
-    const f = a.t - k, len = a.seg[k];
+    const L = a.legs[a.k];
     let gap = Infinity;
-    const list = occ.get(a._key);
+    const list = occ.get(L.key);
     const lead = list?.[a._idx + 1];
-    if (lead) gap = (lead._f - f) * len - (lead.len + a.len) / 2;
-    else if (k + 1 < L) {
-      const l2 = occ.get(edgeKey(a.path[k + 1], a.path[k + 2], laneOn(a, k + 1)));
-      if (l2?.length && l2[0] !== a) gap = (1 - f) * len + l2[0]._f * a.seg[k + 1] - (l2[0].len + a.len) / 2;
+    if (lead) gap = lead.q - a.q - (lead.len + a.len) / 2;
+    else {
+      let dist = L.q1 - a.q;
+      for (let j = a.k + 1; dist < LOOK; j++) {
+        const M = nextLeg(a, j);
+        if (!M || j > a.k + 6) break;
+        const l2 = occ.get(M.key);
+        const o = l2 && firstFrom(l2, M.q0 - 0.3, a);
+        if (o) { gap = dist + (o.q - M.q0) - (o.len + a.len) / 2; break; }
+        dist += M.len;
+      }
     }
     // a junction ahead: wait at the stop line unless it's our turn
-    const jc = a.path[k + 1];
-    const kind = J[jc];
-    if (kind && f < 0.5 && !a.flash) {
-      const d = dirOf(a.path[k], jc);
-      // traffic going straight across on the same road doesn't get in each other's way (they're
-      // in their own lanes); what has to take turns is traffic crossing it
-      const same = jOcc.get(jc * 2 + (d & 1)) || 0, cross = jOcc.get(jc * 2 + 1 - (d & 1)) || 0;
-      const inside = same + cross;
-      // (at a priority junction the side street waits for a gap; the main road carries on)
-      const yieldHere = kind === 3 || (kind === 5 && rankOf(state.road[a.path[k]]) < rankOf(state.road[jc]));
-      let stop = kind === 1 ? !green(jc, d) : kind === 2 ? inside >= 2 : yieldHere ? inside >= 1 : cross >= 2 || (cross >= 1 && same >= 2);
-      // a car already inside one junction always moves on into the next (two junctions side by
-      // side would otherwise each wait for the other to empty: gridlock); lights still hold it
-      if (stop && kind !== 1 && J[a.path[k]]) stop = false;
-      // don't block the box: if the way out is backed up, wait
-      if (!stop && k + 2 <= L) {
-        const out = occ.get(edgeKey(jc, a.path[k + 2], laneOn(a, k + 1)));
-        if (out?.length && out[0] !== a && out[0]._f < 0.55 && out[0].v < 0.3) stop = true;
+    const M = nextLeg(a, a.k + 1);
+    if (L.kind === 0 && M && M.kind === 1 && M.jk && !a.flash) {
+      const remain = L.q1 - a.q;
+      if (remain < DECIDE) {
+        // traffic going the same way as us (in its own lanes) doesn't get in our way: what we
+        // take turns with is the traffic crossing it
+        const same = jOcc.get(M.node * 2 + M.grp) || 0, cross = jOcc.get(M.node * 2 + 1 - M.grp) || 0;
+        const inside = same + cross;
+        // (taking turns: whoever has waited longest at the junction goes first)
+        const wMine = jWait.get(M.node * 2 + M.grp) || 0, wCross = jWait.get(M.node * 2 + 1 - M.grp) || 0;
+        const theirTurn = wCross > 1.5 && wCross > wMine + 1;
+        let stop;
+        if (M.jk === 1) stop = !green(M.node, M.grp);
+        else if (M.round) stop = ringNear(a, M);
+        else if (M.jk === 2) stop = inside >= 3 || (theirTurn && cross >= 1);
+        else if (M.jk === 5 && M.minor) stop = inside >= 1;
+        else if (M.jk === 3) stop = cross >= 1 || same >= 2 || theirTurn;
+        else stop = cross >= 2 || (cross >= 1 && same >= 2) || (theirTurn && cross >= 1);
+        // (squeezed between two junctions: keep moving, or both would wait for each other)
+        if (stop && M.jk !== 1 && L.len < 0.8 && a.k > 0) stop = false;
+        // don't block the box: if the way out is backed up, wait
+        const O = nextLeg(a, a.k + 2);
+        if (!stop && O) {
+          const ol = occ.get(O.key);
+          const o = ol && firstFrom(ol, O.q0 - 0.3, a);
+          if (o && o.q - O.q0 < o.len / 2 + a.len + 0.15 && o.v < 0.3) stop = true;
+        }
+        if (stop) gap = Math.min(gap, remain - a.len / 2 - 0.05);
       }
-      if (stop) gap = Math.min(gap, (0.5 - 0.12 - f) * len - a.len / 2);
     }
     return gap;
   }
 
+  // A roundabout: give way to anyone going round who is about to pass where we'd join
+  const ringPt = { x: 0, y: 0, z: 0, hx: 1, hz: 0, dy: 0 };
+  function ringNear(a, M) {
+    const list = ring.get(M.node);
+    if (!list) return false;
+    const x0 = M.P[0], z0 = M.P[2];
+    for (const o of list) {
+      const L = o.legs[o.k];
+      if (o.q > L.len - 0.3) continue; // (leaving the ring)
+      legPoint(L, o.q, ringPt);
+      const dx = x0 - ringPt.x, dz = z0 - ringPt.z, d = Math.hypot(dx, dz);
+      // close, and heading this way
+      if (d < 1.1 && (d < 0.45 || dx * ringPt.hx + dz * ringPt.hz > 0)) return true;
+    }
+    return false;
+  }
+
+  // how full each road is, each way (worked out once a frame)
+  const ratio = new Map();
+  function speedCap(a, L) {
+    let v = (L.spd / 45) * BASE_SPEED * (a.factor ?? 1);
+    if (L.kind !== 0) return Math.max(v, 0.05);
+    // the simulation's congestion: over-capacity roads crawl (sirens push through)
+    let r = ratio.get(L.eid);
+    if (r == null) { const e = graph(state).edges.get(L.eid); r = e ? edgeCongestion(state, ctx, e) : 0; ratio.set(L.eid, r); }
+    const busLane = (a.type === 'bus' || a.type === 'tram') && (rn(state).seg.get(L.seg)?.upg || 0) & UPG.BUSLANE;
+    if (!busLane) v /= jamFactor(a.flash ? r * 0.4 : r);
+    if (!a.flash && ctx.segAccident?.has(L.seg)) v *= 0.15;
+    return Math.max(v, 0.05);
+  }
+
   // ------------------------------------------------------------- rerouting
   let rerouteBudget = 0;
-  const queueAt = (u, w, d) => (crawl.get(w * 4 + d) || 0) * QUEUE_COST / lanesAt(w);
-  const vehicleKind = (a) => (a.type === 'truck' ? 'truck' : a.type === 'service' || a.type === 'emergency' ? 'service' : 'car');
-  // How many cars are crawling on the next few cells of this vehicle's route
-  function queuedAhead(a, k) {
-    let q = 0;
-    for (let j = k + 1; j < Math.min(a.path.length, k + 7); j++) q += crawl.get(a.path[j] * 4 + dirOf(a.path[j - 1], a.path[j])) || 0;
-    return q;
+  // cars crawling along a road (any lane), as route cost
+  const queueOn = (eid) => { let k = 0; for (let l = 0; l < 4; l++) k += crawl.get(eid * 4 + l) || 0; return k; };
+  function queuedAhead(a) {
+    let k = 0;
+    for (let j = a.k + 1; j < Math.min(a.legs.length, a.k + 4); j++) if (a.legs[j].kind === 0) k += queueOn(a.legs[j].eid);
+    return k;
   }
-  // Plan again from the next cell (the one it can still turn at) to the same destination,
-  // counting the queues it can see, and switch if that's clearly quicker
+  // Plan again from the end of the road it's on (where it can still turn) to the same
+  // destination, counting the queues it can see, and switch if that's clearly quicker
   function reroute(a) {
-    const L = a.path.length - 1;
-    const k = Math.floor(a.t);
-    if (k + 3 > L) return;
+    const L = a.legs[a.k];
+    if (L.kind !== 0 || !a.route) return;
+    let ri = 0;
+    for (let j = 0; j < a.k; j++) if (a.legs[j].kind === 0) ri++;
+    const edges = a.route.edges;
+    if (ri + 2 >= edges.length || edges[ri] !== L.eid) return;
     rerouteBudget--;
-    const from = a.path[k + 1], back = a.path[k], goal = a.path[L];
-    const base = makeRoadCost(state, null, vehicleKind(a));
-    const cost = (u, w, d) => (u === from && w === back ? Infinity : base(u, w, d) + queueAt(u, w, d));
-    const links = jumpLinks(state, 'road');
-    const now = pathCost(a.path.slice(k + 1), cost, links);
-    const alt = astar(from, goal, (i) => state.road[i] > 0, cost, 0.4, 8000, links);
-    if (!alt || alt.length < 2 || !(pathCost(alt, cost, links) < now * BETTER)) return;
-    const path = a.path.slice(0, k + 1).concat(alt);
-    const pts = roadPathPoints(state, path);
-    const seg = new Float32Array(Math.max(1, path.length - 1));
-    for (let j = 0; j < path.length - 1; j++) seg[j] = Math.max(0.05, Math.hypot(pts[j + 1][0] - pts[j][0], pts[j + 1][1] - pts[j][1]));
-    a.path = path; a.pts = pts; a.seg = seg;
+    const Gr = graph(state), e = Gr.edges.get(L.eid);
+    if (!e) return;
+    const base = makeEdgeCost(state, ctx, vehicleKind(a.type));
+    const back = reverseEdge(e.id);
+    const cost = { unit: (x) => base.unit(x) + (queueOn(x.id) * QUEUE_COST) / x.def.lanes / Math.max(1, x.len), turn: base.turn, ok: (x) => x.id !== back && base.ok(x) };
+    const A = { seg: e.seg, s: e.d > 0 ? e.len : 0 };
+    const now = routeCost(state, { edges: edges.slice(ri), from: A, to: a.route.to }, cost);
+    const alt = findRoute(state, A, a.route.to, cost, { maxExpand: 8000 });
+    if (!alt || alt.edges[0] !== e.id || !(alt.cost < now * BETTER)) return;
+    const built = buildLegs(state, [{ edges: alt.edges, from: A, to: a.route.to }], { policy: a.policy, pref: a.pref, firstLeg: L });
+    if (!built) return;
+    a.legs = a.legs.slice(0, a.k).concat(built.legs);
+    a.route = { edges: edges.slice(0, ri).concat(alt.edges), from: a.route.from, to: a.route.to };
     a.rerouted = (a.rerouted || 0) + 1;
     vv.reroutes++;
   }
   function considerReroute(a) {
     if (!CAN_REROUTE.has(a.type) || a.flash || rerouteBudget <= 0 || clock < (a.nextLook || 0)) return;
-    const k = Math.floor(a.t);
-    const moved = k !== a.lookK;
-    a.lookK = k;
-    if (!(a.wait > REROUTE_WAIT || (moved && queuedAhead(a, k) >= QUEUE_AHEAD))) return;
+    const moved = a.k !== a.lookK;
+    a.lookK = a.k;
+    if (!(a.wait > REROUTE_WAIT || (moved && queuedAhead(a) >= QUEUE_AHEAD))) return;
     a.nextLook = clock + REROUTE_EVERY;
     reroute(a);
   }
 
+  // Speed up, slow down or stop for what's ahead, and move along the legs. Returns how far it went.
   function drive(a, dtv) {
-    const L = a.path.length - 1;
-    const k = Math.floor(a.t);
-    const f = a.t - k;
-    const cell = f < 0.5 ? a.path[k] : a.path[Math.min(k + 1, L)];
-    const vmax = speedCap(a, cell);
+    const vmax = speedCap(a, a.legs[a.k]);
     const gap = room(a);
     const safe = Math.max(0, (gap - MIN_GAP) / HEADWAY);
     const target = Math.min(vmax, safe);
     a.v = Math.max(0, a.v + clamp(target - a.v, -BRAKE * dtv, ACCEL * dtv));
     if (a.v * dtv > Math.max(0, gap - MIN_GAP)) a.v = Math.max(0, gap - MIN_GAP) / Math.max(dtv, 1e-6);
-    let dist = a.v * dtv;
-    while (dist > 1e-6 && a.t < L) {
-      const kk = Math.floor(a.t);
-      const rem = (1 - (a.t - kk)) * a.seg[kk];
-      if (dist < rem) { a.t += dist / a.seg[kk]; dist = 0; } else { a.t = kk + 1; dist -= rem; }
+    let dist = a.v * dtv, moved = 0;
+    while (dist > 1e-6) {
+      const L = a.legs[a.k];
+      const rem = L.q1 - a.q;
+      if (dist < rem) { a.q += dist; moved += dist; break; }
+      dist -= rem; moved += rem;
+      if (a.k + 1 < a.legs.length) { a.k++; a.q = a.legs[a.k].q0; }
+      else if (a.loop) { a.k = 0; a.q = a.legs[0].q0; }
+      else { a.q = L.q1; a.done = true; break; }
     }
     if (a.v < 0.05) a.wait += dtv; else a.wait = 0;
+    return moved;
   }
+
 
   let planeT = -1, shipT = -1, extrasTimer = 0, lightTimer = 0;
   vv.update = (dt) => {
@@ -629,7 +711,9 @@ export function createVehiclesView(view, state) {
     const dtv = Math.min(dt, 0.1) * speedMul;
     clock += dtv;
     rclock += dt;
-    if (jDirty) rebuildJunctions();
+    searches = SEARCHES_PER_FRAME;
+    ratio.clear();
+    if (sigDirty) rebuildSignals();
     if (routesDirty) dropBrokenRoutes();
     syncLines();
     const lines = [];
@@ -643,30 +727,14 @@ export function createVehiclesView(view, state) {
       const a = agents[k];
       if (a.life != null) { a.life -= dtv; if (a.life <= 0) { agents.splice(k, 1); continue; } }
       if (a.until) { if (!a.until()) { agents.splice(k, 1); continue; } place(a); continue; }
-      if (dtv > 0) {
-        if (a.onRoad) { considerReroute(a); drive(a, dtv); }
-        else a.t += dtv * 3.2 * (a.factor ?? 1) * 0.9;
-      }
-      if (a.t >= a.path.length - 1 || a.wait > GIVE_UP) { agents.splice(k, 1); a.onArrive?.(a); continue; }
+      if (dtv > 0 && !a.parked) { considerReroute(a); drive(a, dtv); }
+      if (a.done || a.wait > GIVE_UP) { agents.splice(k, 1); a.onArrive?.(a); continue; }
       if (a.wait > 1.5) stuck++;
       place(a);
     }
     vv.jams = stuck;
     for (const a of lines) {
-      if (dtv > 0 && a.cars) stepRail(a, dtv);
-      else if (dtv > 0) {
-        // dwell at stops while riders get on and off
-        if (a.dwell > 0) { a.dwell -= dtv; place(a); continue; }
-        const before = a.t;
-        if (a.onRoad) drive(a, dtv); else a.t += dtv * 2.4 * (a.factor ?? 1);
-        a.wait = 0; // line vehicles never give up
-        const si = a.line.stopIndex?.findIndex((x) => x > before && x <= a.t);
-        if (si != null && si >= 0) { a.t = a.line.stopIndex[si]; a.dwell = 0.6; a.v = 0; vv.onStop?.(a, a.line.stops[si], si); }
-        if (a.t >= a.path.length - 1) {
-          a.t = 0; a.v = 0;
-          if (a.line.stopIndex?.[0] === 0) { a.dwell = 0.6; vv.onStop?.(a, a.line.stops[0], 0); }
-        }
-      }
+      if (dtv > 0) { if (a.cars) stepRail(a, dtv); else stepLineVehicle(a, dtv); }
       place(a);
     }
     if (dtv > 0) runTrips(dtv);

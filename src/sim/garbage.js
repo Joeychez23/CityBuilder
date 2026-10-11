@@ -6,7 +6,7 @@
 // stay home once it's full, and places no truck can reach keep piling up garbage.
 import { idx } from '../core/grid.js';
 import { isService, center, serviceEfficiency, storageCap, cellsOf } from './services.js';
-import { accessCell, route } from './traffic.js';
+import { accessCell, route, backAlong } from './traffic.js';
 import { STEP_MINUTES } from './simulation.js';
 import { bus } from '../core/events.js';
 import { hasPerk } from '../data/progression.js';
@@ -109,7 +109,7 @@ export function garbageStep(state, ctx) {
       run.phase = 'return';
       run.eta = run.path.length * PER_CELL;
       const p = state.buildings.get(run.facility);
-      showTruck(state, p, [...run.path].reverse());
+      showTruck(state, p, backAlong(state, run.path));
     } else if (run.phase === 'return') {
       unload(state, ctx, run);
       run.phase = 'done';
