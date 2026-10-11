@@ -17,7 +17,7 @@ import { hasPerk } from '../data/progression.js';
 import { earn } from './economy.js';
 import { isOwned } from './build.js';
 import { waterTaxiOption } from './projects.js';
-import { tunnelLinks } from './tunnels.js';
+import { jumpLinks, isJump } from './tunnels.js';
 
 const NN = N * N;
 
@@ -161,11 +161,16 @@ export function outsideCell(state) {
   return c ? idx(c.x, c.y) : -1;
 }
 
-// What a route costs to drive right now (same units as the A* search)
+// What a route costs to drive right now (same units as the A* search). links: the tunnels and
+// underpasses it may go through (jumpLinks)
 const dirOf = (a, b) => (b === a + 1 ? 0 : b === a + N ? 1 : b === a - 1 ? 2 : 3);
-export function pathCost(path, cost) {
+export function pathCost(path, cost, links = null) {
   let c = 0;
-  for (let k = 1; k < path.length; k++) c += cost(path[k - 1], path[k], dirOf(path[k - 1], path[k]));
+  for (let k = 1; k < path.length; k++) {
+    const a = path[k - 1], b = path[k];
+    if (isJump(a, b)) { const l = links?.get(a)?.find(([j]) => j === b); c += l ? l[1] : Infinity; continue; }
+    c += cost(a, b, dirOf(a, b));
+  }
   return c;
 }
 
@@ -180,13 +185,14 @@ export function route(state, ctx, a, b, vehicle = 'car') {
   const hit = cache.get(key);
   const cost = makeRoadCost(state, ctx, vehicle);
   const age = hit ? ctx.stepCount - hit.step : Infinity;
+  const links = jumpLinks(state, 'road');
   if (hit && hit.stamp === ctx.netStamp && age < MAX_AGE &&
-    (age < FRESH || !hit.path || pathCost(hit.path, cost) <= hit.cost * SLOWER)) return hit.path;
+    (age < FRESH || !hit.path || pathCost(hit.path, cost, links) <= hit.cost * SLOWER)) return hit.path;
   if (ctx.routeBudget <= 0) return hit?.path ?? null;
   ctx.routeBudget--;
-  const path = astar(a, b, (i) => state.road[i] > 0, cost, 0.4, undefined, tunnelLinks(state, 'road'));
+  const path = astar(a, b, (i) => state.road[i] > 0, cost, 0.4, undefined, links);
   cache.delete(key);
-  cache.set(key, { path, stamp: ctx.netStamp, step: ctx.stepCount, cost: path ? pathCost(path, cost) : 0 });
+  cache.set(key, { path, stamp: ctx.netStamp, step: ctx.stepCount, cost: path ? pathCost(path, cost, links) : 0 });
   if (cache.size > 3000) cache.delete(cache.keys().next().value);
   return path;
 }

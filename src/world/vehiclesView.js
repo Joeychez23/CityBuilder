@@ -14,15 +14,15 @@ import * as THREE from 'three';
 import { N, clamp, DIRS, inBounds, idx } from '../core/grid.js';
 import { ROADS, UPG, rankOf } from '../data/roads.js';
 import { LINE_TYPES } from '../data/transport.js';
-import { getDeck, deckBetween } from '../sim/deck.js';
+import { getDeck, deckBetween, underBetween } from '../sim/deck.js';
 import { bus } from '../core/events.js';
 import { lineRunning } from '../sim/transit.js';
 import { roadPathPoints } from '../sim/roadsegs.js';
-import { roadMasks, linked } from '../sim/bridges.js';
+import { roadMasks, linked, underpassBetween } from '../sim/bridges.js';
 import { congestion, jamFactor, junctionKind, rushFactor, makeRoadCost, pathCost } from '../sim/traffic.js';
 import { astar } from '../sim/pathfind.js';
 import { hourOf } from '../sim/simulation.js';
-import { tunnelLinks, isJump } from '../sim/tunnels.js';
+import { jumpLinks, isJump } from '../sim/tunnels.js';
 
 const CAP = 1800;
 const CAR_COLORS = ['#d9d9d9', '#3a3d42', '#b8302a', '#2f5ba8', '#e6e2d6', '#6b7b8c', '#2e6b46', '#c9a227', '#7a2f5a'];
@@ -92,7 +92,9 @@ function turnsBack(path, s) {
   return path[s - 1] === path[s + 1];
 }
 
-const dirOf = (a, b) => (b === a + 1 ? 0 : b === a + N ? 1 : b === a - 1 ? 2 : 3);
+// (through a tunnel or under a bridge the next cell on the way isn't a neighbour)
+const jumpDir = (a, b) => { const dx = (b % N) - (a % N), dy = ((b / N) | 0) - ((a / N) | 0); return Math.abs(dx) >= Math.abs(dy) ? (dx > 0 ? 0 : 2) : dy > 0 ? 1 : 3; };
+const dirOf = (a, b) => (b === a + 1 ? 0 : b === a + N ? 1 : b === a - 1 ? 2 : b === a - N ? 3 : jumpDir(a, b));
 
 export function createVehiclesView(view, state) {
   const geo = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0);
@@ -137,6 +139,7 @@ export function createVehiclesView(view, state) {
   const surface = (i0, i1, f, type) => {
     const D = getDeck(state);
     if (type === 'subway') return D.ground[i0] * (1 - f) + D.ground[i1] * f;
+    if (type !== 'train' && isJump(i0, i1)) { const u = underpassBetween(state, i0, i1); if (u >= 0) return underBetween(D.road, i0, u, i1, f); }
     return deckBetween(type === 'train' ? D.rail : D.road, i0, i1, f);
   };
 
@@ -203,8 +206,11 @@ export function createVehiclesView(view, state) {
     for (let k = agents.length - 1; k >= 0; k--) {
       const a = agents[k];
       if (!a.onRoad || a.parked) continue;
+      const links = jumpLinks(state, 'road');
       for (let j = Math.floor(a.t); j < a.path.length; j++) {
-        if (!state.road[a.path[j]]) { agents.splice(k, 1); a.onArrive?.(a); break; }
+        // (a tunnel or underpass on the way that's gone breaks the route too)
+        const gone = j > 0 && isJump(a.path[j - 1], a.path[j]) && !links?.get(a.path[j - 1])?.some(([n]) => n === a.path[j]);
+        if (!state.road[a.path[j]] || gone) { agents.splice(k, 1); a.onArrive?.(a); break; }
       }
     }
   }
@@ -345,7 +351,7 @@ export function createVehiclesView(view, state) {
     const z = z0 + (z1 - z0) * f + fx * lane;
     const underground = a.type === 'subway';
     if (underground && !vv.showUnderground) return;
-    if (L && isJump(i0, i1)) return; // inside a tunnel (sim/tunnels.js)
+    if (L && isJump(i0, i1) && underpassBetween(state, i0, i1) < 0) return; // inside a tunnel (sim/tunnels.js)
     const y = surface(i0, i1, f, a.type) + (underground ? 0.2 : 0.1);
     const [sl, sh, sw] = SIZES[a.type] || SIZES.car;
     q.setFromAxisAngle(up, Math.atan2(-fz, fx));
@@ -576,9 +582,10 @@ export function createVehiclesView(view, state) {
     const from = a.path[k + 1], back = a.path[k], goal = a.path[L];
     const base = makeRoadCost(state, null, vehicleKind(a));
     const cost = (u, w, d) => (u === from && w === back ? Infinity : base(u, w, d) + queueAt(u, w, d));
-    const now = pathCost(a.path.slice(k + 1), cost);
-    const alt = astar(from, goal, (i) => state.road[i] > 0, cost, 0.4, 8000, tunnelLinks(state, 'road'));
-    if (!alt || alt.length < 2 || !(pathCost(alt, cost) < now * BETTER)) return;
+    const links = jumpLinks(state, 'road');
+    const now = pathCost(a.path.slice(k + 1), cost, links);
+    const alt = astar(from, goal, (i) => state.road[i] > 0, cost, 0.4, 8000, links);
+    if (!alt || alt.length < 2 || !(pathCost(alt, cost, links) < now * BETTER)) return;
     const path = a.path.slice(0, k + 1).concat(alt);
     const pts = roadPathPoints(state, path);
     const seg = new Float32Array(Math.max(1, path.length - 1));

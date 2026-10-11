@@ -3,17 +3,19 @@
 // its axis; bridge cells only connect along that axis, so a bridge running next to a road
 // never snaps onto it sideways. Road bridges can also run at an angle: those are a road
 // segment (see roadsegs.js) lifted off the ground, and connect only along their line.
-import { N, idx, hidx, inBounds } from '../core/grid.js';
+// A road bridge over a road leaves that road running on underneath it (an underpass, below).
+import { N, idx, hidx, inBounds, DIRS } from '../core/grid.js';
 import { lineCells, isAxisLine, segIndex, snapEnd, segParam, stepDirs } from './roadsegs.js';
-import { ROADS } from '../data/roads.js';
+import { ROADS, UPGRADES } from '../data/roads.js';
 import { cellHeight } from './mapgen.js';
-import { isOwned, spend, removeBuilding, LAYER_COST, refund, networkValue, REFUND_RATE, clearZoneCell, planRoadLine, placeRoadLine, canAfford } from './build.js';
+import { isOwned, spend, removeBuilding, LAYER_COST, refund, networkValue, REFUND_RATE, clearZoneCell, planRoadLine, placeRoadLine, canAfford, clearRoadCell } from './build.js';
 import { gradeCells } from './grade.js';
 import { bus } from '../core/events.js';
 
 export const WATER_CLEARANCE = 0.9;  // deck above the water
 export const LAND_CLEARANCE = 0.05;  // deck above open ground (it can run along the bank)
-export const CROSS_CLEARANCE = 1.3;  // deck above a road or railway it passes over
+export const CROSS_CLEARANCE = 1.3;  // deck above a railway or footpath it passes over
+export const UNDER_CLEARANCE = 1.0;  // deck above a road passing under it
 export const MAX_BRIDGE_GRADE = 0.6; // height change per cell
 const AXIS_X = 1, AXIS_Z = 2, AXIS_DIAG = 3;
 
@@ -152,51 +154,107 @@ export function bridgeCells(a, b, layer = 'road') {
   return { cells, axis: horizontal ? AXIS_X : AXIS_Z };
 }
 
-// The lowest arch over the floor heights (no dips between high points: the upper concave
-// hull of the ends and the floor), then rounded so it leaves each end level and curves
-// smoothly over the top. floor[0] and floor[n] are ignored (the ends are hA and hB).
-// xs: how far along the bridge each cell is (default: one cell apart).
-export function archProfile(hA, hB, floor, xs = null) {
+// The deck seen from the side: the lowest line over the floor heights (the upper concave
+// hull of the ends and the floor, so no dips between high points), drawn as one smooth curve
+// through its corners. It leaves each end level with the road, eases into the climb and
+// levels off on top, so even a short overpass reads as a ramp, a level stretch over the road
+// and a ramp down, like a long one, rather than coming to a peak. floor[0] and floor[n] are
+// ignored (the ends are hA and hB). xs: how far along the bridge each cell is (default: one
+// cell apart). flat[k]: the deck stays at cell k's floor for this far either side of its
+// centre (over a road or track passing under it, the deck is level across all of it).
+// Where the curve would be too steep, its ramps are eased less, down to straight lines.
+export function archProfile(hA, hB, floor, xs = null, flat = null) {
   const n = floor.length - 1;
   const X = xs || floor.map((_, k) => k);
-  const pts = [[0, hA]];
-  for (let k = 1; k < n; k++) if (Number.isFinite(floor[k])) pts.push([k, floor[k]]);
-  pts.push([n, hB]);
-  const hull = [];
-  for (const p of pts) {
-    while (hull.length >= 2) {
-      const [ak, ay] = hull[hull.length - 2], [bk, by] = hull[hull.length - 1];
-      const ax = X[ak], bx = X[bk], px = X[p[0]];
-      // drop the middle point if it lies below the line from a to p (keeps the top envelope)
-      if ((by - ay) * (px - ax) <= (p[1] - ay) * (bx - ax)) hull.pop(); else break;
-    }
-    hull.push(p);
-  }
-  const h = new Array(n + 1);
-  for (let s = 1; s < hull.length; s++) {
-    const [ak, ay] = hull[s - 1], [bk, by] = hull[s];
-    for (let k = ak; k <= bk; k++) h[k] = ay + ((by - ay) * (X[k] - X[ak])) / Math.max(1e-6, X[bk] - X[ak]);
-  }
-  // round the corners; the road beyond each end is level, so the deck leaves it level too
-  const lo = floor.map((f, k) => (k === 0 || k === n ? -Infinity : f));
-  for (let pass = 0; pass < 10; pass++) {
-    const next = h.slice();
+  const hullOf = () => {
+    const pts = [[X[0], hA]];
+    const put = (x, y) => {
+      if (x <= X[0] || x >= X[n]) return;
+      const last = pts[pts.length - 1];
+      if (x - last[0] < 1e-6) last[1] = Math.max(last[1], y); else pts.push([x, y]);
+    };
     for (let k = 1; k < n; k++) {
-      const prev = k === 1 ? (h[0] * 2 + h[1]) / 3 : h[k - 1];
-      const after = k === n - 1 ? (h[n] * 2 + h[n - 1]) / 3 : h[k + 1];
-      next[k] = Math.max(lo[k], (prev + 2 * h[k] + after) / 4);
+      if (!Number.isFinite(floor[k])) continue;
+      const w = flat?.[k] || 0;
+      if (w) put(X[k] - w, floor[k]);
+      put(X[k], floor[k]);
+      if (w) put(X[k] + w, floor[k]);
     }
-    h.splice(0, h.length, ...next);
-  }
-  h[0] = hA; h[n] = hB;
-  return h;
+    pts.push([X[n], hB]);
+    const hull = [];
+    for (const p of pts) {
+      while (hull.length >= 2) {
+        const [ax, ay] = hull[hull.length - 2], [bx, by] = hull[hull.length - 1];
+        // drop the middle point if it lies below the line from a to p (keeps the top envelope)
+        if ((by - ay) * (p[0] - ax) <= (p[1] - ay) * (bx - ax)) hull.pop(); else break;
+      }
+      hull.push(p);
+    }
+    return hull;
+  };
+  // the hull's straight lines, or a smooth curve through its corners: level at each end and
+  // wherever it tops out, elsewhere turning gently (the slopes either side, harmonically
+  // averaged, so it never overshoots)
+  const trace = (hull, smooth) => {
+    const slope = (v) => (hull[v + 1][1] - hull[v][1]) / Math.max(1e-6, hull[v + 1][0] - hull[v][0]);
+    const tan = hull.map((_, v) => {
+      if (!smooth || v === 0 || v === hull.length - 1) return 0;
+      const d0 = slope(v - 1), d1 = slope(v);
+      return d0 * d1 > 1e-12 ? (2 * d0 * d1) / (d0 + d1) : 0;
+    });
+    let v = 0;
+    return X.map((x, k) => {
+      if (k === 0) return hA;
+      if (k === n) return hB;
+      while (v < hull.length - 2 && x > hull[v + 1][0]) v++;
+      const [x0, y0] = hull[v], [x1, y1] = hull[v + 1];
+      const len = Math.max(1e-6, x1 - x0), t = Math.min(1, Math.max(0, (x - x0) / len));
+      const h = smooth
+        ? (2 * t ** 3 - 3 * t * t + 1) * y0 + (t ** 3 - 2 * t * t + t) * len * tan[v] + (3 * t * t - 2 * t ** 3) * y1 + (t ** 3 - t * t) * len * tan[v + 1]
+        : y0 + (y1 - y0) * t;
+      return Math.max(h, floor[k]);
+    });
+  };
+  const hull = hullOf();
+  const straight = trace(hull, false), eased = trace(hull, true);
+  const tries = [eased, eased.map((h, k) => (h + straight[k]) / 2), straight];
+  return tries.find((h) => deckGrade(h, X) <= MAX_BRIDGE_GRADE) || straight;
+}
+
+// The steepest step along a deck (height change per cell)
+export function deckGrade(h, xs = null) {
+  let g = 0;
+  for (let k = 1; k < h.length; k++) g = Math.max(g, Math.abs(h[k] - h[k - 1]) / Math.max(0.5, xs ? xs[k] - xs[k - 1] : 1));
+  return g;
+}
+
+// What a bridge's deck must clear over each cell (-Infinity at the ends), and over which
+// cells it stays level (flat, see archProfile): where a road, railway or footpath passes under
+// it. under: the span cells (by index along the bridge) a road passes under, as an underpass.
+function deckFloor(state, layer, cells, under) {
+  const n = cells.length - 1;
+  const flat = new Array(n + 1).fill(0);
+  const floor = cells.map(([x, y], k) => {
+    if (k === 0 || k === n) return -Infinity;
+    const i = idx(x, y);
+    const ground = maxCorner(state, x, y);
+    let f = ground + LAND_CLEARANCE;
+    if (state.water[i]) f = Math.max(f, state.seaLevel + WATER_CLEARANCE);
+    const below = (layer !== 'road' && state.road[i]) || (layer !== 'rail' && state.rail[i]) || (layer !== 'path' && state.path[i]);
+    if (below) { f = Math.max(f, ground + CROSS_CLEARANCE); flat[k] = 0.5; }
+    if (under.has(k)) { f = Math.max(f, ground + UNDER_CLEARANCE); flat[k] = 0.5; }
+    return f;
+  });
+  return { floor, flat };
 }
 
 // layer: 'road' | 'rail' | 'path' ; type: road type id when layer is 'road'
 // anywhere: the land needn't be yours (the outside connections the map starts with)
-export function planBridge(state, layer, type, a, b, { allowWaterEnds = false, anywhere = false } = {}) {
+// overRoads: a road bridge may pass over roads, which carry on underneath (off for the outside
+// connections, which lift track that's already there)
+export function planBridge(state, layer, type, a, b, { allowWaterEnds = false, anywhere = false, overRoads = true } = {}) {
   const { cells, axis, seg, along } = bridgeCells(a, b, layer);
-  const plan = { layer, type, cells, axis, seg, ok: false, reason: null, heights: [], cost: 0, maxGrade: 0, spanOver: { water: 0, land: 0, cross: 0 } };
+  const plan = { layer, type, cells, axis, seg, ok: false, reason: null, heights: [], cost: 0, maxGrade: 0, spanOver: { water: 0, land: 0, cross: 0, roads: 0 }, under: new Set(), cutOff: 0 };
   const n = cells.length - 1;
   if (n < 2) { plan.reason = 'Drag farther: a bridge spans at least one cell'; return plan; }
   const [net, H] = bridgeLayers(state, layer);
@@ -217,13 +275,15 @@ export function planBridge(state, layer, type, a, b, { allowWaterEnds = false, a
       // if (net[i]) { plan.reason = layer === 'road' ? 'Road bridges can\'t pass over other roads' : layer === 'rail' ? 'The span crosses existing railway' : 'The span crosses an existing footpath'; return plan; }
       if (H[i]) { plan.reason = 'Bridges can\'t overlap'; return plan; }
       if (axis === AXIS_DIAG && net[i]) { plan.reason = 'A bridge at an angle can\'t pass over other roads'; return plan; }
-      // it may run along a road (that stretch becomes bridge), but not across one: both would
-      // need the same cell
+      // it may run along a road (that stretch becomes bridge); a road crossing it carries on
+      // underneath (an underpass). Railways and footpaths can't cross their own kind.
       if (net[i] && axis !== AXIS_DIAG) {
         const across = axis === AXIS_X ? [[0, 1], [0, -1]] : [[1, 0], [-1, 0]];
         if (across.some(([dx, dy]) => inBounds(x + dx, y + dy) && net[idx(x + dx, y + dy)] && linked(state, layer, i, idx(x + dx, y + dy), dx === 1 ? 0 : dx === -1 ? 2 : dy === 1 ? 1 : 3))) {
-          plan.reason = layer === 'road' ? 'A road bridge can\'t cross another road (it can pass over railways, footpaths, water and valleys)' : layer === 'rail' ? 'A railway bridge can\'t cross another railway' : 'A footbridge can\'t cross another footpath';
-          return plan;
+          const why = layer !== 'road' ? (layer === 'rail' ? 'A railway bridge can\'t cross another railway' : 'A footbridge can\'t cross another footpath')
+            : !overRoads ? 'A road crosses it' : underpassBlocker(state, x, y, axis);
+          if (why) { plan.reason = why; return plan; }
+          plan.under.add(k);
         }
       }
       // something else may sit underneath only if it stays at ground level
@@ -231,28 +291,20 @@ export function planBridge(state, layer, type, a, b, { allowWaterEnds = false, a
       const underRaised = state.bridgeH[i] || state.railH[i] || state.pathH[i];
       if (underRaised) { plan.reason = 'Bridges can\'t cross other bridges'; return plan; }
       if (state.water[i]) plan.spanOver.water++;
+      else if (plan.under.has(k)) plan.spanOver.roads++;
       else if (under) plan.spanOver.cross++;
       else plan.spanOver.land++;
     }
   }
   // --- deck profile: one smooth arch from end to end. It starts level with the road at each
-  // end, rises just enough to clear the water (or the tracks underneath) and never sags in
-  // the middle, so driving onto it feels like a ramp, not a step.
+  // end, rises just enough to clear the water (or the tracks underneath), stays level over
+  // whatever passes under it and never sags in the middle, so driving onto it feels like a
+  // ramp, not a step.
   const hA = endHeight(state, layer, ...cells[0]);
   const hB = endHeight(state, layer, ...cells[n]);
-  const floor = cells.map(([x, y], k) => {
-    if (k === 0 || k === n) return -Infinity;
-    const i = idx(x, y);
-    const ground = maxCorner(state, x, y);
-    let f = ground + LAND_CLEARANCE;
-    if (state.water[i]) f = Math.max(f, state.seaLevel + WATER_CLEARANCE);
-    const under = (layer !== 'road' && state.road[i]) || (layer !== 'rail' && state.rail[i]) || (layer !== 'path' && state.path[i]);
-    if (under) f = Math.max(f, ground + CROSS_CLEARANCE);
-    return f;
-  });
-  const h = archProfile(hA, hB, floor, along);
-  const X = along || cells.map((_, k) => k);
-  for (let k = 1; k <= n; k++) plan.maxGrade = Math.max(plan.maxGrade, Math.abs(h[k] - h[k - 1]) / Math.max(0.5, X[k] - X[k - 1]));
+  const { floor, flat } = deckFloor(state, layer, cells, plan.under);
+  const h = archProfile(hA, hB, floor, along, flat);
+  plan.maxGrade = deckGrade(h, along);
   plan.heights = h;
   if (plan.maxGrade > MAX_BRIDGE_GRADE) { plan.reason = 'Too steep: move the ends farther apart or onto higher ground'; return plan; }
   // --- cost: ends at normal price if new, span at triple price
@@ -264,8 +316,37 @@ export function planBridge(state, layer, type, a, b, { allowWaterEnds = false, a
     else plan.cost += unit * 3;
   }
   plan.cost = Math.round(plan.cost);
+  if (layer === 'road') plan.cutOff = cutOffBy(state, plan);
   plan.ok = true;
   return plan;
+}
+
+// Buildings that get to the road only from cells this bridge lifts off the ground (their
+// driveway can't climb onto a deck): they'd be left without a road
+function cutOffBy(state, plan) {
+  const span = new Set();
+  plan.cells.forEach(([x, y], k) => { if (k > 0 && k < plan.cells.length - 1) span.add(idx(x, y)); });
+  const seen = new Set();
+  let n = 0;
+  for (const i of span) {
+    if (!state.road[i]) continue;
+    const x = i % N, y = (i / N) | 0;
+    for (const [dx, dy] of DIRS) {
+      if (!inBounds(x + dx, y + dy)) continue;
+      const b = state.buildings.get(state.bld[idx(x + dx, y + dy)]);
+      if (!b || seen.has(b.id) || b.def.inPark) continue;
+      seen.add(b.id);
+      let other = false;
+      for (let yy = b.y0 - 1; yy <= b.y1 + 1 && !other; yy++) for (let xx = b.x0 - 1; xx <= b.x1 + 1; xx++) {
+        if ((xx < b.x0 || xx > b.x1) && (yy < b.y0 || yy > b.y1)) continue;
+        if (!inBounds(xx, yy) || (xx >= b.x0 && xx <= b.x1 && yy >= b.y0 && yy <= b.y1)) continue;
+        const j = idx(xx, yy);
+        if (state.road[j] && !state.bridgeH[j] && !span.has(j)) { other = true; break; }
+      }
+      if (!other) n++;
+    }
+  }
+  return n;
 }
 
 export function buildBridge(state, plan, { free = false } = {}) {
@@ -281,7 +362,12 @@ export function buildBridge(state, plan, { free = false } = {}) {
     if (state.bld[i]) removeBuilding(state, state.bld[i]);
     state.tree[i] = 0;
     clearZoneCell(state, i);
-    if (plan.layer === 'road') {
+    if (plan.under?.has(k)) {
+      // the road crossing here carries on underneath; the cell's road is the bridge now
+      makeUnderpass(state, i, plan.axis);
+      state.road[i] = plan.type;
+      state.roadDir[i] = travel[k];
+    } else if (plan.layer === 'road') {
       // road already there keeps its own type (only Replace re-surfaces road): a stretch of
       // it the bridge runs along is raised onto the deck as it is
       if (!net[i]) { state.road[i] = plan.type; state.roadDir[i] = travel[k]; }
@@ -401,6 +487,172 @@ export function clearBridgeCell(state, layer, i) {
   dir[i] = 0;
 }
 
+// ----------------------------------------------------------------- underpasses
+// Where a road bridge passes over a road, the cell's road (state.road, bridgeH, bridgeDir) is
+// the bridge, and the road below is kept in state.underRoad (its type) and state.underDir (its
+// one-way direction). It runs straight across, square to the bridge, and doesn't meet it:
+// traffic on it goes from the ground road on one side of the deck to the other (linked like a
+// tunnel, see underpassLinks), with no junction to wait at, and the bridge's traffic flies
+// over. Taking the bridge down leaves the road below as it was.
+
+// The cells either side of an underpass along the road beneath it, or null
+export function underpassEnds(state, i) {
+  if (!state.underRoad?.[i]) return null;
+  const x = i % N, y = (i / N) | 0;
+  const [dx, dy] = state.bridgeDir[i] === AXIS_Z ? [1, 0] : [0, 1];
+  if (!inBounds(x - dx, y - dy) || !inBounds(x + dx, y + dy)) return null;
+  return [idx(x - dx, y - dy), idx(x + dx, y + dy)];
+}
+
+// Is the step from cell a to cell b (two apart) the way under a bridge? The cell under the
+// deck, or -1
+export function underpassBetween(state, a, b) {
+  const dx = (b % N) - (a % N), dy = ((b / N) | 0) - ((a / N) | 0);
+  const m = (a + b) / 2;
+  if (!(Math.abs(dx) + Math.abs(dy) === 2 && (dx === 0 || dy === 0)) || !state.underRoad?.[m]) return -1;
+  return (dx !== 0) === (state.bridgeDir[m] === AXIS_Z) ? m : -1;
+}
+
+// Why a road bridge running along `axis` can't pass over the road at (x, y), or null
+function underpassBlocker(state, x, y, axis) {
+  const i = idx(x, y);
+  const [dx, dy] = axis === AXIS_X ? [0, 1] : [1, 0];
+  const sides = [[x - dx, y - dy, axis === AXIS_X ? 3 : 2], [x + dx, y + dy, axis === AXIS_X ? 1 : 0]];
+  if (segIndex(state).byCell.has(i)) return 'A road bridge can only pass over roads that run square to it, not at an angle';
+  for (const [sx, sy, d] of sides) {
+    const j = inBounds(sx, sy) ? idx(sx, sy) : -1;
+    if (j < 0 || !state.road[j] || !linked(state, 'road', i, j, d)) return `A road joins from the side at (${x}, ${y}): a bridge can only pass over a road that carries straight on under it`;
+    if (state.bridgeH[j]) return 'Bridges can\'t cross other bridges';
+  }
+  if ((state.tunnels || []).some((t) => t.layer === 'road' && (t.a === i || t.b === i))) return `A tunnel starts at (${x}, ${y})`;
+  if (state.stops?.[i]) return `A stop is at (${x}, ${y}): move it off the crossing first`;
+  return null;
+}
+
+// The road crossing cell i goes under the bridge being built along `axis` there
+function makeUnderpass(state, i, axis) {
+  const x = i % N, y = (i / N) | 0;
+  const [dx, dy] = axis === AXIS_X ? [0, 1] : [1, 0];
+  const a = idx(x - dx, y - dy), b = idx(x + dx, y + dy);
+  const ta = state.road[a], tb = state.road[b], t = state.road[i];
+  const type = ta === tb ? ta : t === ta || t === tb ? t : ta;
+  // a one-way road keeps its direction of travel (along the road under the bridge)
+  const from = [i, a, b].find((j) => state.road[j] === type && (state.roadDir[j] & 1) === (dx ? 0 : 1));
+  state.underRoad[i] = type;
+  state.underDir[i] = ROADS[type].oneway && from != null ? state.roadDir[from] : 0;
+  // upgrades on the crossing (a roundabout, lights...) have nothing left to do: half back
+  let back = 0;
+  for (const u of UPGRADES) if (state.roadUpg[i] & u.bit) back += u.cost;
+  refund(state, back * REFUND_RATE);
+  clearRoadCell(state, i);
+}
+
+// A bridge cell taken away: the road that ran under it is back on the ground
+export function restoreUnderRoad(state, i) {
+  const t = state.underRoad?.[i];
+  if (!t) return;
+  state.road[i] = t;
+  state.roadDir[i] = state.underDir[i];
+  state.roadCond[i] = 1;
+  state.roadUpg[i] = 0;
+  state.underRoad[i] = 0;
+  state.underDir[i] = 0;
+}
+
+// An underpass whose road is gone from either side of the bridge is filled in (with a
+// refund for it). Returns the refund.
+export function pruneUnderpasses(state) {
+  const U = state.underRoad;
+  if (!U) return 0;
+  let r = 0;
+  for (let i = 0; i < N * N; i++) {
+    if (!U[i]) continue;
+    const ends = underpassEnds(state, i);
+    if (state.road[i] && state.bridgeH[i] && ends && ends.every((j) => state.road[j] && !state.bridgeH[j])) continue;
+    r += refund(state, ROADS[U[i]].cost * REFUND_RATE);
+    U[i] = 0;
+    state.underDir[i] = 0;
+  }
+  return r;
+}
+
+// For routing: the ground road either side of each underpass, linked under the deck (one way
+// only on a one-way road). add(from, to, cost)
+export function underpassLinks(state, add) {
+  const U = state.underRoad;
+  if (!U) return;
+  for (let i = 0; i < N * N; i++) {
+    if (!U[i]) continue;
+    const ends = underpassEnds(state, i);
+    if (!ends) continue;
+    const [a, b] = ends;
+    if (!state.road[a] || !state.road[b] || state.bridgeH[a] || state.bridgeH[b]) continue;
+    const def = ROADS[U[i]];
+    const c = 2 * (50 / def.speed); // two cells at the road's speed, with nothing to stop for
+    const ab = b - a === 2 ? 0 : 1; // a to b runs east or south
+    if (!def.oneway || state.underDir[i] === ab) add(a, b, c);
+    if (!def.oneway || state.underDir[i] === ab + 2) add(b, a, c);
+  }
+}
+
+// Can a straight road being drawn through bridge cell i (running east-west if alongX) pass
+// under it? (the bridge must run square to it and be high enough above the ground there)
+export function canPassUnder(state, i, alongX) {
+  if (!state.road[i] || !state.bridgeH[i] || state.underRoad[i]) return false;
+  const dir = state.bridgeDir[i];
+  if (dir === AXIS_DIAG || (dir === AXIS_Z) !== alongX) return false;
+  const x = i % N, y = (i / N) | 0;
+  return state.bridgeH[i] - maxCorner(state, x, y) >= UNDER_CLEARANCE - 0.05 && !state.water[i];
+}
+
+// A road was drawn straight through bridge cells (line: its cells, dirs: one-way direction
+// of each): where it passes square under a high enough deck, with road either side, it
+// carries on underneath. Returns how many underpasses it made.
+export function roadUnderBridges(state, line, type, dirs) {
+  if (line.length < 3) return 0;
+  const alongX = line[0][1] === line[line.length - 1][1];
+  let made = 0;
+  for (let k = 1; k < line.length - 1; k++) {
+    const i = idx(...line[k]);
+    if (!canPassUnder(state, i, alongX)) continue;
+    const a = idx(...line[k - 1]), b = idx(...line[k + 1]);
+    if (!state.road[a] || !state.road[b] || state.bridgeH[a] || state.bridgeH[b]) continue;
+    state.underRoad[i] = type;
+    state.underDir[i] = ROADS[type].oneway ? dirs[k] : 0;
+    made++;
+  }
+  return made;
+}
+
+// Overpasses built before their deck levelled off over the road (they came to a peak there)
+// get the deck the bridge tool builds now: each straight road bridge with a road under it is
+// re-profiled between its two ends, where the new deck isn't too steep. Returns how many.
+export function reshapeOverpasses(state) {
+  const H = state.bridgeH, axis = state.bridgeDir;
+  const seen = new Uint8Array(N * N);
+  let changed = 0;
+  for (let i = 0; i < N * N; i++) {
+    if (!state.underRoad[i] || !H[i] || seen[i] || (axis[i] !== AXIS_X && axis[i] !== AXIS_Z)) continue;
+    const [dx, dy] = axis[i] === AXIS_X ? [1, 0] : [0, 1];
+    const deck = (x, y) => inBounds(x, y) && H[idx(x, y)] && axis[idx(x, y)] === axis[i];
+    let x = i % N, y = (i / N) | 0;
+    while (deck(x - dx, y - dy)) { x -= dx; y -= dy; }
+    const cells = [[x - dx, y - dy]];
+    for (; deck(x, y); x += dx, y += dy) { cells.push([x, y]); seen[idx(x, y)] = 1; }
+    cells.push([x, y]);
+    if (!cells.every(([cx, cy]) => inBounds(cx, cy) && state.road[idx(cx, cy)])) continue;
+    const n = cells.length - 1;
+    const under = new Set();
+    for (let k = 1; k < n; k++) if (state.underRoad[idx(...cells[k])]) under.add(k);
+    const { floor, flat } = deckFloor(state, 'road', cells, under);
+    const h = archProfile(endHeight(state, 'road', ...cells[0]), endHeight(state, 'road', ...cells[n]), floor, null, flat);
+    if (deckGrade(h) > MAX_BRIDGE_GRADE) continue;
+    for (let k = 1; k < n; k++) H[idx(...cells[k])] = h[k];
+    changed++;
+  }
+  return changed;
+}
+
 // Turn existing track over water into bridges (the starting highway and railway, and roads
 // from older saves): each straight run of water cells becomes one span.
 export function bridgeWaterRuns(state, layer) {
@@ -470,7 +722,7 @@ export function bridgeConnection(state, layer, line, { onlyBad = false } = {}) {
     if (prev && s.k0 <= prev.k1) { prev.k1 = s.k1; prev.keep = prev.keep && s.keep; } else spans.push(s);
     k = e;
   }
-  const plan = (a, b) => planBridge(state, layer, type, { cx: line[a][0], cy: line[a][1] }, { cx: line[b][0], cy: line[b][1] }, { allowWaterEnds: true, anywhere: true });
+  const plan = (a, b) => planBridge(state, layer, type, { cx: line[a][0], cy: line[a][1] }, { cx: line[b][0], cy: line[b][1] }, { allowWaterEnds: true, anywhere: true, overRoads: false });
   const steep = (p) => !p.ok && /steep/i.test(p.reason || '');
   let built = 0;
   for (let n = 0; n < spans.length; n++) {
@@ -530,6 +782,7 @@ export function pruneBridges(state, layer) {
       refunded += refund(state, networkValue(state, layer, j) * REFUND_RATE);
       if (layer === 'road') { state.road[j] = 0; state.roadUpg[j] = 0; } else net[j] = 0;
       H[j] = 0; dir[j] = 0;
+      if (layer === 'road') restoreUnderRoad(state, j); // (the road below stays)
     }
   };
   for (let i = 0; i < N * N; i++) {

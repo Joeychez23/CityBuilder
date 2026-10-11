@@ -7,7 +7,7 @@ import { ZONES } from '../data/zones.js';
 import { pickGround } from '../world/picking.js';
 import { planRoad, placeRoad, planRoadLine, placeRoadLine, planLayer, placeLayer, setZone, canZoneCell, placePlot, plotBlocker, bulldozeCell, bulldozePreview, terraform, brushCells, isOwned, spend, canAfford, planClearTrees, clearTrees, CLEAR_TREE_COST } from '../sim/build.js';
 import { snapEnd, snapToDirs, gridDirs, gridLayout, lineCells } from '../sim/roadsegs.js';
-import { planRoadCrossing, placeRoadCrossing } from '../sim/bridges.js';
+import { planRoadCrossing, placeRoadCrossing, canPassUnder } from '../sim/bridges.js';
 import { bridgeHover, bridgeClick } from './bridgeSteps.js';
 import { bus } from '../core/events.js';
 import { cellHeight } from '../sim/mapgen.js';
@@ -431,7 +431,19 @@ registerTool('road', {
     const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
     const afford = s.money >= plan.cost || s.options.unlimitedMoney;
     const blocked = plan.bad.length - plan.water;
+    // bridges it crosses: it carries on under the high enough ones that run square to it
+    let under = 0, low = 0;
+    if (!plan.diagonal && t.mode !== 'replace') {
+      const alongX = a[1] === b[1];
+      for (let k = 1; k < plan.line.length - 1; k++) {
+        const i = idx(...plan.line[k]);
+        if (!s.bridgeH[i] || s.underRoad[i] || s.bridgeDir[i] === (alongX ? 1 : 2)) continue; // (not along the deck)
+        if (canPassUnder(s, i, alongX)) under++; else low++;
+      }
+    }
     app.tools.showTip(`${Math.round(len * 8)} m · ${ang}°${plan.diagonal ? '' : ' (straight)'} · <span class="${afford ? '' : 'bad'}">${money(plan.cost)}</span>`
+      + `${under ? `<br>Passes under ${under === 1 ? 'a bridge' : `${under} bridges`} (no junction there)` : ''}`
+      + `${low ? `<br><span class="warn">${low === 1 ? 'A bridge' : `${low} bridges`} too low (or not square to it) to pass under: the road stops either side</span>` : ''}`
       + `${plan.water ? `<br><span class="bad">Can't re-surface water: use the Bridge mode</span>` : ''}`
       + `${blocked ? `<br><span class="bad">${blocked} cell${blocked === 1 ? '' : 's'} blocked (steep slope, railway, bridge or building)</span>` : ''}`
       + `${plan.diagonal && plan.bad.length ? '<br><span class="bad">A road at an angle has to be clear all the way</span>' : ''}`);

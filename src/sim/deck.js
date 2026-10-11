@@ -3,10 +3,14 @@
 //  - Ground pieces follow the (graded) terrain, but are lifted wherever the ground under
 //    their full width would poke through, so a road is never below the ground.
 //  - Each piece has a centre height and an edge height toward every connected neighbour.
-//    Neighbours share the same edge height, so pieces always meet.
+//    Neighbours share the same edge height, so pieces always meet. Along a straight bridge
+//    the edge heights follow a curve through the cells either side, so the deck rounds over
+//    its top and into its ramps rather than bending at each cell.
+//  - A road passing under a road bridge has its own piece on the ground below the deck
+//    (L.under), joined to the road either side of it.
 import { N, idx, hidx, DIRS, inBounds } from '../core/grid.js';
 import { cellHeight, terrainAt } from './mapgen.js';
-import { bridgeLayers, linked, WATER_CLEARANCE } from './bridges.js';
+import { bridgeLayers, linked, WATER_CLEARANCE, underpassEnds } from './bridges.js';
 import { segIndex, segPoint, segParam, clipToCell, crossingIn } from './roadsegs.js';
 import { bus } from '../core/events.js';
 
@@ -37,18 +41,40 @@ export function linkMask(state, layer, x, y) {
 }
 
 function solveLayer(state, layer) {
-  const [net, H] = bridgeLayers(state, layer);
+  const [net, H, axis] = bridgeLayers(state, layer);
   const center = new Float32Array(NN);
   const edge = new Float32Array(NN * 4);
   const masks = new Uint8Array(NN);
   const H0 = state.height;
   const SG = layer === 'road' ? segIndex(state) : null;
   const alongLine = new Uint8Array(NN); // pieces of a road at an angle (see below)
+  // Roads under bridges: drawn joined to the road either side (though traffic there goes
+  // straight under, see underpassLinks), on the ground like a straight piece of road
+  let under = null;
+  const extra = layer === 'road' ? new Uint8Array(NN) : null;
+  if (extra && state.underRoad) {
+    for (let i = 0; i < NN; i++) {
+      if (!state.underRoad[i] || !net[i]) continue;
+      const ends = underpassEnds(state, i);
+      if (!ends) continue;
+      if (!under) under = { center: new Float32Array(NN), edge: new Float32Array(NN * 4), masks: new Uint8Array(NN) };
+      const x = i % N, y = (i / N) | 0;
+      const alongX = ends[1] - ends[0] === 2;
+      const a = H0[hidx(x, y)], b = H0[hidx(x + 1, y)], cc = H0[hidx(x, y + 1)], d = H0[hidx(x + 1, y + 1)];
+      under.center[i] = Math.max(cellHeight(state, x, y), ...(alongX ? [(a + b) / 2, (cc + d) / 2] : [(a + cc) / 2, (b + d) / 2]));
+      ends.forEach((j, k) => {
+        if (!net[j] || H[j]) return;
+        const dOut = alongX ? (k ? 0 : 2) : (k ? 1 : 3); // from the underpass toward this end
+        under.masks[i] |= 1 << dOut;
+        extra[j] |= 1 << ((dOut + 2) % 4);
+      });
+    }
+  }
   for (let y = 0; y < N; y++) {
     for (let x = 0; x < N; x++) {
       const i = idx(x, y);
       if (!net[i]) continue;
-      const mask = linkMask(state, layer, x, y);
+      const mask = linkMask(state, layer, x, y) | (extra ? extra[i] : 0);
       masks[i] = mask;
       if (H[i]) { center[i] = H[i]; continue; }
       let c = cellHeight(state, x, y);
@@ -114,14 +140,35 @@ function solveLayer(state, layer) {
       for (let d = 0; d < 4; d++) {
         if (!(mask & (1 << d))) { edge[i * 4 + d] = center[i]; continue; }
         const j = idx(x + DIRS[d][0], y + DIRS[d][1]);
-        let e = (center[i] + center[j]) / 2;
+        // (toward a road under a bridge: its piece on the ground, not the deck above it)
+        const cj = extra && extra[i] & (1 << d) ? under.center[j] : center[j];
+        let e = (center[i] + cj) / 2;
+        // (between two cells of a straight bridge: a curve through them and the cells beyond
+        // each, kept between their two heights)
+        if (H[i] && H[j] && axis[i] === axis[j] && axis[i] === ((d & 1) ? 2 : 1)) {
+          const back = (d + 2) % 4;
+          const pi = mask & (1 << back) ? center[idx(x + DIRS[back][0], y + DIRS[back][1])] : center[i];
+          const nj = masks[j] & (1 << d) ? center[idx(x + 2 * DIRS[d][0], y + 2 * DIRS[d][1])] : center[j];
+          e = Math.min(Math.max(center[i], center[j]), Math.max(Math.min(center[i], center[j]), (9 * (center[i] + center[j]) - pi - nj) / 16));
+        }
         // (between two pieces of a road at an angle the line doesn't cross that edge's corners)
         if ((!H[i] || !H[j]) && !(alongLine[i] && alongLine[j])) { const [c1, c2] = edgeCorners(state, x, y, d); e = Math.max(e, c1, c2); }
         edge[i * 4 + d] = e;
       }
     }
   }
-  return { center, edge, masks };
+  if (under) {
+    for (let i = 0; i < NN; i++) {
+      if (!state.underRoad[i] || !net[i]) continue;
+      const x = i % N, y = (i / N) | 0;
+      for (let d = 0; d < 4; d++) {
+        if (!(under.masks[i] & (1 << d))) { under.edge[i * 4 + d] = under.center[i]; continue; }
+        const j = idx(x + DIRS[d][0], y + DIRS[d][1]);
+        under.edge[i * 4 + d] = edge[j * 4 + ((d + 2) % 4)]; // (shared with the road beside it)
+      }
+    }
+  }
+  return { center, edge, masks, under };
 }
 
 function groundHeights(state) {
@@ -142,6 +189,18 @@ export function getDeck(state) {
   cacheState = state;
   dirty = false;
   return cache;
+}
+
+// Height along the way under a bridge from cell i to cell j, two apart, with the underpass m
+// between them (f = 0 at i's centre, 1 at j's)
+export function underBetween(L, i, m, j, f) {
+  if (!L.under) return L.center[i] + (L.center[j] - L.center[i]) * f;
+  const U = L.under;
+  const d = m === i + 1 ? 0 : m === i + N ? 1 : m === i - 1 ? 2 : 3, dj = (d + 2) % 4;
+  const g = f * 4; // quarter by quarter: i's centre, its edge, the middle under the deck, j's edge, j's centre
+  const pts = [L.center[i], L.edge[i * 4 + d], U.center[m], L.edge[j * 4 + dj], L.center[j]];
+  const k = Math.min(3, Math.floor(g));
+  return pts[k] + (pts[k + 1] - pts[k]) * (g - k);
 }
 
 // Height along the way from cell i to its neighbour j (f = 0 at i's centre, 1 at j's)

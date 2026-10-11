@@ -9,7 +9,7 @@ import { bus } from './core/events.js';
 import { generateMap, applyCustomMap, addPowerConnection, recomputeWater, bridgeConnections } from './sim/mapgen.js';
 import { gradeAlongSegment } from './sim/grade.js';
 import { isOwned } from './sim/build.js';
-import { bridgeWaterRuns, migrateRoadNodes } from './sim/bridges.js';
+import { bridgeWaterRuns, migrateRoadNodes, reshapeOverpasses } from './sim/bridges.js';
 import { createScene } from './world/scene.js';
 import { N } from './core/grid.js';
 import { createTerrainView } from './world/terrainView.js';
@@ -94,6 +94,11 @@ function startGame(state, isNew) {
       }
       if (cleared) bus.emit('trees:changed');
       state.version = 7;
+    }
+    if (state.version < 8) {
+      // overpasses came to a peak over the road below: they level off over it now
+      if (reshapeOverpasses(state)) bus.emit('network:changed', { layer: 'road' });
+      state.version = 8;
     }
   }
   app.sim = createSimulation(state, ctx);

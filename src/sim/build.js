@@ -8,7 +8,7 @@ import { newId } from '../core/state.js';
 import { bus } from '../core/events.js';
 import { makeRng } from '../core/rng.js';
 import { gradeCells, cornerTouches, gradeAlongSegment } from './grade.js';
-import { clearBridgeCell, pruneBridges, roadLinks } from './bridges.js';
+import { clearBridgeCell, pruneBridges, roadLinks, restoreUnderRoad, pruneUnderpasses, roadUnderBridges } from './bridges.js';
 import { removePylon, pylonValue, dropSpansAt } from './power.js';
 import { lineCells, isAxisLine, stepDirs, segIndex, clipToCell } from './roadsegs.js';
 import { maxSlopeAt } from './projects.js';
@@ -127,6 +127,8 @@ export function placeRoadLine(state, a, b, type, opts = {}) {
   const placed = plan.cells.length ? placeRoad(state, plan.cells, type, (x, y) => dirs.get(idx(x, y)) ?? 0, { diagonal: plan.diagonal, path }) : plan;
   if (!placed) return { error: 'money', plan };
   if (!plan.cells.length && path) { markJunctions(state, path); bus.emit('network:changed', { layer: 'road' }); }
+  // drawn straight under a bridge (high enough, square to it): it carries on underneath
+  if (!plan.diagonal && !opts.replace && roadUnderBridges(state, plan.line, type, stepDirs(plan.line))) bus.emit('network:changed', { layer: 'road' });
   if (plan.diagonal && !opts.replace) {
     state.roadSegs = state.roadSegs || [];
     const same = (s) => (s.a[0] === a[0] && s.a[1] === a[1] && s.b[0] === b[0] && s.b[1] === b[1]) || (s.a[0] === b[0] && s.a[1] === b[1] && s.b[0] === a[0] && s.b[1] === a[1]);
@@ -473,7 +475,7 @@ export function bulldozePreview(state, x, y, layers = ['building', 'road', 'rail
 
 // What goes with a road cell when it's removed: its upgrades (a Power Connector takes its
 // wires down with it) and junction mark
-function clearRoadCell(state, i) {
+export function clearRoadCell(state, i) {
   const connector = state.roadUpg[i] & UPG.POWER;
   state.roadUpg[i] = 0;
   state.roadNode[i] = 0;
@@ -525,6 +527,10 @@ export function bulldozeCell(state, x, y, layers = ['building', 'road', 'rail', 
     if (layer === 'road' || layer === 'rail' || layer === 'path') {
       clearBridgeCell(state, layer, i);
       r += pruneBridges(state, layer); // spans that lost an end come down too (and refund)
+    }
+    if (layer === 'road') {
+      restoreUnderRoad(state, i); // a bridge taken off a road: the road below stays
+      r += pruneUnderpasses(state); // a road under a bridge that lost one side goes
     }
     bus.emit('network:changed', { layer });
     return { removed: layer, refund: r };

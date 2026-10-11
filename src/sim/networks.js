@@ -1,7 +1,7 @@
 // Connected components of the road and rail networks, and which of them reach an
 // outside connection. Recomputed only when a network changes.
 import { N, idx, inBounds, DIRS } from '../core/grid.js';
-import { pruneTunnels, joinThroughTunnels } from './tunnels.js';
+import { pruneTunnels, joinThroughLinks } from './tunnels.js';
 import { linked } from './bridges.js';
 
 // linkFn(i, j, d) -> may i connect to neighbour j? (bridges only connect along their axis)
@@ -35,7 +35,7 @@ export function labelComponents(layer, extraLink, linkFn) {
 export function computeRoadNetwork(state, ctx) {
   pruneTunnels(state); // a tunnel whose portal lost its road closes
   const { comp, count } = labelComponents(state.road, null, (i, j, d) => linked(state, 'road', i, j, d));
-  joinThroughTunnels(state, 'road', comp, count);
+  joinThroughLinks(state, 'road', comp, count);
   const outside = new Uint8Array(count);
   const size = new Int32Array(count);
   for (let i = 0; i < N * N; i++) if (comp[i] >= 0) size[comp[i]]++;
@@ -49,7 +49,7 @@ export function computeRoadNetwork(state, ctx) {
   ctx.net.roadSize = size;
 
   const rail = labelComponents(state.rail, null, (i, j, d) => linked(state, 'rail', i, j, d));
-  joinThroughTunnels(state, 'rail', rail.comp, rail.count);
+  joinThroughLinks(state, 'rail', rail.comp, rail.count);
   const railOutside = new Uint8Array(rail.count);
   for (const c of state.connections) {
     if (c.type !== 'rail') continue;

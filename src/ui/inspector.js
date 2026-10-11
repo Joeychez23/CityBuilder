@@ -80,6 +80,7 @@ registerPanel({
         ${row('Snow', pct(s.roadSnow[i]))}${row('Noise', pct(s.noise[i]))}
         ${row('Upgrades', UPGRADES.filter((u) => s.roadUpg[i] & u.bit).map((u) => u.name).join(', ') || '–')}
         ${(() => { const t = tunnelAt(s, i); if (!t) return ''; const o = t.a === i ? t.b : t.a; return row("Tunnel", `${Math.round(t.len)} cells to (${o % 272}, ${(o / 272) | 0})`); })()}
+        ${s.underRoad?.[i] ? row('Passes over', `${ROADS[s.underRoad[i]].name} (no junction: it runs on underneath)`) : ''}
         ${s.closed?.[i] ? row('Closed', CLOSED_NAMES[s.closed[i]], 'bad') : ''}
         ${row('Upkeep', `${money(perWeek(r.upkeep))}/wk per cell`)}`;
       return;

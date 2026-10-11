@@ -6,6 +6,7 @@
 import { N, idx, inBounds } from '../core/grid.js';
 import { ROADS } from '../data/roads.js';
 import { isOwned, spend } from './build.js';
+import { underpassLinks } from './bridges.js';
 import { bus } from '../core/events.js';
 
 export const TUNNEL_MAX = 64;  // cells between portals
@@ -56,22 +57,26 @@ export function pruneTunnels(state) {
   return false;
 }
 
-// For routing: portal cell -> [[other portal, cost]] (cached until the tunnels change)
+// For routing: links between cells that aren't side by side, cell -> [[cell, cost]]: the two
+// portals of each tunnel, and on roads the ground either side of each underpass beneath a
+// road bridge (sim/bridges.js). Cached until the tunnels or the network change.
 let cache = { road: null, rail: null, key: '' };
-export function tunnelLinks(state, layer) {
-  const key = JSON.stringify((state.tunnels || []).map((t) => [t.id, t.a, t.b]));
-  if (cache.key !== key || cache.state !== state) cache = { road: null, rail: null, key, state };
-  if (cache[layer]) return cache[layer];
+let netVersion = 0;
+bus.on('network:changed', () => { netVersion++; });
+export function jumpLinks(state, layer) {
+  const key = netVersion + JSON.stringify((state.tunnels || []).map((t) => [t.id, t.a, t.b]));
+  if (cache.key !== key || cache.state !== state) cache = { road: undefined, rail: undefined, key, state };
+  if (cache[layer] !== undefined) return cache[layer];
   const m = new Map();
+  const add = (a, b, c) => { if (!m.has(a)) m.set(a, []); m.get(a).push([b, c]); };
   for (const t of state.tunnels || []) {
     if (t.layer !== layer) continue;
     // through a tunnel at the road's speed, with nothing to slow you down on the way
     const c = layer === 'road' ? t.len * (50 / ROADS[t.type].speed) * 0.85 : t.len * 0.8;
-    if (!m.has(t.a)) m.set(t.a, []);
-    if (!m.has(t.b)) m.set(t.b, []);
-    m.get(t.a).push([t.b, c]);
-    m.get(t.b).push([t.a, c]);
+    add(t.a, t.b, c);
+    add(t.b, t.a, c);
   }
+  if (layer === 'road') underpassLinks(state, add);
   cache[layer] = m.size ? m : null;
   return cache[layer];
 }
@@ -79,13 +84,13 @@ export function tunnelLinks(state, layer) {
 // Are two neighbouring cells in a path really a jump through a tunnel?
 export const isJump = (i, j) => { const dx = Math.abs((i % N) - (j % N)), dy = Math.abs(((i / N) | 0) - ((j / N) | 0)); return dx + dy > 1; };
 
-// Road network components joined through tunnels (union-find on component labels)
-export function joinThroughTunnels(state, layer, comp, count) {
-  const links = (state.tunnels || []).filter((t) => t.layer === layer);
-  if (!links.length) return;
+// Network components joined through tunnels and underpasses (union-find on component labels)
+export function joinThroughLinks(state, layer, comp, count) {
+  const links = jumpLinks(state, layer);
+  if (!links) return;
   const parent = Array.from({ length: count }, (_, k) => k);
   const find = (k) => { while (parent[k] !== k) { parent[k] = parent[parent[k]]; k = parent[k]; } return k; };
-  for (const t of links) { const p = comp[t.a], q = comp[t.b]; if (p >= 0 && q >= 0) parent[find(p)] = find(q); }
+  for (const [a, list] of links) for (const [b] of list) { const p = comp[a], q = comp[b]; if (p >= 0 && q >= 0) parent[find(p)] = find(q); }
   for (let i = 0; i < comp.length; i++) if (comp[i] >= 0) comp[i] = find(comp[i]);
 }
 

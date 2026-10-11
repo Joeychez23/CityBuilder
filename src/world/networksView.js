@@ -1,7 +1,8 @@
 // Roads, rails, subway tunnels, power lines, water pipes and footpaths. Each network cell
 // is drawn as an optional centre pad plus an "arm" toward every connected neighbour. Arm
 // heights come from sim/deck.js: neighbours share the same edge height (so pieces always
-// meet) and ground pieces never dip below the terrain. Raised cells are drawn as bridges.
+// meet) and ground pieces never dip below the terrain. Raised cells are drawn as bridges, with
+// any road passing under one drawn on the ground beneath it.
 import * as THREE from 'three';
 import { N, idx, DIRS, inBounds, clamp } from '../core/grid.js';
 import { InstancedPool, boxMatrix, unitBox } from './instanced.js';
@@ -71,6 +72,7 @@ export function createNetworksView(view, state) {
 
   const nv = { pools, dirty: true, roadColorFn: null, showSubway: false, showPipes: false };
   const roadArms = new Map(); // cell index -> asphalt handles (for recolouring)
+  const underArms = new Map(); // cell index -> [handles, road type, cell it's coloured like] of a road under a bridge
   const roadJoints = new Map(); // cell index -> round joint handles (for recolouring)
   const segArms = new Map();    // cell index -> [handle, road type] of roads at an angle of another type
   const lamps = new Map();    // cell index -> lamp head handle (lit at night if the road has power)
@@ -199,7 +201,10 @@ export function createNetworksView(view, state) {
     const h = L.center[i];
     const cx = x + 0.5, cz = y + 0.5;
     const below = ground[i];
-    if ((x + y) % st.every === 0 && h - below > 0.3) {
+    // a road running under the deck keeps its piers out of the way: they stand either side of it
+    const overRoad = !!state.underRoad?.[i];
+    const besideRoad = !overRoad && raisedLayer === state.bridgeH && [0, 1, 2, 3].some((d) => (mask & (1 << d)) && inBounds(x + DIRS[d][0], y + DIRS[d][1]) && state.underRoad?.[idx(x + DIRS[d][0], y + DIRS[d][1])]);
+    if (!overRoad && ((x + y) % st.every === 0 || besideRoad) && h - below > 0.3) {
       // a pier: thin along the deck, wide across it (with a cap beam under big decks)
       const bed = below - (state.water[i] ? 2 : 0.2);
       const top = h - 0.17 - st.girder;
@@ -228,6 +233,30 @@ export function createNetworksView(view, state) {
       for (const side of [-1, 1]) {
         const ox = -dz * side * (width / 2 - st.rail.w / 2), oz = dx * side * (width / 2 - st.rail.w / 2);
         pools.railing.add(slabMatrix(cx + ox, h + st.rail.h, cz + oz, cx + dx * 0.51 + ox, he + st.rail.h, cz + dz * 0.51 + oz, st.rail.w, st.rail.h), st.rail.c);
+      }
+    }
+  }
+
+  // A road passing under a bridge: a straight piece on the ground below the deck, coloured
+  // like the road beside it (its traffic is counted there)
+  function drawUnder(U, x, y, i) {
+    const type = state.underRoad[i], def = ROADS[type], um = U.masks[i];
+    const like = um & 3 ? idx(x + (um & 1 ? 1 : 0), y + (um & 2 ? 1 : 0)) : idx(x - (um & 4 ? 1 : 0), y - (um & 8 ? 1 : 0));
+    const handles = [];
+    drawCross(pools.sidewalk, U, x, y, um, 1, 0.4, 0.03, def.key === 'highway' ? '#7d7f84' : '#b8b5ae', null);
+    drawCross(pools.asphalt, U, x, y, um, def.width * 0.82, 0.1, 0.065, roadColor(like, type), handles);
+    underArms.set(i, [handles, type, like]);
+    if (def.key === 'gravel') return;
+    drawCross(pools.marking, U, x, y, um, 0.04, 0.02, 0.075, def.oneway || def.key === 'highway' ? '#e8e8e8' : '#f1c94a');
+    if (def.lanes < 2) return;
+    const alongZ = (um & 10) !== 0, hc = U.center[i] + 0.075;
+    for (let d = 0; d < 4; d++) {
+      if (!(um & (1 << d))) continue;
+      const [dx, dz] = DIRS[d];
+      const he = hc + (U.edge[i * 4 + d] - U.center[i]) * (0.17 / 0.51);
+      for (const o of laneOffsets(def)) {
+        const ox = alongZ ? o : 0, oz = alongZ ? 0 : o;
+        pools.marking.add(slabMatrix(x + 0.5 + ox, hc, y + 0.5 + oz, x + 0.5 + ox + dx * 0.17, he, y + 0.5 + oz + dz * 0.17, 0.03, 0.02), '#e8e8e8');
       }
     }
   }
@@ -295,6 +324,7 @@ export function createNetworksView(view, state) {
     profiles = new Map();
     segTypes = new Map();
     roadArms.clear();
+    underArms.clear();
     segArms.clear();
     roadJoints.clear();
     lamps.clear();
@@ -389,6 +419,7 @@ export function createNetworksView(view, state) {
           }
           roadArms.set(i, handles);
           if (raised) drawBridge(R, D.ground, x, y, segs ? ext : mask, 1, state.bridgeH, mask, st, segs && !ext ? { sg: segs[0] } : null);
+          if (raised && state.underRoad[i] && R.under) drawUnder(R.under, x, y, i);
           const straightX = ext === 5 || ext === 1 || ext === 4;
           const straightZ = ext === 10 || ext === 2 || ext === 8;
           if ((straightX || straightZ) && def.key !== 'gravel') drawCross(pools.marking, R, x, y, ext, 0.04, 0.02, 0.075, lineC);
@@ -497,6 +528,7 @@ export function createNetworksView(view, state) {
       for (const h of handles) pools.asphalt.setColor(h, col.set(c));
     }
     for (const [i, hs] of roadJoints) { const c = roadColor(i, state.road[i]); for (const h of hs) pools.jointAsphalt.setColor(h, col.set(c)); }
+    for (const [, [hs, t, like]] of underArms) { const c = roadColor(like, t); for (const h of hs) pools.asphalt.setColor(h, col.set(c)); }
     for (const [i, list] of segArms) for (const [h, t] of list) pools.asphalt.setColor(h, col.set(roadColor(i, t)));
   };
 

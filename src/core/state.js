@@ -13,12 +13,12 @@ export const SAVED_LAYERS = [
   'rail', 'subway', 'power', 'pipe', 'path', 'tree', 'surface',
   'fertile', 'ore', 'oil', 'groundwater', 'gwPollution', 'forestMax',
   'air', 'ground', 'noise', 'waterPoll', 'landValue', 'burnt',
-  'bridgeH', 'bridgeDir', 'railH', 'railDir', 'pathH', 'pathDir', 'canal',
+  'bridgeH', 'bridgeDir', 'railH', 'railDir', 'pathH', 'pathDir', 'canal', 'underRoad', 'underDir',
 ];
 
 export function createState(map, options = {}) {
   return {
-    version: 7, // 3: power lines need Power Connectors to feed roads (older cities get them added)
+    version: 8, // 3: power lines need Power Connectors to feed roads (older cities get them added)
                 // 4: roads at an angle connect only at their ends and junctions (see roadNode)
                 // 5: the ground under the whole width of roads at an angle is graded
                 // 6: the outside highway and railway cross water on arched bridges (bridgeConnection)
@@ -72,6 +72,9 @@ export function createState(map, options = {}) {
     path: u8(),             // pedestrian paths
     // Bridges: deck height (0 = on the ground) and axis (1 = east-west, 2 = north-south)
     bridgeH: f32(), bridgeDir: u8(),
+    // A road passing under a road bridge: its type and one-way direction (the cell's own road
+    // is the bridge above it; see underpasses in sim/bridges.js)
+    underRoad: u8(), underDir: u8(),
     railH: f32(), railDir: u8(),
     pathH: f32(), pathDir: u8(),
 

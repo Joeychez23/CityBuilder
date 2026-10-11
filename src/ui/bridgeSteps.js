@@ -20,7 +20,7 @@ export function bridgeHover(app, t, p, layer, type, name) {
   const plan = planBridge(s, layer, type, t.start, p);
   const cells = plan.cells.map(([x, y], k) => {
     const end = k === 0 || k === plan.cells.length - 1;
-    const color = !plan.ok ? '#ff4a3a' : end ? '#ffffff' : '#4fc3ff';
+    const color = !plan.ok ? '#ff4a3a' : end ? '#ffffff' : plan.under?.has(k) ? '#ffd34f' : '#4fc3ff';
     return [x, y, color, plan.ok && !end ? plan.heights[k] - 0.1 : undefined];
   });
   app.preview.setCells(cells);
@@ -34,9 +34,12 @@ export function bridgeHover(app, t, p, layer, type, name) {
   }
   const span = plan.cells.length - 2;
   const rise = Math.max(...plan.heights) - Math.min(plan.heights[0], plan.heights[plan.heights.length - 1]);
-  const over = [plan.spanOver.water && `${plan.spanOver.water} over water`, plan.spanOver.cross && `${plan.spanOver.cross} over track`, plan.spanOver.land && `${plan.spanOver.land} over land`].filter(Boolean).join(', ');
+  const roads = plan.spanOver.roads;
+  const over = [plan.spanOver.water && `${plan.spanOver.water} over water`, roads && `${roads} over road${roads === 1 ? '' : 's'}`, plan.spanOver.cross && `${plan.spanOver.cross} over track`, plan.spanOver.land && `${plan.spanOver.land} over land`].filter(Boolean).join(', ');
   const afford = s.options.unlimitedMoney || s.money >= plan.cost;
-  app.tools.showTip(`🌉 ${name} · ${span} cells (${over})<br>Rises up to ${Math.round(rise * CELL_M)} m · <span class="${afford ? '' : 'bad'}">${money(plan.cost)}</span>`);
+  app.tools.showTip(`🌉 ${name} · ${span} cells (${over})<br>Rises up to ${Math.round(rise * CELL_M)} m · <span class="${afford ? '' : 'bad'}">${money(plan.cost)}</span>`
+    + (roads ? `<br><span class="muted">The road${roads === 1 ? '' : 's'} below carr${roads === 1 ? 'ies' : 'y'} on underneath: no junction, no waiting</span>` : '')
+    + (plan.cutOff ? `<br><span class="warn">⚠ ${plan.cutOff} building${plan.cutOff === 1 ? '' : 's'} beside the ramps would lose ${plan.cutOff === 1 ? 'its' : 'their'} road</span>` : ''));
 }
 
 // A click: set where the bridge starts, or build it to here. Returns true when it was built.
