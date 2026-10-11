@@ -50,8 +50,10 @@ export function chainCells(c, tab) {
 const dirTo = (i, j) => (j === i + 1 ? 0 : j === i + N ? 1 : j === i - 1 ? 2 : j === i - N ? 3 : -1);
 
 // Write the network into the per-cell layers. X: the network index (rn() in roadnet.js);
-// heightAt(seg, s): a raised road's deck height s along it.
-export function writeRaster(state, X, heightAt) {
+// heightAt(seg, s): a raised road's deck height s along it; openAt(seg, s): whether a road
+// is open to the sky there (not inside a tunnel). A tunnel's two open ends are joined in
+// state.roadJumps ([cell, cell, length]) for code that routes cell by cell.
+export function writeRaster(state, X, heightAt, openAt = () => true) {
   const S = state;
   if (!S.roadSeg || S.roadSeg.length !== NN) S.roadSeg = new Int32Array(NN);
   if (!S.roadLinks || S.roadLinks.length !== NN) S.roadLinks = new Uint8Array(NN);
@@ -71,6 +73,7 @@ export function writeRaster(state, X, heightAt) {
   S.road.fill(0); S.roadSeg.fill(0); S.roadDir.fill(0); S.roadUpg.fill(0); S.bridgeH.fill(0); S.bridgeDir.fill(0);
   links.fill(0);
   if (S.roadNode) S.roadNode.fill(0);
+  S.roadJumps = [];
   const ground = new Uint8Array(NN);
   const nodeCell = (n) => (inBounds(Math.floor(n.x), Math.floor(n.z)) ? idx(Math.floor(n.x), Math.floor(n.z)) : -1);
   // ground roads first, so a raised one passing over a ground road leaves it on its cells
@@ -81,9 +84,17 @@ export function writeRaster(state, X, heightAt) {
     const { cells, ss } = g.chain;
     const def = ROADS[s.type];
     const ends = new Set([nodeCell(X.node.get(s.a)), nodeCell(X.node.get(s.b))]);
+    let lastOpen = -1, inside = false, prevOpen = true;
     for (let k = 0; k < cells.length; k++) {
       const i = cells[k];
-      if (i < 0) continue;
+      if (i < 0) { prevOpen = false; continue; }
+      if (s.tn) {
+        // inside the tunnel: nothing on the surface (its two open ends are joined underground)
+        if (!ends.has(i) && !openAt(s, ss[k])) { inside = true; prevOpen = false; continue; }
+        if (inside && lastOpen >= 0) S.roadJumps.push([lastOpen, i, X.geo.get(s.id).len]);
+        inside = false;
+        lastOpen = i;
+      }
       const raised = s.br && !ends.has(i) && !ground[i];
       if (!raised) ground[i] = 1;
       if (!S.road[i] || (!raised && S.bridgeH[i]) || rankOf(s.type) > rankOf(S.road[i])) {
@@ -99,10 +110,11 @@ export function writeRaster(state, X, heightAt) {
         const d = dirTo(a, b);
         if (d >= 0) S.roadDir[i] = d;
       }
-      if (k > 0 && cells[k - 1] >= 0) {
+      if (k > 0 && cells[k - 1] >= 0 && prevOpen) {
         const j = cells[k - 1], d = dirTo(j, i);
         if (d >= 0) { links[j] |= 1 << d; links[i] |= 1 << ((d + 2) % 4); }
       }
+      prevOpen = true;
     }
     // toll booths and power connectors stand at a point along the road
     for (const [key, bit] of [['toll', UPG.TOLL], ['power', UPG.POWER]]) {

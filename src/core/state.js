@@ -16,7 +16,7 @@ export const SAVED_LAYERS = [
   'railH', 'railDir', 'pathH', 'pathDir', 'canal',
 ];
 // Per-cell road layers worked out from the road network (sim/roadraster.js): never saved
-export const ROAD_RASTER = ['road', 'roadSeg', 'roadDir', 'roadUpg', 'roadCond', 'bridgeH', 'bridgeDir', 'underRoad', 'underDir', 'roadNode', 'roadDay', 'roadLinks'];
+export const ROAD_RASTER = ['road', 'roadSeg', 'roadDir', 'roadUpg', 'roadCond', 'bridgeH', 'bridgeDir', 'underRoad', 'underDir', 'roadNode', 'roadDay', 'roadLinks', 'roadJumps'];
 
 export function createState(map, options = {}) {
   return {

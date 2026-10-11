@@ -8,7 +8,7 @@ import { N, idx, DIRS, inBounds, clamp } from '../core/grid.js';
 import { InstancedPool, boxMatrix, unitBox } from './instanced.js';
 import { ROADS, UPG } from '../data/roads.js';
 import { getDeck } from '../sim/deck.js';
-import { segIndex, clipToCell, segPoint, segParam, roadsideSpots, crossingIn } from '../sim/roadsegs.js';
+import { roadsideSpots } from '../sim/roadnet.js';
 import { POLE_H } from './powerView.js';
 
 const m = new THREE.Matrix4();
@@ -71,10 +71,6 @@ export function createNetworksView(view, state) {
   pools.pipe.mesh.renderOrder = 5;
 
   const nv = { pools, dirty: true, roadColorFn: null, showSubway: false, showPipes: false };
-  const roadArms = new Map(); // cell index -> asphalt handles (for recolouring)
-  const underArms = new Map(); // cell index -> [handles, road type, cell it's coloured like] of a road under a bridge
-  const roadJoints = new Map(); // cell index -> round joint handles (for recolouring)
-  const segArms = new Map();    // cell index -> [handle, road type] of roads at an angle of another type
   const lamps = new Map();    // cell index -> lamp head handle (lit at night if the road has power)
 
   // Plain neighbour mask for layers without bridges (subway, pipes, power)
@@ -103,78 +99,6 @@ export function createNetworksView(view, state) {
     }
   }
 
-  // Height along a road at an angle: one profile for its whole length, through the deck
-  // heights of the cells it really runs through (cells it only grazes at a corner, and
-  // stretches that were bulldozed, are left out). Every piece of it is cut from that
-  // profile, so on hills the pieces meet without steps; at its ends and junctions it passes
-  // through the cell's centre height, where the pad or round joint is.
-  let profiles = new Map();
-  function profileOf(L, s) {
-    let p = profiles.get(s);
-    if (p) return p;
-    const SG = segIndex(state);
-    const order = SG.orderOf.get(s);
-    const len = Math.hypot(s.b[0] - s.a[0], s.b[1] - s.a[1]) || 1;
-    const pts = [];
-    const has = (i) => state.road[i] && order?.has(i);
-    for (const [x, y] of SG.cellsOf.get(s) || []) {
-      if (!inBounds(x, y) || !has(idx(x, y))) continue;
-      // where it crosses another road at an angle, it passes through the crossing point at
-      // the same height as the other road
-      const others = SG.byCell.get(idx(x, y));
-      const cross = others.length > 1 ? crossingIn(others, x, y) : null;
-      if (cross?.at.has(s)) { pts.push([cross.at.get(s), L.center[idx(x, y)]]); continue; }
-      const c = clipToCell(s, x, y);
-      if (!c || (c[1] - c[0]) * len < 0.2) continue;
-      const t = Math.min(c[1], Math.max(c[0], segParam(s, x + 0.5, y + 0.5)));
-      pts.push([t, L.center[idx(x, y)]]);
-    }
-    const ia = inBounds(s.a[0], s.a[1]) ? idx(s.a[0], s.a[1]) : -1, ib = inBounds(s.b[0], s.b[1]) ? idx(s.b[0], s.b[1]) : -1;
-    if (ia >= 0 && has(ia)) pts.push([0, L.center[ia]]);
-    if (ib >= 0 && has(ib)) pts.push([1, L.center[ib]]);
-    pts.sort((u, v) => u[0] - v[0]);
-    // (the heights are already smoothed along the road, see sim/deck.js)
-    p = { ts: pts.map((q) => q[0]), hs: pts.map((q) => q[1]) };
-    profiles.set(s, p);
-    return p;
-  }
-  function profileAt(p, t) {
-    const { ts, hs } = p;
-    if (!ts.length) return 0;
-    if (t <= ts[0]) return hs[0];
-    for (let k = 1; k < ts.length; k++) {
-      if (t <= ts[k]) { const f = (t - ts[k - 1]) / Math.max(1e-9, ts[k] - ts[k - 1]); return hs[k - 1] + (hs[k] - hs[k - 1]) * f; }
-    }
-    return hs[hs.length - 1];
-  }
-
-  // The piece of a diagonal road inside cell (x, y): a slab along its line from where it
-  // enters the cell to where it leaves, bent where the line passes nearest the cell's middle,
-  // following the road's height profile
-  // off: shift sideways from the line (railings along a bridge at an angle)
-  // range: only the part between these parameters (a road that ends in this cell)
-  function drawDiagonal(pool, L, s, x, y, width, thick, lift, color, handles, off = 0, range = null) {
-    let c = clipToCell(s, x, y);
-    if (c && range) c = [Math.max(c[0], range[0]), Math.min(c[1], range[1])];
-    if (!c || c[1] - c[0] < 1e-6) return;
-    const sl = Math.hypot(s.b[0] - s.a[0], s.b[1] - s.a[1]) || 1;
-    const ox = (-(s.b[1] - s.a[1]) / sl) * off, oz = ((s.b[0] - s.a[0]) / sl) * off;
-    const add = (mx) => { const hd = pool.add(mx, color); if (handles) handles.push(hd); };
-    const prof = profileOf(L, s);
-    const len = sl;
-    const tm = Math.min(c[1], Math.max(c[0], segParam(s, x + 0.5, y + 0.5)));
-    // split at the point nearest the cell's middle (skipping slivers shorter than 0.02 cells)
-    const ts = [c[0]];
-    for (const t of [tm, c[1]]) if ((t - ts[ts.length - 1]) * len > 0.02) ts.push(t);
-    if (ts.length < 2) return;
-    const over = 0.025 / len; // overlap a hair so neighbouring pieces never show a seam
-    for (let k = 1; k < ts.length; k++) {
-      const t0 = Math.max(0, ts[k - 1] - over), t1 = Math.min(1, ts[k] + over);
-      const [ax, az] = segPoint(s, t0), [bx, bz] = segPoint(s, t1);
-      add(slabMatrix(ax + ox, profileAt(prof, t0) + lift, az + oz, bx + ox, profileAt(prof, t1) + lift, bz + oz, width, thick));
-    }
-  }
-
   // Layers without bridges (subway, pipes) just follow the ground
   let groundL = null;
   function groundLayer(ground) {
@@ -195,26 +119,21 @@ export function createNetworksView(view, state) {
   // and an abutment where the deck lands on the road at either end. Road bridges are built
   // for the road they carry (st, see BRIDGE_STYLE): light steel for local streets, deeper
   // concrete for collectors, box girders with lamps and wider piers for avenues and highways.
-  // diag: { sg } for a bridge at an angle (its piers stand on its line, turned square to it)
-  function drawBridge(L, ground, x, y, mask, width, raisedLayer, abutMask = mask, st = BRIDGE_STYLE.track, diag = null) {
+  function drawBridge(L, ground, x, y, mask, width, raisedLayer, abutMask = mask, st = BRIDGE_STYLE.track) {
     const i = idx(x, y);
     const h = L.center[i];
     const cx = x + 0.5, cz = y + 0.5;
     const below = ground[i];
     // a road running under the deck keeps its piers out of the way: they stand either side of it
-    const overRoad = !!state.underRoad?.[i];
-    const besideRoad = !overRoad && raisedLayer === state.bridgeH && [0, 1, 2, 3].some((d) => (mask & (1 << d)) && inBounds(x + DIRS[d][0], y + DIRS[d][1]) && state.underRoad?.[idx(x + DIRS[d][0], y + DIRS[d][1])]);
+    const roadAt = (j) => j >= 0 && state.road[j] && !state.bridgeH[j];
+    const overRoad = roadAt(i);
+    const besideRoad = !overRoad && [0, 1, 2, 3].some((d) => (mask & (1 << d)) && inBounds(x + DIRS[d][0], y + DIRS[d][1]) && roadAt(idx(x + DIRS[d][0], y + DIRS[d][1])));
     if (!overRoad && ((x + y) % st.every === 0 || besideRoad) && h - below > 0.3) {
       // a pier: thin along the deck, wide across it (with a cap beam under big decks)
       const bed = below - (state.water[i] ? 2 : 0.2);
       const top = h - 0.17 - st.girder;
       const across = width * st.pierW;
-      let px = cx, pz = cz, ry = (mask & 5) !== 0 ? 0 : Math.PI / 2; // east-west deck: no turn
-      if (diag) {
-        const s = diag.sg;
-        [px, pz] = segPoint(s, segParam(s, cx, cz));
-        ry = Math.atan2(-(s.b[1] - s.a[1]), s.b[0] - s.a[0]);
-      }
+      const px = cx, pz = cz, ry = (mask & 5) !== 0 ? 0 : Math.PI / 2; // east-west deck: no turn
       pools.pillar.add(boxMatrix(px, bed, pz, st.pier, Math.max(0.05, top - bed), across, ry, m), st.pierC);
       if (st.cap) pools.pillar.add(boxMatrix(px, top - 0.12, pz, st.pier * 1.4, 0.12, width * 0.94, ry, m), st.pierC);
     }
@@ -237,96 +156,8 @@ export function createNetworksView(view, state) {
     }
   }
 
-  // A road passing under a bridge: a straight piece on the ground below the deck, coloured
-  // like the road beside it (its traffic is counted there)
-  function drawUnder(U, x, y, i) {
-    const type = state.underRoad[i], def = ROADS[type], um = U.masks[i];
-    const like = um & 3 ? idx(x + (um & 1 ? 1 : 0), y + (um & 2 ? 1 : 0)) : idx(x - (um & 4 ? 1 : 0), y - (um & 8 ? 1 : 0));
-    const handles = [];
-    drawCross(pools.sidewalk, U, x, y, um, 1, 0.4, 0.03, def.key === 'highway' ? '#7d7f84' : '#b8b5ae', null);
-    drawCross(pools.asphalt, U, x, y, um, def.width * 0.82, 0.1, 0.065, roadColor(like, type), handles);
-    underArms.set(i, [handles, type, like]);
-    if (def.key === 'gravel') return;
-    drawCross(pools.marking, U, x, y, um, 0.04, 0.02, 0.075, def.oneway || def.key === 'highway' ? '#e8e8e8' : '#f1c94a');
-    if (def.lanes < 2) return;
-    const alongZ = (um & 10) !== 0, hc = U.center[i] + 0.075;
-    for (let d = 0; d < 4; d++) {
-      if (!(um & (1 << d))) continue;
-      const [dx, dz] = DIRS[d];
-      const he = hc + (U.edge[i * 4 + d] - U.center[i]) * (0.17 / 0.51);
-      for (const o of laneOffsets(def)) {
-        const ox = alongZ ? o : 0, oz = alongZ ? 0 : o;
-        pools.marking.add(slabMatrix(x + 0.5 + ox, hc, y + 0.5 + oz, x + 0.5 + ox + dx * 0.17, he, y + 0.5 + oz + dz * 0.17, 0.03, 0.02), '#e8e8e8');
-      }
-    }
-  }
-
-  function roadColor(i, type) {
-    if (nv.roadColorFn) return nv.roadColorFn(i, type);
-    col.set(ROADS[type].color);
-    const cond = state.roadCond[i];
-    if (cond < 0.7) col.lerp(new THREE.Color('#8a8578'), (0.7 - cond) * 0.9);
-    if (state.roadSnow[i] > 0.05) col.lerp(new THREE.Color('#f2f5f8'), clamp(state.roadSnow[i], 0, 0.9));
-    if (state.accident[i] > 0) col.set('#d24a3a');
-    // closed: a film shoot (orange), broken by an earthquake (rubble brown), under water (blue)
-    const shut = state.closed?.[i];
-    if (shut) col.set(shut === 1 ? '#f0a020' : shut === 2 ? '#6e5b47' : '#4f8fbf');
-    return col.getHex();
-  }
-
-  // How far from the centre line the lane lines run (roads with more than one lane each way)
-  function laneOffsets(def) {
-    const w = def.width * 0.41;
-    const offs = [];
-    if (def.oneway) { for (let k = 1; k < def.lanes; k++) { const o = -w + (2 * w * k) / def.lanes; if (Math.abs(o) > 0.01) offs.push(o); } }
-    else for (let k = 1; k < def.lanes; k++) { const o = (w * k) / def.lanes; offs.push(o, -o); }
-    return offs;
-  }
-
-  // The road type of a road at an angle: the type most of its cells have (the cells where it
-  // crosses another road take that road's type, so they don't count)
-  let segTypes = new Map();
-  function segTypeOf(SG, sg) {
-    if (segTypes.has(sg)) return segTypes.get(sg);
-    const count = new Map();
-    for (const i of SG.orderOf.get(sg)?.keys() || []) {
-      const t = state.road[i];
-      if (!t || SG.byCell.get(i).length > 1 || state.roadNode[i]) continue;
-      count.set(t, (count.get(t) || 0) + 1);
-    }
-    let best = 0, n = 0;
-    for (const [t, c] of count) if (c > n) { best = t; n = c; }
-    segTypes.set(sg, best);
-    return best;
-  }
-
-  // Has the road at an angle been bulldozed right beside cell i (back or on along its
-  // staircase, through any cells it only grazes at a corner)? Then it ends in this cell.
-  function looseEnd(SG, sg, i, step) {
-    const order = SG.orderOf.get(sg), cells = SG.cellsOf.get(sg);
-    let k = order?.get(i);
-    if (k == null) return false;
-    const len = Math.hypot(sg.b[0] - sg.a[0], sg.b[1] - sg.a[1]);
-    for (let n = 0; n < 3; n++) {
-      k += step;
-      const nb = cells[k];
-      if (!nb || !inBounds(nb[0], nb[1])) return false;
-      const j = idx(nb[0], nb[1]);
-      if (!state.road[j] || !order.has(j)) return true;
-      const c = clipToCell(sg, nb[0], nb[1]);
-      if (c && (c[1] - c[0]) * len > 0.15) return false; // the road carries on through it
-    }
-    return false;
-  }
-
   nv.rebuild = () => {
     for (const p of Object.values(pools)) p.clear();
-    profiles = new Map();
-    segTypes = new Map();
-    roadArms.clear();
-    underArms.clear();
-    segArms.clear();
-    roadJoints.clear();
     lamps.clear();
     const D = getDeck(state);
     const R = D.road, RL = D.rail, P = D.path;
@@ -392,16 +223,8 @@ export function createNetworksView(view, state) {
     nv.dirty = false;
   };
 
-  // Cheap recolour of the asphalt only (traffic info view, snow, condition)
-  nv.recolorRoads = () => {
-    for (const [i, handles] of roadArms) {
-      const c = roadColor(i, state.road[i]);
-      for (const h of handles) pools.asphalt.setColor(h, col.set(c));
-    }
-    for (const [i, hs] of roadJoints) { const c = roadColor(i, state.road[i]); for (const h of hs) pools.jointAsphalt.setColor(h, col.set(c)); }
-    for (const [, [hs, t, like]] of underArms) { const c = roadColor(like, t); for (const h of hs) pools.asphalt.setColor(h, col.set(c)); }
-    for (const [i, list] of segArms) for (const [h, t] of list) pools.asphalt.setColor(h, col.set(roadColor(i, t)));
-  };
+  // (roads are recoloured by world/roadsView.js)
+  nv.recolorRoads = () => {};
 
   // Street lights glow at night, unless their road network is short of power
   let lampCtx = null, lampNight = -1;

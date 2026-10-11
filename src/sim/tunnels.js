@@ -1,12 +1,12 @@
-// Tunnels: bored under hills, rivers or the middle of town, a road or railway tunnel joins
-// two stretches of road (or track) on the surface. It's an underground link between its two
-// portals: routes can take it (traffic and trains go in at one portal and come out at the
-// other), but nothing above it is touched, so it's how a jammed surface road can be taken
-// away. state.tunnels: [{ id, layer: 'road' | 'rail', a, b (portal cells), type, len }]
+// Railway tunnels: bored under hills, rivers or the middle of town, a tunnel joins two
+// stretches of track on the surface. It's an underground link between its two portals: trains
+// go in at one and come out at the other, and nothing above it is touched.
+// state.tunnels: [{ id, layer: 'rail', a, b (portal cells), len }]
+// (Road tunnels are roads of the network that run underground, see sim/roadnet.js: for code
+// that still routes cell by cell, their two open ends are joined through state.roadJumps.)
 import { N, idx, inBounds } from '../core/grid.js';
 import { ROADS } from '../data/roads.js';
 import { isOwned, spend } from './build.js';
-import { underpassLinks } from './bridges.js';
 import { bus } from '../core/events.js';
 
 export const TUNNEL_MAX = 64;  // cells between portals
@@ -58,13 +58,13 @@ export function pruneTunnels(state) {
 }
 
 // For routing: links between cells that aren't side by side, cell -> [[cell, cost]]: the two
-// portals of each tunnel, and on roads the ground either side of each underpass beneath a
-// road bridge (sim/bridges.js). Cached until the tunnels or the network change.
+// portals of each tunnel (and on roads, the two open ends of each road tunnel). Cached until
+// the tunnels or the network change.
 let cache = { road: null, rail: null, key: '' };
 let netVersion = 0;
 bus.on('network:changed', () => { netVersion++; });
 export function jumpLinks(state, layer) {
-  const key = netVersion + JSON.stringify((state.tunnels || []).map((t) => [t.id, t.a, t.b]));
+  const key = netVersion + JSON.stringify((state.tunnels || []).map((t) => [t.id, t.a, t.b])) + JSON.stringify(state.roadJumps || []);
   if (cache.key !== key || cache.state !== state) cache = { road: undefined, rail: undefined, key, state };
   if (cache[layer] !== undefined) return cache[layer];
   const m = new Map();
@@ -76,7 +76,8 @@ export function jumpLinks(state, layer) {
     add(t.a, t.b, c);
     add(t.b, t.a, c);
   }
-  if (layer === 'road') underpassLinks(state, add);
+  // road tunnels: in at one end, out at the other, at the road's speed
+  if (layer === 'road') for (const [a, b, len] of state.roadJumps || []) { const c = len * (50 / (ROADS[state.road[a]]?.speed || 50)) * 0.85; add(a, b, c); add(b, a, c); }
   cache[layer] = m.size ? m : null;
   return cache[layer];
 }

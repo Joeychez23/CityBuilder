@@ -14,11 +14,11 @@ import * as THREE from 'three';
 import { N, clamp, DIRS, inBounds, idx } from '../core/grid.js';
 import { ROADS, UPG, rankOf } from '../data/roads.js';
 import { LINE_TYPES } from '../data/transport.js';
-import { getDeck, deckBetween, underBetween } from '../sim/deck.js';
+import { getDeck, deckBetween } from '../sim/deck.js';
 import { bus } from '../core/events.js';
 import { lineRunning } from '../sim/transit.js';
 import { roadPathPoints } from '../sim/roadsegs.js';
-import { roadMasks, linked, underpassBetween } from '../sim/bridges.js';
+import { roadMasks, linked } from '../sim/bridges.js';
 import { congestion, jamFactor, junctionKind, rushFactor, makeRoadCost, pathCost } from '../sim/traffic.js';
 import { astar } from '../sim/pathfind.js';
 import { hourOf } from '../sim/simulation.js';
@@ -139,7 +139,6 @@ export function createVehiclesView(view, state) {
   const surface = (i0, i1, f, type) => {
     const D = getDeck(state);
     if (type === 'subway') return D.ground[i0] * (1 - f) + D.ground[i1] * f;
-    if (type !== 'train' && isJump(i0, i1)) { const u = underpassBetween(state, i0, i1); if (u >= 0) return underBetween(D.road, i0, u, i1, f); }
     return deckBetween(type === 'train' ? D.rail : D.road, i0, i1, f);
   };
 
@@ -351,7 +350,7 @@ export function createVehiclesView(view, state) {
     const z = z0 + (z1 - z0) * f + fx * lane;
     const underground = a.type === 'subway';
     if (underground && !vv.showUnderground) return;
-    if (L && isJump(i0, i1) && underpassBetween(state, i0, i1) < 0) return; // inside a tunnel (sim/tunnels.js)
+    if (L && isJump(i0, i1)) return; // inside a tunnel
     const y = surface(i0, i1, f, a.type) + (underground ? 0.2 : 0.1);
     const [sl, sh, sw] = SIZES[a.type] || SIZES.car;
     q.setFromAxisAngle(up, Math.atan2(-fz, fx));

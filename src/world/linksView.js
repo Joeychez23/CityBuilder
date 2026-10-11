@@ -1,10 +1,11 @@
-// Drawing the city's big links: tunnel portals (and the tunnels themselves while you look
+// Drawing the city's big links: railway tunnel portals (and the tunnels themselves while you look
 // underground), the hyperloop's tube on its pylons with pods racing along it, and the towers
 // and cables of suspension bridges.
 import * as THREE from 'three';
 import { N } from '../core/grid.js';
 import { terrainAt, cellHeight } from '../sim/mapgen.js';
-import { getDeck } from '../sim/deck.js';
+import { rn, segY } from '../sim/roadnet.js';
+import { bez, tAtS } from '../sim/roadgeom.js';
 import { ROADS } from '../data/roads.js';
 import { hyperloopTube } from '../sim/regional.js';
 import { bus } from '../core/events.js';
@@ -97,8 +98,12 @@ export function createLinksView(view, state) {
     }
     // --- suspension bridges: two towers each side, main cables sagging between, hangers
     for (const lb of state.landmarkBridges || []) {
-      const D = getDeck(state);
-      const pts = lb.cells.map((i, k) => [(i % N) + 0.5, lb.heights[k] ?? D.road.center[i], ((i / N) | 0) + 0.5]);
+      // (along the bridge's road, at its deck height)
+      const X = rn(state), g = lb.seg != null && X.geo.get(lb.seg);
+      if (!g) continue;
+      const m = Math.max(8, Math.round(g.len));
+      const pts = [];
+      for (let k = 0; k <= m; k++) { const sa = (g.len * k) / m, p = bez(g.c, tAtS(g.tab, sa)); pts.push([p[0], segY(state, lb.seg, sa), p[1]]); }
       const n = pts.length - 1;
       const a = pts[0], b = pts[n];
       const len = Math.hypot(b[0] - a[0], b[2] - a[2]) || 1;

@@ -1,5 +1,6 @@
-// Tunnel tool: click a road (or railway track) where the tunnel goes in, then where it comes
-// out. It runs straight underground between them, under anything (sim/tunnels.js).
+// Railway tunnel tool: click railway track where the tunnel goes in, then where it comes out.
+// It runs straight underground between them, under anything (sim/tunnels.js). (Road tunnels
+// are drawn with the road tool's Tunnel mode, see toolsRoad.js.)
 import { registerTool, money } from './tools.js';
 import { N, idx, CELL_M } from '../core/grid.js';
 import { lineCells } from '../sim/roadsegs.js';
@@ -9,7 +10,7 @@ const netOf = (s, layer) => (layer === 'rail' ? s.rail : s.road);
 const raisedOf = (s, layer) => (layer === 'rail' ? s.railH : s.bridgeH);
 
 registerTool('tunnel', {
-  enter(app, t) { t.start = null; t.layer = t.layer || 'road'; },
+  enter(app, t) { t.start = null; t.layer = 'rail'; },
   exit(app) { app.preview.clearCells(); },
   options(app, t, el) {
     const road = t.layer !== 'rail';

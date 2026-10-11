@@ -35,6 +35,10 @@ export const MIN_ANGLE = (25 * Math.PI) / 180; // roads can't meet at a sharper 
 export const MEET_DH = 0.6;        // roads crossing closer than this in height have to meet
 const STEEP_CELL = 2.4;            // ground rougher than this across a cell can't take a road
 const PROFILE_STEP = 0.5;
+export const TUNNEL_MIN = 4, TUNNEL_MAX = 64; // cells
+export const TUNNEL_COST = 450;    // per cell, on top of the road's own price
+const TUNNEL_COVER = 1.1;          // ground (or river bed) over a tunnel's roof
+export const OPEN_DEPTH = 0.9;     // a tunnel road this far below the ground has gone in
 
 export const emptyRoads = () => ({ nodes: [], segs: [], nextId: 1 });
 export const roadDef = (s) => ROADS[s.type];
@@ -166,7 +170,8 @@ function groundProfile(state, c, tab, hA, hB) {
 
 // Height along a raised road: one arch from hA to hB that clears the water, the land, and any
 // railway, footpath or road under it (level over those). except: segments it may meet.
-function bridgeProfile(state, c, tab, hA, hB, except = null, X = rn(state)) {
+// over: raised roads it's to pass over (ground roads it always passes over)
+function bridgeProfile(state, c, tab, hA, hB, except = null, X = rn(state), over = null) {
   const n = Math.max(2, Math.ceil(tab.len / PROFILE_STEP));
   const ss = new Array(n + 1), floor = new Array(n + 1).fill(-Infinity), flat = new Array(n + 1).fill(0), p = [0, 0];
   for (let k = 0; k <= n; k++) ss[k] = (tab.len * k) / n;
@@ -186,7 +191,7 @@ function bridgeProfile(state, c, tab, hA, hB, except = null, X = rn(state)) {
   for (const id of segsNear(state, box[0], box[1], box[2], box[3], 1)) {
     if (except?.has(id)) continue;
     const s = X.seg.get(id), g = X.geo.get(id);
-    if (!g || s.br) continue;
+    if (!g || s.tn || (s.br && !over?.has(id))) continue;
     for (const x of curveCrossings(c, tab, g.c, g.tab, 0)) {
       const sAt = sAtT(tab, x.ta), under = segY(state, id, sAtT(g.tab, x.tb));
       for (let k = 1; k < n; k++) {
@@ -198,6 +203,24 @@ function bridgeProfile(state, c, tab, hA, hB, except = null, X = rn(state)) {
   }
   const hs = archProfile(hA, hB, floor, ss, flat);
   return { ss: Float32Array.from(ss), hs: Float32Array.from(hs), steep: deckGrade(hs, ss) > MAX_BRIDGE_GRADE + 1e-3, floor };
+}
+
+// Height along a tunnel: down from its portals as gently as it can, and under the ground (or
+// the river bed) with room to spare all the way between, levelling out as soon as it's deep
+// enough (an arch turned upside down)
+function tunnelProfile(state, c, tab, hA, hB) {
+  const n = Math.max(2, Math.ceil(tab.len / PROFILE_STEP));
+  const ss = new Array(n + 1), neg = new Array(n + 1).fill(-Infinity), p = [0, 0];
+  for (let k = 0; k <= n; k++) ss[k] = (tab.len * k) / n;
+  // (it ramps down from each mouth before it has to be that deep: it's dug out there)
+  const ramp = (TUNNEL_COVER + 0.3) / (MAX_BRIDGE_GRADE * 0.8);
+  for (let k = 1; k < n; k++) {
+    if (ss[k] < ramp || ss[k] > tab.len - ramp) continue;
+    bez(c, tAtS(tab, ss[k]), p);
+    neg[k] = -(Math.min(groundAt(state, p[0], p[1]), waterAt(state, p[0], p[1]) ? state.seaLevel - 0.5 : Infinity) - TUNNEL_COVER);
+  }
+  const hs = archProfile(-hA, -hB, neg, ss).map((v) => -v);
+  return { ss: Float32Array.from(ss), hs: Float32Array.from(hs), steep: deckGrade(hs, ss) > MAX_BRIDGE_GRADE + 1e-3 };
 }
 
 export const profileAt = (prof, s) => {
@@ -216,12 +239,39 @@ export function profileOf(state, sid) {
   const g = X.geo.get(sid), s = X.seg.get(sid);
   if (g.prof && g.profV === hver) return g.prof;
   const hA = nodeY(state, X.node.get(s.a)), hB = nodeY(state, X.node.get(s.b));
-  g.prof = s.br ? bridgeProfile(state, g.c, g.tab, hA, hB, new Set([sid]), X) : groundProfile(state, g.c, g.tab, hA, hB);
+  // (a tunnel keeps the heights it was bored at: the ground at its mouths is dug out to it)
+  if (s.hs?.length > 1) {
+    const n = s.hs.length - 1;
+    g.prof = { ss: Float32Array.from(s.hs, (_, k) => (g.len * k) / n), hs: Float32Array.from(s.hs) };
+    g.profV = hver;
+    return g.prof;
+  }
+  g.prof = s.tn ? tunnelProfile(state, g.c, g.tab, hA, hB)
+    : s.br ? bridgeProfile(state, g.c, g.tab, hA, hB, new Set([sid]), X) : groundProfile(state, g.c, g.tab, hA, hB);
   g.profV = hver;
   return g.prof;
 }
 // Road surface height s along segment sid
 export const segY = (state, sid, s) => profileAt(profileOf(state, sid), s);
+// Is a tunnel open to the sky s along it (its approach, before it goes in)? Other roads: yes.
+// Where its mouths are is decided when it's bored (seg.mouth: distances along it), by the
+// ground as it was then: the approaches are dug out to the road, the rest is left alone.
+export function openAt(state, sid, s) {
+  const sg = rn(state).seg.get(sid);
+  if (!sg?.tn) return true;
+  if (sg.mouth) return s <= sg.mouth[0] + 1e-6 || s >= sg.mouth[1] - 1e-6;
+  const g = rn(state).geo.get(sid);
+  const p = bez(g.c, tAtS(g.tab, s));
+  return segY(state, sid, s) >= groundAt(state, p[0], p[1]) - OPEN_DEPTH;
+}
+// Where a tunnel planned along curve c with profile prof goes in at each end
+function mouthsOf(state, c, tab, prof) {
+  const open = (s) => { const p = bez(c, tAtS(tab, s)); return profileAt(prof, s) >= groundAt(state, p[0], p[1]) - OPEN_DEPTH; };
+  let a = 0, b = tab.len;
+  while (a < tab.len && open(a)) a += 0.1;
+  while (b > a && open(b)) b -= 0.1;
+  return [Math.round(Math.min(a, tab.len) * 100) / 100, Math.round(Math.max(b, 0) * 100) / 100];
+}
 
 // --------------------------------------------------------------- committing
 // After any change: the index and the per-cell layers are rebuilt, and everyone is told.
@@ -229,7 +279,7 @@ export function commitRoads(state, { silent = false } = {}) {
   ver++;
   hver++;
   const X = rn(state);
-  writeRaster(state, X, (s, along) => segY(state, s.id, along));
+  writeRaster(state, X, (s, along) => segY(state, s.id, along), (s, along) => openAt(state, s.id, along));
   if (!silent) bus.emit('network:changed', { layer: 'road' });
 }
 
@@ -264,14 +314,22 @@ export function splitSeg(state, sid, t) {
 
 // ------------------------------------------------------------------- planning
 // What drawing a road from a to b would do, without doing it.
-//   spec: { a, b, k (control points, or null for straight), type, bridge, anywhere, waterEnds }
+//   spec: { a, b, k (control points, or null for straight), type, elev, bridge, tunnel, style,
+//           anywhere, waterEnds }
 //   a, b: { x, z, node?, seg? } (a point; a node it joins; or a segment it joins partway along)
+//   elev: how high above the ground its new ends are (a raised road); bridge: raised from end
+//   to end even if its ends are on the ground; tunnel: under everything, from end to end
+// Where it crosses another road it either meets it (a junction, splitting both) or passes over
+// or under it, by their heights there: roads on the ground always meet; a raised road passes
+// over a ground road; two raised roads meet if they're at the same height.
 // Returns { ok, reason, cost, len, c, pieces, points, demolish, bad }
-//   pieces: the new segments, in order along the road ({ c, tab, br, prof, a, b (point indices) })
-//   points: where they start and end ({ kind: 'node' | 'split' | 'new', ... })
+//   pieces: the new segments, in order along the road ({ c, tab, br, tn, prof, a, b })
+//   points: where they start and end ({ end: { kind: 'node' | 'split' | 'new' ... }, h, ... })
 export function planRoad(state, spec) {
   const X = rn(state);
   const def = ROADS[spec.type];
+  const tunnel = !!spec.tunnel;
+  const elev = tunnel ? 0 : Math.max(0, spec.elev || 0);
   const fail = (reason, extra = {}) => ({ ok: false, reason, cost: 0, len: 0, pieces: [], points: [], bad: [], ...extra });
   const A = resolveEnd(state, X, spec.a), B = resolveEnd(state, X, spec.b);
   if (A.kind === 'node' && B.kind === 'node' && A.id === B.id) return fail('Too short');
@@ -282,7 +340,18 @@ export function planRoad(state, spec) {
   const samples = sampleCurve(c, tab, 0.25);
   if (samples.some((p) => p.x < 0 || p.z < 0 || p.x > N || p.z > N)) return fail('Off the map');
   if (A.kind === 'node' && B.kind === 'node' && X.at.get(A.id).some((id) => { const s = X.seg.get(id); return (s.a === B.id || s.b === B.id) && Math.abs(X.geo.get(id).len - len) < 0.3; })) return fail('There is already a road here');
-  for (const E of [A, B]) if (E.kind === 'split' && X.seg.get(E.seg).br) return fail('Roads can only join a bridge at its ends');
+  for (const E of [A, B]) if (E.kind === 'split' && (X.seg.get(E.seg).br || X.seg.get(E.seg).tn)) return fail(`Roads can only join a ${X.seg.get(E.seg).tn ? 'tunnel' : 'bridge'} at its ends`);
+  if (tunnel && len < TUNNEL_MIN) return fail(`Too short for a tunnel (at least ${TUNNEL_MIN} cells)`);
+  if (tunnel && len > TUNNEL_MAX) return fail(`Too long for a tunnel (at most ${TUNNEL_MAX} cells)`);
+  // how high its ends are (new ends: on the ground, or `elev` above it)
+  for (const E of [A, B]) {
+    if (E.kind === 'node') E.h = nodeY(state, X.node.get(E.id));
+    else if (E.kind === 'split') E.h = segY(state, E.seg, sAtT(X.geo.get(E.seg).tab, E.t));
+    else E.h = (waterAt(state, E.x, E.z) ? state.seaLevel + (elev || WATER_CLEARANCE) : groundAt(state, E.x, E.z) + elev);
+    if (tunnel && (E.h > Math.max(groundAt(state, E.x, E.z), state.seaLevel) + 0.3 || waterAt(state, E.x, E.z))) return fail('A tunnel starts and ends on the ground');
+  }
+  const above = (E) => E.h - Math.max(groundAt(state, E.x, E.z), state.seaLevel);
+  const raised = !tunnel && (!!spec.bridge || elev > 0 || above(A) > 0.3 || above(B) > 0.3);
 
   // --- where it crosses other roads
   const near = segsNear(state, Math.min(...samples.map((p) => p.x)), Math.min(...samples.map((p) => p.z)), Math.max(...samples.map((p) => p.x)), Math.max(...samples.map((p) => p.z)), 1);
@@ -305,7 +374,7 @@ export function planRoad(state, spec) {
       else if (g.len - sb < SNAP_NODE) at = { kind: 'node', id: seg.b };
       else at = { kind: 'split', seg: id, t: x.tb };
       if (at.kind === 'node') { const n = X.node.get(at.id); Object.assign(at, { x: n.x, z: n.z }); } else Object.assign(at, { x: x.x, z: x.z });
-      crossings.push({ s, ta: x.ta, seg: id, sb, at, h: segY(state, id, sb), br: !!seg.br });
+      crossings.push({ s, ta: x.ta, seg: id, sb, at, h: segY(state, id, sb), br: !!seg.br, tn: !!seg.tn });
     }
   }
   // the same node reached through several of its roads counts once
@@ -314,15 +383,14 @@ export function planRoad(state, spec) {
   for (const x of crossings) {
     const prev = xs[xs.length - 1];
     if (prev && x.at.kind === 'node' && prev.at.kind === 'node' && prev.at.id === x.at.id) continue;
-    if (prev && Math.abs(prev.s - x.s) < 0.05 && prev.at.kind === 'node' && x.at.kind === 'node' && prev.at.id === x.at.id) continue;
     xs.push(x);
   }
 
-  // --- water: the stretches over it are raised (a bridge from bank to bank)
+  // --- the raised stretches: all of it (a raised road), or bridges over the water on the way
   const wet = samples.map((p) => waterAt(state, p.x, p.z));
   const spans = [];
-  if (spec.bridge) spans.push([0, len]);
-  else {
+  if (raised) spans.push([0, len]);
+  else if (!tunnel) {
     for (let k = 0; k < samples.length; k++) {
       if (!wet[k]) continue;
       let e = k;
@@ -336,26 +404,51 @@ export function planRoad(state, spec) {
   merge();
   // (a bridge too steep to reach its banks in time reaches further back over the land)
   const grow = spec._grow || spans.map(() => [0, 0]);
-  spans.forEach((sp, j) => { if (grow[j]) { sp[0] = Math.max(0, sp[0] - grow[j][0]); sp[1] = Math.min(len, sp[1] + grow[j][1]); } });
+  if (!raised) spans.forEach((sp, j) => { if (grow[j]) { sp[0] = Math.max(0, sp[0] - grow[j][0]); sp[1] = Math.min(len, sp[1] + grow[j][1]); } });
   merge();
   for (const sp of spans) { if (sp[0] < MIN_LEN) sp[0] = 0; if (len - sp[1] < MIN_LEN) sp[1] = len; }
-
-  // junctions along it: where it crosses a ground road off its bridges (raised parts pass over)
   const onSpan = (s) => spans.some(([a, b]) => s > a + 0.05 && s < b - 0.05);
-  const junctions = xs.filter((x) => !onSpan(x.s));
-  for (const x of xs) if (onSpan(x.s) && x.br) return fail('Crosses a bridge');
-  // a bridge can't end right on a junction's doorstep: pull its ends back off them
-  for (const sp of spans) {
-    for (const j of junctions) {
-      if (j.s > sp[0] - MIN_LEN && j.s <= sp[0]) sp[0] = Math.max(0, j.s);
-      if (j.s < sp[1] + MIN_LEN && j.s >= sp[1]) sp[1] = Math.min(len, j.s);
+  // roughly how high it will be (a raised road straight from end to end)
+  const heightNear = (s) => {
+    const sp = spans.find(([a, b]) => s >= a && s <= b);
+    const at = (v) => (v <= 1e-6 ? A.h : v >= len - 1e-6 ? B.h : groundAt(state, ...bez(c, tAtS(tab, v))));
+    if (!sp) return at(s);
+    const f = (s - sp[0]) / Math.max(1e-6, sp[1] - sp[0]);
+    return at(sp[0]) + (at(sp[1]) - at(sp[0])) * f;
+  };
+
+  // --- each crossing: a junction, or it passes over or under the other road
+  const junctions = [], over = new Set(), under = [];
+  for (const x of xs) {
+    if (x.tn || tunnel) { if (x.tn && tunnel) return fail('Crosses another tunnel'); continue; }
+    const inSpan = onSpan(x.s), nh = heightNear(x.s);
+    if (!inSpan && !x.br) junctions.push(x);
+    else if (inSpan && !x.br) over.add(x.seg);
+    else if (!inSpan) {
+      if (x.h - nh >= UNDER_CLEARANCE) under.push(x);
+      else return fail('Too close under the bridge here: pass under it where it\'s higher, or join it at its end');
+    } else {
+      const dh = nh - x.h;
+      if (Math.abs(dh) < MEET_DH) junctions.push(x);
+      else if (dh >= UNDER_CLEARANCE) over.add(x.seg);
+      else if (-dh >= UNDER_CLEARANCE) under.push(x);
+      else return fail('Too close to the other road\'s height: raise or lower it to pass, or meet it at the same height');
+    }
+  }
+  // a bridge over the water can't end right on a junction's doorstep: pull its ends back
+  if (!raised) {
+    for (const sp of spans) {
+      for (const j of junctions) {
+        if (j.s > sp[0] - MIN_LEN && j.s <= sp[0]) sp[0] = Math.max(0, j.s);
+        if (j.s < sp[1] + MIN_LEN && j.s >= sp[1]) sp[1] = Math.min(len, j.s);
+      }
     }
   }
 
   // --- the pieces between junctions and bridge ends
   const marks = [{ s: 0, end: A }, { s: len, end: B }];
   for (const j of junctions) marks.push({ s: j.s, end: j.at, cross: j });
-  for (const [a, b] of spans) { marks.push({ s: a }); marks.push({ s: b }); }
+  if (!raised) for (const [a, b] of spans) { marks.push({ s: a }); marks.push({ s: b }); }
   marks.sort((p, q) => p.s - q.s);
   const pts = [];
   for (const mk of marks) {
@@ -380,7 +473,8 @@ export function planRoad(state, spec) {
   for (const p of pts) {
     const e = p.end;
     const at = bez(c, tAtS(tab, p.s));
-    if (e?.kind === 'node') p.h = nodeY(state, X.node.get(e.id));
+    if (e === A || e === B) p.h = e.h;
+    else if (e?.kind === 'node') p.h = nodeY(state, X.node.get(e.id));
     else if (e?.kind === 'split') p.h = segY(state, e.seg, sAtT(X.geo.get(e.seg).tab, e.t));
     else if (waterAt(state, at[0], at[1])) p.h = state.seaLevel + WATER_CLEARANCE;
     else p.h = groundAt(state, at[0], at[1]);
@@ -389,10 +483,10 @@ export function planRoad(state, spec) {
   const pieces = [];
   for (let k = 1; k < pts.length; k++) {
     const s0 = pts[k - 1].s, s1 = pts[k].s, mid = (s0 + s1) / 2;
-    const br = spans.some(([a, b]) => mid > a && mid < b);
-    const n = br ? 1 : Math.max(1, Math.ceil((s1 - s0) / MAX_SEG - 1e-6));
-    if (br && s1 - s0 > MAX_BRIDGE) return fail(`Too long for a bridge (at most ${MAX_BRIDGE} cells)`);
-    for (let j = 0; j < n; j++) pieces.push({ s0: s0 + ((s1 - s0) * j) / n, s1: s0 + ((s1 - s0) * (j + 1)) / n, br, pa: k - 1, pb: k, split: j });
+    const br = !tunnel && (raised || spans.some(([a, b]) => mid > a && mid < b));
+    const n = br || tunnel ? 1 : Math.max(1, Math.ceil((s1 - s0) / MAX_SEG - 1e-6));
+    if (br && s1 - s0 > MAX_BRIDGE) return fail(`Too long for a ${raised && !spec.bridge ? 'raised road' : 'bridge'} without a junction (at most ${MAX_BRIDGE} cells)`);
+    for (let j = 0; j < n; j++) pieces.push({ s0: s0 + ((s1 - s0) * j) / n, s1: s0 + ((s1 - s0) * (j + 1)) / n, br, tn: tunnel });
   }
   // break points inside long ground stretches get their own nodes
   const P = [];
@@ -415,8 +509,9 @@ export function planRoad(state, spec) {
     sub[0] = pa.x; sub[1] = pa.z; sub[6] = pb.x; sub[7] = pb.z;
     const st = arcTable(sub);
     pc.c = sub; pc.tab = st; pc.a = pa; pc.b = pb;
-    pc.prof = pc.br ? bridgeProfile(state, sub, st, pa.h, pb.h, except, X) : groundProfile(state, sub, st, pa.h, pb.h);
-    if (pc.prof.steep && pc.br && !spec.bridge && (spec._tries || 0) < 16) {
+    pc.prof = pc.tn ? tunnelProfile(state, sub, st, pa.h, pb.h)
+      : pc.br ? bridgeProfile(state, sub, st, pa.h, pb.h, except, X, over) : groundProfile(state, sub, st, pa.h, pb.h);
+    if (pc.prof.steep && pc.br && !raised && (spec._tries || 0) < 16) {
       const j = spans.findIndex(([a, b]) => pc.s0 >= a - 1e-6 && pc.s1 <= b + 1e-6);
       if (j >= 0 && (spans[j][0] > 0 || spans[j][1] < len)) {
         const g2 = spans.map((_, k) => [...(grow[k] || [0, 0])]);
@@ -425,15 +520,24 @@ export function planRoad(state, spec) {
         return planRoad(state, { ...spec, _grow: g2, _tries: (spec._tries || 0) + 1 });
       }
     }
-    if (pc.prof.steep) return fail(pc.br ? 'Too steep: the bridge can\'t climb that high in time (start it further back)' : 'Too steep for a road', { pieces });
-    cost += st.len * def.cost * (pc.br ? 3 : 1);
-    // what's in the way
+    if (pc.prof.steep) {
+      return fail(pc.tn ? 'Too steep: the tunnel can\'t get deep enough in time (start it further back)'
+        : pc.br ? (raised && !spec.bridge ? 'Too steep: the ramp is too short for that height' : 'Too steep: the bridge can\'t climb that high in time (start it further back)') : 'Too steep for a road', { pieces });
+    }
+    // under a bridge: low enough to pass beneath it
+    for (const x of under) {
+      if (x.s < pc.s0 || x.s > pc.s1) continue;
+      if (profileAt(pc.prof, x.s - pc.s0) > x.h - UNDER_CLEARANCE + 0.05) return fail('Too high to pass under the other road there', { pieces });
+    }
+    cost += st.len * (pc.tn ? TUNNEL_COST + def.cost : def.cost * (pc.br ? 3 : 1));
+    // what's in the way (of a tunnel, only where it's open to the sky at its ends)
     pc.chain = chainCells(sub, st);
-    const { cells } = pc.chain;
+    const { cells, ss } = pc.chain;
     for (let k = 0; k < cells.length; k++) {
       const i = cells[k];
       if (i < 0) continue;
       const x = i % N, y = (i / N) | 0;
+      if (pc.tn && profileAt(pc.prof, ss[k]) < groundAt(state, x + 0.5, y + 0.5) - OPEN_DEPTH) continue;
       if (state.road[i] && (k < 2 || k > cells.length - 3)) continue; // the roads it joins
       const b = state.bld[i] && state.buildings.get(state.bld[i]);
       const inner = k > 0 && k < cells.length - 1;
@@ -444,20 +548,22 @@ export function planRoad(state, spec) {
       if (!pc.br && !state.water[i] && cellSlope(state, x, y) > STEEP_CELL && !state.road[i]) blocked = true;
       if (!pc.br && state.water[i] && inner) blocked = true;
       if (blocked) bad.push([x, y]);
-      else if (b && b.kind === 'zone' && (!pc.br || state.bridgeH[i] === 0)) demolish.add(b.id);
+      else if (b && b.kind === 'zone') demolish.add(b.id);
     }
   }
   // running along another road (not crossing it, not joining it)
-  const stops = [0, len, ...junctions.map((j) => j.s)];
-  for (const p of samples) {
-    if (stops.some((s) => Math.abs(s - p.s) < 1.5)) continue;
-    const q = nearestSeg(state, p.x, p.z, 0.45, (s) => !except.has(s.id));
-    if (!q) continue;
-    const here = pieces.find((pc) => p.s >= pc.s0 - 1e-6 && p.s <= pc.s1 + 1e-6);
-    const h = here ? profileAt(here.prof, p.s - here.s0) : groundAt(state, p.x, p.z);
-    if (Math.abs(h - segY(state, q.id, q.s)) < UNDER_CLEARANCE) return fail('Runs into another road', { pieces });
+  if (!tunnel) {
+    const stops = [0, len, ...junctions.map((j) => j.s)];
+    for (const p of samples) {
+      if (stops.some((s) => Math.abs(s - p.s) < 1.5)) continue;
+      const q = nearestSeg(state, p.x, p.z, 0.45, (s) => !except.has(s.id) && !s.tn);
+      if (!q) continue;
+      const here = pieces.find((pc) => p.s >= pc.s0 - 1e-6 && p.s <= pc.s1 + 1e-6);
+      const h = here ? profileAt(here.prof, p.s - here.s0) : groundAt(state, p.x, p.z);
+      if (Math.abs(h - segY(state, q.id, q.s)) < UNDER_CLEARANCE) return fail('Runs into another road', { pieces });
+    }
   }
-  const plan = { ok: !bad.length, reason: bad.length ? 'Something is in the way (a building, railway, power line, steep slope or land you don\'t own)' : null, cost: Math.round(cost), len, c, tab, pieces, points: P, ends: [A, B], demolish: [...demolish], bad, type: spec.type, bridge: !!spec.bridge, spans };
+  const plan = { ok: !bad.length, reason: bad.length ? 'Something is in the way (a building, railway, power line, steep slope or land you don\'t own)' : null, cost: Math.round(cost), len, c, tab, pieces, points: P, ends: [A, B], demolish: [...demolish], bad, type: spec.type, bridge: !!spec.bridge, tunnel, raised, style: spec.style || null, spans, overpasses: over.size + under.length };
   return plan;
 }
 
@@ -502,9 +608,8 @@ export function buildRoad(state, plan, { free = false, silent = false } = {}) {
   }
   for (const p of plan.points) {
     if (p.node != null) continue;
-    const g = groundAt(state, p.x, p.z);
-    const elev = p.h > Math.max(g, state.seaLevel) + 0.05 && (waterAt(state, p.x, p.z) || plan.bridge) ? p.h - Math.max(g, state.seaLevel) : 0;
-    p.node = addNode(state, p.x, p.z, elev).id;
+    const base = Math.max(groundAt(state, p.x, p.z), state.seaLevel);
+    p.node = addNode(state, p.x, p.z, p.h > base + 0.05 ? p.h - base : 0).id;
   }
   const R = state.roads, day = state.time?.day ?? 0;
   const made = [];
@@ -515,6 +620,8 @@ export function buildRoad(state, plan, { free = false, silent = false } = {}) {
     const c = pc.c.slice();
     c[0] = na.x; c[1] = na.z; c[6] = nb.x; c[7] = nb.z;
     const s = { id: R.nextId++, a, b, type: plan.type, k: [c[2], c[3], c[4], c[5]], br: pc.br ? 1 : 0, upg: 0, cond: 1, day };
+    if (pc.tn) { s.tn = 1; s.hs = Array.from(pc.prof.hs, (v) => Math.round(v * 1000) / 1000); s.mouth = mouthsOf(state, pc.c, pc.tab, pc.prof); }
+    if (pc.br && plan.style) s.style = plan.style;
     R.segs.push(s);
     made.push(s.id);
   }
@@ -522,8 +629,10 @@ export function buildRoad(state, plan, { free = false, silent = false } = {}) {
   // the land under it: zoning and trees cleared, the ground graded to the road
   for (const pc of plan.pieces) {
     if (pc.br) continue;
-    for (const i of pc.chain.cells) {
+    for (let k = 0; k < pc.chain.cells.length; k++) {
+      const i = pc.chain.cells[k];
       if (i < 0) continue;
+      if (pc.tn && profileAt(pc.prof, pc.chain.ss[k]) < groundAt(state, (i % N) + 0.5, ((i / N) | 0) + 0.5) - OPEN_DEPTH) continue;
       clearZoneCell(state, i);
       state.tree[i] = 0;
       state.forestMax[i] = 0;
@@ -549,6 +658,7 @@ export function gradeUnder(state, sids) {
   for (const id of sids) {
     const s = X.seg.get(id), g = X.geo.get(id);
     if (!s || s.br || !g) continue;
+    if (s.tn && !g.pts.some((p) => openAt(state, id, p.s))) continue;
     box[0] = Math.min(box[0], g.box[0]); box[1] = Math.min(box[1], g.box[1]); box[2] = Math.max(box[2], g.box[2]); box[3] = Math.max(box[3], g.box[3]);
   }
   if (box[0] > box[2]) return null;
@@ -557,7 +667,9 @@ export function gradeUnder(state, sids) {
     const j = idx(x, y);
     return state.water[j] || state.bld[j] || state.rail[j] || state.path[j] || state.power[j];
   };
+  // (a tunnel's ground is only graded along its open approaches, decided before any of it is)
   const ground = [...segsNear(state, box[0], box[1], box[2], box[3], REACH + 1)].filter((id) => !X.seg.get(id).br);
+  const pts = new Map(ground.map((id) => [id, X.geo.get(id).pts]));
   const targets = [];
   for (let cz = Math.max(0, Math.floor(box[1] - REACH)); cz <= Math.min(N, Math.ceil(box[3] + REACH)); cz++) {
     for (let cx = Math.max(0, Math.floor(box[0] - REACH)); cx <= Math.min(N, Math.ceil(box[2] + REACH)); cx++) {
@@ -567,9 +679,11 @@ export function gradeUnder(state, sids) {
         const g = X.geo.get(id);
         if (cx < g.box[0] - REACH || cx > g.box[2] + REACH || cz < g.box[1] - REACH || cz > g.box[3] + REACH) continue;
         let bd = Infinity, bs = 0;
-        for (const p of g.pts) { const d = (p.x - cx) ** 2 + (p.z - cz) ** 2; if (d < bd) { bd = d; bs = p.s; } }
+        for (const p of pts.get(id)) { const d = (p.x - cx) ** 2 + (p.z - cz) ** 2; if (d < bd) { bd = d; bs = p.s; } }
         bd = Math.sqrt(bd);
-        if (bd <= REACH && (!best || bd < best.d)) best = { d: bd, id, s: bs };
+        if (!openAt(state, id, bs)) continue; // (over a tunnel: the ground stays as it is)
+        // (a tunnel's cutting has walls: the ground beside them isn't cut back)
+        if (bd <= (X.seg.get(id).tn ? BAND : REACH) && (!best || bd < best.d)) best = { d: bd, id, s: bs };
       }
       if (best) targets.push([cx, cz, best.d, segY(state, best.id, best.s)]);
     }
@@ -647,6 +761,8 @@ export function reverseSeg(state, sid) {
   if (!s || s.locked) return false;
   [s.a, s.b] = [s.b, s.a];
   s.k = [s.k[2], s.k[3], s.k[0], s.k[1]];
+  if (s.hs) s.hs.reverse();
+  if (s.mouth) { const L = rn(state).geo.get(sid).len; s.mouth = [L - s.mouth[1], L - s.mouth[0]]; }
   for (const key of ['toll', 'power']) if (s[key] != null) s[key] = 1 - s[key];
   commitRoads(state);
   return true;
@@ -675,6 +791,18 @@ export function setCellUpgrade(state, i, bit, on, { silent = false } = {}) {
   }
   commitRoads(state, { silent });
   return true;
+}
+
+// Two spots beside the road through cell i, `inset` either side of its centre line (for lamps,
+// street trees, booths and stop signs)
+export function roadsideSpots(state, i, inset = 0.42) {
+  const x = i % N, z = (i / N) | 0;
+  const s = segAtCell(state, i);
+  if (!s) return [[x + 0.08, z + 0.08], [x + 0.92, z + 0.92]];
+  const g = rn(state).geo.get(s.id);
+  const q = nearestOnCurve(g.c, g.tab, x + 0.5, z + 0.5);
+  const d = bezTan(g.c, q.t);
+  return [[q.x - d[1] * inset, q.z + d[0] * inset], [q.x + d[1] * inset, q.z - d[0] * inset]];
 }
 
 // The segment under a cell (for code that still thinks in cells)

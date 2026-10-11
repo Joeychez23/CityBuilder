@@ -4,8 +4,12 @@
 //   Curved    click where it starts, then where it bends, then where it ends
 //   Freeform  each piece carries on smoothly from the last: click where it ends
 //   Grid      a whole grid of roads: a corner, the first side, then how far it reaches
-//   Bridge    a raised road from point to point, arching over whatever is between
+//   Bridge    a raised road from point to point, arching over whatever is between (or, as a
+//             suspension bridge, a landmark over open water)
+//   Tunnel    a road underground from point to point, under anything
 //   Upgrade   click roads to rebuild them as this type (a one-way road of this type turns round)
+// Page Up / Page Down (or the buttons) raise and lower the road being drawn: a raised road
+// passes over ground roads and meets other raised roads at its height.
 // Ends snap onto nodes and onto roads (a road joined partway along is split there, making a
 // junction), and with Snap to grid on, onto the middle of cells. Roads that cross get a
 // junction where they cross; water on the way is bridged by itself. Each road keeps going
@@ -17,6 +21,7 @@ import { quadCurve, straightCurve, bezTan, isStraight } from '../sim/roadgeom.js
 import { gridLayout } from '../sim/roadsegs.js';
 import { roadWidth } from '../world/roadsView.js';
 import { canAfford } from '../sim/build.js';
+import { landmarkSpanReason, landmarkCost, markLandmark } from '../sim/landmarkBridges.js';
 
 const MODES = [
   ['straight', 'Straight', 'A straight road: click where it starts, then where it ends. It snaps to the grid\'s directions, 45°, and along or square to the road you start from (Shift: 15° steps).'],
@@ -24,6 +29,7 @@ const MODES = [
   ['free', 'Freeform', 'Each piece carries on smoothly from the last one: just click where it goes next.'],
   ['grid', 'Grid', 'A whole grid of roads: click a corner, then where the first side ends, then how far the grid reaches.'],
   ['bridge', 'Bridge', 'A raised road from one point to another: it arches over water, valleys, roads and railways below.'],
+  ['tunnel', 'Tunnel', 'A road underground from one point to another: under hills, rivers, buildings and other roads.'],
   ['upgrade', 'Upgrade', 'Click roads (or drag along them) to rebuild them as this type. Clicking a one-way road of this type turns it round.'],
 ];
 const TIPS = {
@@ -32,9 +38,13 @@ const TIPS = {
   free: 'Click where the road starts, then where each piece ends: it bends smoothly on from the last piece.',
   grid: 'Click a corner, then click where the first side ends, then click how far the grid reaches. Right click goes back a step.',
   bridge: 'Click where the bridge starts, then where it ends. It leaves each end level with the road and arches over what\'s below.',
+  tunnel: 'Click where the tunnel goes in, then where it comes out (on the ground at both ends). It dips under whatever is between.',
   upgrade: 'Click a road to rebuild it as this type, or drag along several.',
 };
 const SNAP_NODE = 0.8, SNAP_SEG = 0.6, ANGLE_SNAP = (5 * Math.PI) / 180;
+const ELEV_STEP = 0.5, ELEV_MAX = 6; // a level is 4 m
+const elevText = (e) => (e ? `${Math.round(e * 8)} m up` : 'On the ground');
+const elevOk = (t) => (t.mode || 'straight') !== 'tunnel' && t.mode !== 'upgrade' && t.mode !== 'grid';
 const deg = (a) => Math.round((((a * 180) / Math.PI) % 360 + 360) % 360);
 const angDiff = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
 
@@ -110,14 +120,31 @@ registerTool('road', {
   options(app, t, el, rerender) {
     const r = ROADS[t.type];
     el.innerHTML = `<h4>${r.name}</h4><div class="road-class"><b>${CLASS_NAMES[r.cls]}</b> · ${lanesText(r)} · ${r.speed} km/h<br><span class="muted">${r.role}</span></div>`;
-    segButtons(el, 'Mode', MODES, t.mode || 'straight', (v) => { t.mode = v; this.reset(app, t); rerender(); });
+    segButtons(el, 'Mode', MODES, t.mode || 'straight', (v) => { t.mode = v; this.reset(app, t); app.roads.setUnderground(v === 'tunnel'); rerender(); });
     segButtons(el, 'Snap to grid', [['on', 'On', 'Points snap to the middle of cells and lengths to whole cells.'], ['off', 'Off', 'Anywhere (holding Alt does the same).']], t.snapGrid === false ? 'off' : 'on', (v) => { t.snapGrid = v === 'on'; rerender(); });
     if (t.mode === 'grid') slider(el, `Block size: ${t.spacing || 6} cells (${(t.spacing || 6) * 8} m)`, 4, 12, 1, t.spacing || 6, (v) => { t.spacing = v; rerender(); });
+    if (t.mode === 'bridge') segButtons(el, 'Style', [['plain', 'Ordinary'], ['suspension', 'Suspension (landmark)', 'Tall towers and cables, for a long crossing over open water (at least 10 cells). It costs twice an ordinary bridge plus ₡300,000, and it\'s a landmark: visitors come to see it, and the neighbourhoods at either end feel the lift.']], t.style === 'suspension' ? 'suspension' : 'plain', (v) => { t.style = v === 'suspension' ? 'suspension' : null; rerender(); });
+    if (elevOk(t)) {
+      const box = document.createElement('div');
+      box.innerHTML = `<div class="section-title">Height</div><div class="seg"><button data-e="-1" data-tip="Lower (Page Down)">▼</button><button class="on" style="flex:3">${elevText(t.elev || 0)}</button><button data-e="1" data-tip="Raise (Page Up)">▲</button></div>`;
+      box.querySelectorAll('[data-e]').forEach((b) => (b.onclick = () => { this.setElev(app, t, (t.elev || 0) + +b.dataset.e * ELEV_STEP); rerender(); }));
+      el.appendChild(box);
+    }
     const mode = t.mode || 'straight';
     const step = mode === 'grid' ? (t.gB ? 'Step 3 of 3: click how far the grid reaches.' : t.gA ? 'Step 2 of 3: click where the first side ends.' : 'Step 1 of 3: click a corner.')
       : mode === 'curve' && t.start ? (t.bend ? 'Click where the curve ends.' : 'Click where it bends.') : '';
     const across = mode !== 'upgrade' && mode !== 'bridge' ? ' Across water it builds a bridge by itself.' : '';
     el.insertAdjacentHTML('beforeend', `<p class="muted">${TIPS[mode]}${across}${r.oneway ? ' One-way: it runs from where you start toward where you end.' : ''}</p>${step ? `<p><b>${step}</b></p>` : ''}`);
+  },
+  setElev(app, t, e) {
+    t.elev = Math.max(0, Math.min(ELEV_MAX, e));
+    app.tools.renderOptions();
+    if (app.tools.hover) this.hover(app, t, app.tools.hover);
+  },
+  key(app, t, e) {
+    if (!elevOk(t)) return;
+    if (e.key === 'PageUp') { e.preventDefault(); this.setElev(app, t, (t.elev || 0) + ELEV_STEP); }
+    if (e.key === 'PageDown') { e.preventDefault(); this.setElev(app, t, (t.elev || 0) - ELEV_STEP); }
   },
   reset(app, t) {
     t.start = t.bend = t.dir = t.gA = t.gB = null;
@@ -145,7 +172,7 @@ registerTool('road', {
     const A = t.start;
     if (!A) return null;
     if (mode === 'curve' && !t.bend) return null;
-    const B = mode === 'straight' || mode === 'bridge' ? snapEnd(app, t, A, p.x, p.z, e) : snapPoint(app, t, p.x, p.z, e);
+    const B = mode === 'straight' || mode === 'bridge' || mode === 'tunnel' ? snapEnd(app, t, A, p.x, p.z, e) : snapPoint(app, t, p.x, p.z, e);
     let k = null;
     if (mode === 'curve') {
       const c = quadCurve(A.x, A.z, t.bend[0], t.bend[1], B.x, B.z);
@@ -154,14 +181,20 @@ registerTool('road', {
       const q = freeBend(A, t.dir, B);
       if (q) { const c = quadCurve(A.x, A.z, q[0], q[1], B.x, B.z); k = [c[2], c[3], c[4], c[5]]; }
     }
-    const spec = { a: A, b: B, k, type: t.type, bridge: mode === 'bridge' };
-    return { plan: planRoad(app.state, spec), spec, end: B };
+    const spec = { a: A, b: B, k, type: t.type, bridge: mode === 'bridge', tunnel: mode === 'tunnel', elev: elevOk(t) ? t.elev || 0 : 0, style: mode === 'bridge' ? t.style || null : null };
+    const plan = planRoad(app.state, spec);
+    // a suspension bridge: one span over open water, and a landmark's price
+    if (plan.ok && spec.style === 'suspension') {
+      const why = landmarkSpanReason(app.state, plan);
+      if (why) { plan.ok = false; plan.reason = why; } else plan.cost = landmarkCost(plan);
+    }
+    return { plan, spec, end: B };
   },
   showPlan(app, t, r) {
     const { plan, spec, end } = r;
     const def = ROADS[t.type], w = roadWidth(def);
     const items = [];
-    if (plan.pieces?.length && plan.pieces[0].c) for (const pc of plan.pieces) items.push({ c: pc.c, prof: pc.prof, w, color: !plan.ok ? '#ff4a3a' : pc.br ? '#b9a8ff' : '#4fc3ff' });
+    if (plan.pieces?.length && plan.pieces[0].c) for (const pc of plan.pieces) items.push({ c: pc.c, prof: pc.prof, w, color: !plan.ok ? '#ff4a3a' : pc.tn ? '#ffb84f' : pc.br ? '#b9a8ff' : '#4fc3ff' });
     else {
       const A = spec.a, B = spec.b;
       const c = spec.k ? [A.x, A.z, ...spec.k, B.x, B.z] : straightCurve(A.x, A.z, B.x, B.z);
@@ -178,7 +211,9 @@ registerTool('road', {
     const joins = (plan.points || []).filter((q) => q.end && (q.end.kind === 'split' || q.end.kind === 'node')).length;
     app.tools.showTip(plan.ok
       ? `${Math.round(len * 8)} m · ${spec.k && !isStraight([spec.a.x, spec.a.z, ...spec.k, end.x, end.z]) ? 'curved' : `${ang}°`} · <span class="${afford ? '' : 'bad'}">${money(plan.cost)}</span>`
-        + `${spans.length ? `<br>🌉 ${spans.length === 1 ? 'A bridge' : `${spans.length} bridges`} (${spans.map((pc) => Math.round(pc.tab.len * 8)).join(', ')} m)` : ''}`
+        + `${plan.tunnel ? '<br>🚇 Underground from end to end' : plan.raised ? `<br>${t.style === 'suspension' ? '🌉 Suspension bridge (a landmark)' : t.mode === 'bridge' ? '🌉 Bridge' : '⬆ Raised road'}` : spans.length ? `<br>🌉 ${spans.length === 1 ? 'A bridge' : `${spans.length} bridges`} (${spans.map((pc) => Math.round(pc.tab.len * 8)).join(', ')} m)` : ''}`
+        + `${plan.overpasses ? `<br><span class="muted">Passes ${plan.overpasses === 1 ? 'another road' : `${plan.overpasses} roads`} with no junction</span>` : ''}`
+        + `${elevOk(t) && t.elev ? `<br><span class="muted">${elevText(t.elev)} · Page Up / Page Down</span>` : ''}`
         + `${joins ? `<br><span class="muted">${joins} junction${joins === 1 ? '' : 's'}</span>` : ''}`
       : `<span class="bad">${plan.reason}</span>`);
   },
@@ -263,7 +298,7 @@ registerTool('road', {
       const A = snapPoint(app, t, p.x, p.z, e);
       app.roads.showGhost([{ dot: [A.x, A.z], r: 0.3, color: A.node != null || A.seg != null ? '#ffffff' : '#4fc3ff' }]);
       const def = ROADS[t.type];
-      app.tools.showTip(`${def.name} · ${money(def.cost)} / cell · ${def.speed} km/h<br><span class="muted">Click where the ${mode === 'bridge' ? 'bridge' : 'road'} starts</span>`);
+      app.tools.showTip(`${def.name} · ${money(def.cost)} / cell · ${def.speed} km/h<br><span class="muted">Click where the ${mode === 'bridge' ? 'bridge' : mode === 'tunnel' ? 'tunnel goes in' : 'road'} starts${elevOk(t) && t.elev ? ` · ${elevText(t.elev)}` : ''}</span>`);
       return;
     }
     if (mode === 'curve' && !t.bend) {
@@ -307,7 +342,10 @@ registerTool('road', {
     if (res.error === 'money') { app.toast('Not enough money', 'bad'); return; }
     if (res.error) { app.toast(res.error, 'bad', "Can't build here"); return; }
     const spans = r.plan.pieces.filter((pc) => pc.br);
-    if (spans.length && mode !== 'bridge') app.toast(`${spans.map((pc) => Math.round(pc.tab.len * 8)).join(', ')} m over the water`, 'good', `🌉 ${ROADS[t.type].name} bridge built`);
+    if (r.spec.style === 'suspension') {
+      const lb = markLandmark(app.state, res.segs.find((id) => rn(app.state).seg.get(id)?.br));
+      if (lb) app.toast(`${Math.round(r.plan.len * 8)} m over the water`, 'good', `🌉 ${lb.name} opened`);
+    } else if (spans.length && mode !== 'bridge' && !r.plan.raised) app.toast(`${spans.map((pc) => Math.round(pc.tab.len * 8)).join(', ')} m over the water`, 'good', `🌉 ${ROADS[t.type].name} bridge built`);
     // carry on from the end of this piece (in the direction it was going)
     const X = rn(app.state);
     const endNode = nearestNode(app.state, r.end.x, r.end.z, 0.05);

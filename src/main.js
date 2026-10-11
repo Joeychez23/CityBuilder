@@ -110,6 +110,10 @@ function startGame(state, isNew) {
 
   // Feature modules (services, economy, citizens, traffic...) hook in here.
   for (const f of features) f.init?.(app, isNew);
+  // (road tunnels show while you look underground, like the subway)
+  const layerHint = app.setLayerHint;
+  app.setLayerHint = (layer, on) => { layerHint(layer, on); if (layer === 'subway') app.roads.setUnderground(on); };
+  bus.on('tool:changed', (t) => app.roads.setUnderground(t?.kind === 'road' && t.mode === 'tunnel'));
   app.toolbar = createToolbar(app);
   app.undoBar = createUndoBar(app);
 
