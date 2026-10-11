@@ -5,7 +5,7 @@ import { makeNoise } from '../core/noise.js';
 import { makeRng } from '../core/rng.js';
 import { gradeCells } from './grade.js';
 import { bridgeWaterRuns, bridgeConnection, bridgeLayers } from './bridges.js';
-import { planRoad, buildRoad, emptyRoads, commitRoads, rn } from './roadnet.js';
+import { planRoad, buildRoad, emptyRoads, commitRoads, rn, MAX_BRIDGE } from './roadnet.js';
 import { forgetBoxes } from './extent.js';
 
 const smooth = (e0, e1, x) => {
@@ -315,16 +315,49 @@ function carveHighway(state) {
 // connection; none of it can be bulldozed.
 function buildHighway(state) {
   const y = CENTER, end = HIGHWAY_END;
-  const plan = planRoad(state, { a: { x: 0.02, z: y + 0.5 }, b: { x: end + 0.5, z: y + 0.5 }, type: 6, anywhere: true, waterEnds: true });
-  if (!plan.ok) console.warn('The highway could not be built:', plan.reason, plan.bad);
-  else {
-    const res = buildRoad(state, plan, { free: true, silent: true });
-    const X = rn(state);
-    for (const id of res.segs) X.seg.get(id).locked = 1;
-    const edge = [...X.node.values()].find((n) => n.x < 0.1);
+  if (highwayLine(state, { x: 0.02, z: y + 0.5 }, { x: end + 0.5, z: y + 0.5 }, 6)) {
+    const edge = [...rn(state).node.values()].find((n) => n.x < 0.1);
     if (edge) edge.out = 1;
   }
   if (!state.connections.some((c) => c.type === 'road')) state.connections.push({ type: 'road', x: 0, y, dir: 2, name: 'West Highway' });
+}
+
+// A pre-built highway along a straight line from a to b ({ x, z }), built like a road you draw.
+// Water wider than one raised road can span (MAX_BRIDGE) is crossed in pieces, joined at
+// points over the water. A piece that starts over the water stays raised to its end, so the
+// highway also breaks a few cells past the shore after those (and after the sea at the map
+// edge). Its segments are locked. False if it couldn't be built.
+function highwayLine(state, a, b, type) {
+  const spec = (p, q) => ({ a: p, b: q, type, anywhere: true, waterEnds: true });
+  const points = [a];
+  if (!planRoad(state, spec(a, b)).ok) {
+    // (break it inside each stretch of water too wide for one span)
+    const len = Math.hypot(b.x - a.x, b.z - a.z), STEP = 0.5;
+    const at = (d) => ({ x: a.x + ((b.x - a.x) * d) / len, z: a.z + ((b.z - a.z) * d) / len });
+    const wet = (d) => { const p = at(d); return inBounds(Math.floor(p.x), Math.floor(p.z)) && state.water[idx(Math.floor(p.x), Math.floor(p.z))]; };
+    let from = -1;
+    for (let d = 0; d <= len + STEP; d += STEP) {
+      const w = d <= len && wet(d);
+      if (w && from < 0) from = d;
+      if (!w && from >= 0) {
+        const run = d - from, n = Math.ceil(run / (MAX_BRIDGE - 24));
+        if (n > 1 || from === 0) {
+          for (let k = 1; k < n; k++) points.push(at(from + (run * k) / n));
+          if (d + 8 < len) points.push(at(d + 8));
+        }
+        from = -1;
+      }
+    }
+  }
+  points.push(b);
+  for (let k = 1; k < points.length; k++) {
+    const plan = planRoad(state, spec(points[k - 1], points[k]));
+    if (!plan.ok) { console.warn('The highway could not be built:', plan.reason, plan.bad); return false; }
+    const res = buildRoad(state, plan, { free: true, silent: true });
+    const X = rn(state);
+    for (const id of res.segs) { const sg = X.seg.get(id); if (sg) sg.locked = 1; }
+  }
+  return true;
 }
 
 // A city moved onto a bigger map (see sim/save.js) keeps its own highway: it's carried on from
@@ -335,12 +368,8 @@ export function extendHighway(state) {
   const end = [...rn(state).node.values()].find((n) => n.out && n.x > 0.1);
   if (!end) return;
   const on = [...rn(state).seg.values()].find((s) => s.a === end.id || s.b === end.id);
-  const plan = planRoad(state, { a: { x: 0.02, z: end.z }, b: { x: end.x, z: end.z }, type: on?.type || 6, anywhere: true, waterEnds: true });
-  if (!plan.ok) { console.warn('The highway could not be carried on to the new map edge:', plan.reason, plan.bad); return; }
-  const res = buildRoad(state, plan, { free: true, silent: true });
-  const X = rn(state);
-  for (const id of res.segs) { const sg = X.seg.get(id); if (sg) sg.locked = 1; }
-  for (const n of X.node.values()) n.out = n.x < 0.1 ? 1 : 0;
+  if (!highwayLine(state, { x: 0.02, z: end.z }, { x: end.x, z: end.z }, on?.type || 6)) return;
+  for (const n of rn(state).node.values()) n.out = n.x < 0.1 ? 1 : 0;
 }
 
 function generateResources(state, map, noise, rnd) {
