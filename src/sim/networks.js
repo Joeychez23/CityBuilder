@@ -1,8 +1,10 @@
 // Connected components of the road and rail networks, and which of them reach an
-// outside connection. Recomputed only when a network changes.
+// outside connection. Recomputed only when a network changes. (Roads: by the road network's
+// own graph, sim/roadgraph.js, so a road passing over another isn't joined to it.)
 import { N, idx, inBounds, DIRS } from '../core/grid.js';
 import { pruneTunnels, joinThroughLinks } from './tunnels.js';
 import { linked } from './bridges.js';
+import { graph } from './roadgraph.js';
 
 // linkFn(i, j, d) -> may i connect to neighbour j? (bridges only connect along their axis)
 export function labelComponents(layer, extraLink, linkFn) {
@@ -33,12 +35,18 @@ export function labelComponents(layer, extraLink, linkFn) {
 }
 
 export function computeRoadNetwork(state, ctx) {
-  pruneTunnels(state); // a tunnel whose portal lost its road closes
-  const { comp, count } = labelComponents(state.road, null, (i, j, d) => linked(state, 'road', i, j, d));
-  joinThroughLinks(state, 'road', comp, count);
+  pruneTunnels(state); // a railway tunnel whose portal lost its track closes
+  // roads: the connected parts of the road network (sim/roadgraph.js), onto the road's cells
+  const Gr = graph(state);
+  const X = Gr.X;
+  const comp = new Int32Array(N * N).fill(-1);
+  const count = Gr.compCount;
+  const segComp = (sid) => { const sg = X.seg.get(sid); return sg ? Gr.comp.get(sg.a) ?? -1 : -1; };
+  for (let i = 0; i < N * N; i++) if (state.road[i]) comp[i] = segComp(state.roadSeg[i]);
   const outside = new Uint8Array(count);
   const size = new Int32Array(count);
   for (let i = 0; i < N * N; i++) if (comp[i] >= 0) size[comp[i]]++;
+  for (const n of X.node.values()) if (n.out) outside[Gr.comp.get(n.id)] = 1;
   for (const c of state.connections) {
     if (c.type !== 'road') continue;
     const k = comp[idx(c.x, c.y)];
@@ -63,6 +71,21 @@ export function computeRoadNetwork(state, ctx) {
 
 // The road component a building's front faces (or any adjacent road), -1 if none.
 export function buildingRoadComp(state, ctx, b) {
+  // a building turned to face its road: the road at its front, else any road beside it
+  if (b.cells) {
+    if (b.front >= 0 && ctx.net.roadComp[b.front] >= 0 && !state.bridgeH[b.front]) return { comp: ctx.net.roadComp[b.front], x: b.front % N, y: (b.front / N) | 0 };
+    const own = new Set(b.cells);
+    for (const i of b.cells) {
+      const x = i % N, y = (i / N) | 0;
+      for (const [dx, dy] of DIRS) {
+        if (!inBounds(x + dx, y + dy)) continue;
+        const j = idx(x + dx, y + dy);
+        if (own.has(j) || state.bridgeH[j]) continue;
+        if (ctx.net.roadComp[j] >= 0) return { comp: ctx.net.roadComp[j], x: x + dx, y: y + dy };
+      }
+    }
+    return null;
+  }
   const [fx, fy] = DIRS[b.rot || 0];
   // check the cells just outside the footprint, front side first
   const cand = [];

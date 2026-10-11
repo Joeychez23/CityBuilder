@@ -1,60 +1,34 @@
 // Time-lapse: watch the city grow from its first road to today in under a minute. The
 // camera circles slowly overhead while roads and buildings appear in the order they were
-// built (each building remembers the day it was finished; roads, the day they were laid,
-// state.roadDay, estimated for roads older than that from the buildings along them). The
+// built (each building remembers the day it was finished, each road the day it was laid;
+// a road without a date is taken to be as old as the oldest building along it). The
 // simulation is paused meanwhile, and everything is put back as it was afterwards.
-import { registerSystem, formatDate } from '../sim/simulation.js';
-import { N, DIRS, inBounds, idx } from '../core/grid.js';
+import { formatDate } from '../sim/simulation.js';
+import { N } from '../core/grid.js';
 import { bus } from '../core/events.js';
+import { rn } from '../sim/roadnet.js';
 
-// Roads laid before the city kept their dates: guess from the buildings along them (a road
-// is at least as old as the oldest building beside it), then along the road network
-function estimateRoadDays(state, first) {
-  const D = state.roadDay;
-  const guess = new Uint16Array(N * N);
+// The day each road was laid (an estimate, from the buildings along it, for one that didn't
+// keep its date)
+function roadDays(state, first) {
+  const X = rn(state);
+  const guess = new Map();
   for (const b of state.buildings.values()) {
     const day = Math.max(first, Math.floor(b.built ?? first));
     for (let y = b.y0 - 2; y <= b.y1 + 2; y++) for (let x = b.x0 - 2; x <= b.x1 + 2; x++) {
-      if (!inBounds(x, y)) continue;
-      const i = idx(x, y);
-      if (state.road[i] && !D[i] && (!guess[i] || day < guess[i])) guess[i] = day;
+      if (x < 0 || y < 0 || x >= N || y >= N) continue;
+      const sid = state.roadSeg[y * N + x];
+      if (sid && (!guess.has(sid) || day < guess.get(sid))) guess.set(sid, day);
     }
   }
-  // spread along the roads: a road with no date takes its neighbour's
-  const queue = [];
-  for (let i = 0; i < N * N; i++) if (state.road[i] && (D[i] || guess[i])) queue.push(i);
-  for (let q = 0; q < queue.length; q++) {
-    const i = queue[q], x = i % N, y = (i / N) | 0, v = D[i] || guess[i];
-    for (const [dx, dy] of DIRS) {
-      const j = idx(x + dx, y + dy);
-      if (!inBounds(x + dx, y + dy) || !state.road[j] || D[j] || guess[j]) continue;
-      guess[j] = v;
-      queue.push(j);
-    }
-  }
-  return guess;
+  const days = new Map();
+  for (const s of X.seg.values()) days.set(s.id, s.day ?? guess.get(s.id) ?? first);
+  return days;
 }
 
 export const timelapseFeature = {
   init(app) {
     const { state, view } = app;
-    if (!state.roadDay || state.roadDay.length !== N * N) state.roadDay = new Uint16Array(N * N);
-    // a city from before roads kept their dates: date the roads it has now once, from the
-    // buildings along them
-    if (!state.roadDayInit) {
-      const days = [...state.buildings.values()].map((b) => b.built ?? 0).filter((d) => d > 0);
-      const first = Math.min(state.history?.[0]?.day ?? state.time.day, ...days, state.time.day) - 1;
-      const guess = estimateRoadDays(state, Math.max(1, first));
-      for (let i = 0; i < N * N; i++) if (state.road[i] && !state.roadDay[i]) state.roadDay[i] = guess[i] || Math.max(1, first);
-      state.roadDayInit = true;
-    }
-    // roads remember the day they were laid (from now on)
-    bus.on('network:changed', ({ layer } = {}) => {
-      if (layer !== 'road' || app.timelapse?.on) return;
-      const day = Math.max(1, state.time.day);
-      for (let i = 0; i < N * N; i++) if (state.road[i] && !state.roadDay[i]) state.roadDay[i] = day;
-    });
-    registerSystem({ name: 'road-days', every: 'day', run: (s) => { for (let i = 0; i < N * N; i++) if (s.road[i] && !s.roadDay[i]) s.roadDay[i] = Math.max(1, s.time.day - 1); else if (!s.road[i] && s.roadDay[i]) s.roadDay[i] = 0; } });
 
     const bar = document.createElement('div');
     bar.id = 'timelapse-bar';
@@ -72,15 +46,16 @@ export const timelapseFeature = {
       const first = Math.min(state.history?.[0]?.day ?? state.time.day, ...days, state.time.day) - 1;
       const last = state.time.day;
       if (last - first < 2) { app.toast('Your city is too young for a time-lapse: come back once it has grown a little.', 'info'); return; }
-      const guess = estimateRoadDays(state, first);
+      const segDays = roadDays(state, first);
       Object.assign(T, {
         on: true, first, last, t: 0, playing: true, speed: 1, orbit: true,
         dur: Math.min(60, Math.max(20, (last - first) * 0.18)),
-        road: state.road.slice(), zone: state.zone.slice(), roadDays: state.roadDay.map((d, i) => d || guess[i] || first),
+        road: state.road.slice(), zone: state.zone.slice(), roadDays: segDays,
         wasPaused: state.time.paused, shown: new Set(state.buildings.keys()), lastRoadDay: -1, roadTimer: 0,
       });
       state.time.paused = true;
       state.zone.fill(0);
+      app.zones.setHidden(true);
       app.overlays.dirty = true;
       document.body.classList.add('photo', 'timelapse');
       // a high view over the middle of town to start from
@@ -96,6 +71,8 @@ export const timelapseFeature = {
       state.road.set(T.road);
       state.zone.set(T.zone);
       for (const b of state.buildings.values()) if (!T.shown.has(b.id)) { app.buildings.add(b); T.shown.add(b.id); }
+      app.roads.setFilter(null);
+      app.zones.setHidden(false);
       app.networks.dirty = true;
       app.overlays.dirty = true;
       state.time.paused = T.wasPaused;
@@ -112,7 +89,10 @@ export const timelapseFeature = {
       const rd = Math.floor(day);
       if (force || (rd !== T.lastRoadDay && T.roadTimer > 0.2)) {
         T.lastRoadDay = rd; T.roadTimer = 0;
-        for (let i = 0; i < N * N; i++) state.road[i] = T.road[i] && T.roadDays[i] <= day ? T.road[i] : 0;
+        // the roads (and what stands beside them) laid by then
+        const there = (sid) => (T.roadDays.get(sid) ?? T.first) <= day;
+        app.roads.setFilter((sg) => !sg || there(sg.id));
+        for (let i = 0; i < N * N; i++) state.road[i] = T.road[i] && there(state.roadSeg[i]) ? T.road[i] : 0;
         app.networks.dirty = true;
       }
       // the date and how many lived here then

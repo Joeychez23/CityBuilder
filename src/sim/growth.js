@@ -1,11 +1,12 @@
 // Zoned buildings spawn on painted cells next to roads when there is demand for them.
-import { N, idx, inBounds, DIRS } from '../core/grid.js';
 import { ROADS, ROAD_RANK, rankOf } from '../data/roads.js';
 import { ZONES, MIXED_EDU } from '../data/zones.js';
-import { createBuilding, footprint, footprintFree } from './build.js';
+import { stripBuilding, plotCells, plotOfCell } from './build.js';
 import { rng } from '../core/rng.js';
-import { segIndex } from './roadsegs.js';
 import { startConstruction, reservedCells } from './construction.js';
+import { zoneLayout, zoneOf, cellOf } from './zoneblocks.js';
+import { rn } from './roadnet.js';
+import { graph } from './roadgraph.js';
 
 // Which demand value drives each zone
 export function demandFor(state, def) {
@@ -32,7 +33,7 @@ export function updateCapacity(b) {
     return;
   }
   // on a lot with a front yard, only the part behind the yard is built on
-  const cells = b.setback ? b.w * Math.max(1, b.d - b.setback) : (b.x1 - b.x0 + 1) * (b.y1 - b.y0 + 1);
+  const cells = b.w * Math.max(1, b.d - (b.setback || 0));
   const lvl = b.level;
   b.hhCap = 0;
   b.jobs = 0;
@@ -51,25 +52,21 @@ export function updateCapacity(b) {
   b.jobsEdu[0] += b.jobs - b.jobsEdu.reduce((a, c) => a + c, 0);
 }
 
-// Front cells: zoned, empty, next to a zonable road that reaches an outside connection.
+// Front cells: the first row of a zone strip, zoned and empty, along a road that reaches an
+// outside connection.
 function collectFronts(state, ctx) {
+  const Z = zoneLayout(state);
+  const Gr = graph(state), X = rn(state);
+  const out = new Map();
+  const reaches = (sid) => {
+    if (!out.has(sid)) { const sg = X.seg.get(sid); const k = sg ? Gr.comp.get(sg.a) : -1; out.set(sid, k >= 0 && !!ctx.net.roadOutside?.[k]); }
+    return out.get(sid);
+  };
   const fronts = [];
-  for (let y = 0; y < N; y++) {
-    for (let x = 0; x < N; x++) {
-      const i = idx(x, y);
-      const z = state.zone[i];
-      if (!z || state.bld[i]) continue;
-      for (let d = 0; d < 4; d++) {
-        const nx = x + DIRS[d][0], ny = y + DIRS[d][1];
-        if (!inBounds(nx, ny)) continue;
-        const j = idx(nx, ny);
-        const t = state.road[j];
-        if (!t || !ROADS[t].zonable || state.bridgeH[j]) continue;
-        if (!ctx.net.roadOutside[ctx.net.roadComp[j]]) continue;
-        fronts.push([x, y, d, z]);
-        break;
-      }
-    }
+  for (const c of Z.cells) {
+    if (c.row !== 0 || state.bld[c.g]) continue;
+    const z = zoneOf(state, c);
+    if (z && reaches(c.seg)) fronts.push({ c, z });
   }
   return fronts;
 }
@@ -87,51 +84,60 @@ export function growthStep(state, ctx) {
   const tries = Math.min(fronts.length, 24);
   for (let t = 0; t < tries; t++) {
     const k = Math.floor(rng.next() * fronts.length);
-    const [x, y, rot, z] = fronts[k];
+    const { c, z } = fronts[k];
     const def = ZONES[z];
     const demand = demandFor(state, def);
     if (demand <= 0.02 || rng.next() > demand * 0.35) continue;
-    if (state.bld[idx(x, y)] || state.zone[idx(x, y)] !== z) continue;
-    const plot = state.plot[idx(x, y)] && state.plots.find((p) => p.id === state.plot[idx(x, y)]);
-    if (plot ? spawnPlot(state, plot) : trySpawn(state, def, x, y, rot)) {
+    if (state.bld[c.g] || zoneOf(state, c) !== z) continue;
+    const plot = plotOfCell(state, c);
+    if (plot ? spawnPlot(state, plot) : trySpawn(state, def, c)) {
       fronts[k] = fronts[fronts.length - 1];
       fronts.pop();
     }
   }
 }
 
+// Can a building take these zone cells? (all painted with its zone, and nothing on them)
+function cellsFree(state, cells, zone) {
+  for (const c of cells) {
+    if (zoneOf(state, c) !== zone) return false;
+    for (const i of c.gs) if (state.bld[i] || reserved.has(i)) return false;
+  }
+  return true;
+}
+
 // A lot you laid out: the building takes the whole lot (its size), set back by its front yard
 function spawnPlot(state, p) {
   const def = ZONES[p.zone];
   if (!def) return null;
-  for (let y = p.y0; y <= p.y1; y++) {
-    for (let x = p.x0; x <= p.x1; x++) {
-      const i = idx(x, y);
-      if (state.bld[i] || state.zone[i] !== p.zone || state.plot[i] !== p.id || reserved.has(i)) return null;
-    }
-  }
-  if (def.resource && resourceShare(state, def, p.x0, p.y0, p.x1, p.y1) < 0.3) return null;
-  if (def.needsRoad && plotFrontRank(state, p) < ROAD_RANK[def.needsRoad]) return null;
-  const b = createBuilding(state, 'zone', def, p.x0, p.y0, p.x1, p.y1, p.rot, { plot: p.id, setback: p.setback || 0 });
+  const cells = plotCells(state, p);
+  if (!cells || !cellsFree(state, cells, p.zone)) return null;
+  if (def.resource && resourceShare(state, def, cells) < 0.3) return null;
+  if (def.needsRoad && rankOf(rn(state).seg.get(p.seg)?.type) < ROAD_RANK[def.needsRoad]) return null;
+  const b = stripBuilding(state, 'zone', def, cells, p.w, p.d, { plot: p.id, setback: p.setback || 0 });
   updateCapacity(b);
   return startConstruction(state, b);
 }
 
-function trySpawn(state, def, x, y, rot) {
+// A building on the lot sizes its zone grows on, with this front cell at one end of it
+function trySpawn(state, def, c) {
+  const Z = zoneLayout(state);
+  const rank = rankOf(rn(state).seg.get(c.seg)?.type);
+  if (def.needsRoad && rank < ROAD_RANK[def.needsRoad]) return null;
   const lots = [...[...def.lots].sort(() => rng.next() - 0.5), ...(def.fallbackLots || [])];
   for (const [w, d] of lots) {
-    // try the lot with this cell at either end along the road
     for (const shift of [0, -(w - 1)]) {
-      const [sx, sy] = DIRS[rot][1] === 0 ? [0, 1] : [1, 0];
-      const ax = x + sx * shift, ay = y + sy * shift;
-      const [x0, y0, x1, y1] = footprint(ax, ay, w, d, rot);
-      if (!footprintFree(state, x0, y0, x1, y1, def.id)) continue;
-      if (reserved.size && touchesReserved(x0, y0, x1, y1)) continue;
-      // every cell of the front row must touch the road
-      if (!frontTouchesRoad(state, ax, ay, w, rot)) continue;
-      if (def.needsRoad && frontRank(state, ax, ay, w, rot) < ROAD_RANK[def.needsRoad]) continue;
-      if (def.resource && resourceShare(state, def, x0, y0, x1, y1) < 0.3) continue;
-      const b = createBuilding(state, 'zone', def, x0, y0, x1, y1, rot);
+      const cells = [];
+      for (let j = 0; j < w && cells.length === j * d; j++) {
+        for (let r = 0; r < d; r++) {
+          const cc = cellOf(Z, c.seg, c.side, c.col + shift + j, r);
+          if (!cc || plotOfCell(state, cc)) break;
+          cells.push(cc);
+        }
+      }
+      if (cells.length !== w * d || !cellsFree(state, cells, def.id)) continue;
+      if (def.resource && resourceShare(state, def, cells) < 0.3) continue;
+      const b = stripBuilding(state, 'zone', def, cells, w, d);
       updateCapacity(b);
       return startConstruction(state, b);
     }
@@ -139,61 +145,9 @@ function trySpawn(state, def, x, y, rot) {
   return null;
 }
 
-// The biggest class of road along a lot's front (see the road hierarchy in data/roads.js):
-// high-density buildings only grow beside a collector or bigger
-function frontRank(state, ax, ay, w, rot) {
-  const [sx, sy] = DIRS[rot][1] === 0 ? [0, 1] : [1, 0];
-  let r = -1;
-  for (let k = 0; k < w; k++) {
-    const fx = ax + sx * k + DIRS[rot][0], fy = ay + sy * k + DIRS[rot][1];
-    if (inBounds(fx, fy)) r = Math.max(r, rankOf(state.road[idx(fx, fy)]));
-  }
-  return r;
-}
-function plotFrontRank(state, p) {
-  const [dx, dy] = DIRS[p.rot];
-  let r = -1;
-  for (let y = p.y0; y <= p.y1; y++) {
-    for (let x = p.x0; x <= p.x1; x++) {
-      const fx = x + dx, fy = y + dy;
-      if (fx >= p.x0 && fx <= p.x1 && fy >= p.y0 && fy <= p.y1) continue; // still inside the lot
-      if (inBounds(fx, fy)) r = Math.max(r, rankOf(state.road[idx(fx, fy)]));
-    }
-  }
-  return r;
-}
-
-function touchesReserved(x0, y0, x1, y1) {
-  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (reserved.has(idx(x, y))) return true;
-  return false;
-}
-
-// Most of the lot's front row has to touch the road (all of it along a grid road; along a
-// road at an angle the cells step away from it, so half is enough)
-function frontTouchesRoad(state, ax, ay, w, rot) {
-  const [sx, sy] = DIRS[rot][1] === 0 ? [0, 1] : [1, 0];
-  let n = 0;
-  for (let k = 0; k < w; k++) {
-    const fx = ax + sx * k + DIRS[rot][0], fy = ay + sy * k + DIRS[rot][1];
-    if (inBounds(fx, fy) && state.road[idx(fx, fy)] && !state.bridgeH[idx(fx, fy)]) n++;
-  }
-  if (n === w) return true;
-  return n >= Math.ceil(w / 2) && (state.roadSegs || []).length > 0 && n > 0 && touchesDiagonal(state, ax, ay, w, rot);
-}
-
-function touchesDiagonal(state, ax, ay, w, rot) {
-  const SG = segIndex(state);
-  const [sx, sy] = DIRS[rot][1] === 0 ? [0, 1] : [1, 0];
-  for (let k = 0; k < w; k++) {
-    const fx = ax + sx * k + DIRS[rot][0], fy = ay + sy * k + DIRS[rot][1];
-    if (inBounds(fx, fy) && SG.byCell.has(idx(fx, fy))) return true;
-  }
-  return false;
-}
-
-function resourceShare(state, def, x0, y0, x1, y1) {
+function resourceShare(state, def, cells) {
   let n = 0, tot = 0;
   const layer = def.resource === 'forest' ? state.forestMax : state[def.resource];
-  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) { tot++; if (layer[idx(x, y)] > 0) n++; }
+  for (const c of cells) { tot++; if (layer[c.g] > 0) n++; }
   return n / tot;
 }

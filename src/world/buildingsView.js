@@ -5,10 +5,9 @@ import { InstancedPool, boxMatrix, unitBox, unitRoof } from './instanced.js';
 import { THEMES } from '../data/maps.js';
 import { makeRng } from '../core/rng.js';
 import { storageCap } from '../sim/services.js';
-import { segIndex } from '../sim/roadsegs.js';
 import { cellHeight, terrainAt } from '../sim/mapgen.js';
 import { bus } from '../core/events.js';
-import { DIRS, idx, inBounds, hidx } from '../core/grid.js';
+import { N, DIRS, hidx } from '../core/grid.js';
 import { FLOOR, zoneParts } from './zoneStyles.js';
 import { liveParts } from '../data/wonders.js';
 
@@ -216,44 +215,22 @@ export function createBuildingsView(view, state, servicesById) {
     if (b.def.noBase) return parts; // (a beach lies on the ground as it is)
     const H = state.height;
     let lo = Infinity;
-    for (let y = b.y0; y <= b.y1 + 1; y++) for (let x = b.x0; x <= b.x1 + 1; x++) lo = Math.min(lo, H[hidx(x, y)]);
+    if (b.cells) for (const i of b.cells) { const x = i % N, y = (i / N) | 0; lo = Math.min(lo, H[hidx(x, y)], H[hidx(x + 1, y)], H[hidx(x, y + 1)], H[hidx(x + 1, y + 1)]); }
+    else for (let y = b.y0; y <= b.y1 + 1; y++) for (let x = b.x0; x <= b.x1 + 1; x++) lo = Math.min(lo, H[hidx(x, y)]);
     const drop = (b.baseY ?? 0) - lo;
     if (!(drop > 0.12)) return parts;
     return [{ pool: 'plain', x: 0, z: 0, w: b.w * 0.99, d: b.d * 0.99, h: drop + 0.02, y: -drop, color: '#8d877b' }, ...parts];
   }
 
-  // Which way the building faces. Grown buildings beside a road at an angle turn to face it
-  // squarely (shrunk a little so they stay inside their square lot).
+  // Which way the building faces: turned to face its road (b.ang), or one of the four ways
   function facing(b) {
-    const ry = FACING_RY[b.rot || 0];
-    if (b.kind !== 'zone' || b.def.signature || !(state.roadSegs || []).length) return { ry, scale: 1 };
-    const SG = segIndex(state);
-    const [fx, fy] = DIRS[b.rot || 0];
-    let seg = null;
-    for (let y = b.y0 - 1; y <= b.y1 + 1 && !seg; y++) {
-      for (let x = b.x0 - 1; x <= b.x1 + 1 && !seg; x++) {
-        const front = (fx > 0 && x === b.x1 + 1) || (fx < 0 && x === b.x0 - 1) || (fy > 0 && y === b.y1 + 1) || (fy < 0 && y === b.y0 - 1);
-        if (!front || !inBounds(x, y)) continue;
-        const i = idx(x, y);
-        if (SG.byCell.has(i) && !SG.ends.has(i)) seg = SG.byCell.get(i)[0];
-      }
-    }
-    if (!seg) return { ry, scale: 1 };
-    // the normal of the road's line that points from the building toward the road
-    let nx = -(seg.b[1] - seg.a[1]), nz = seg.b[0] - seg.a[0];
-    if (nx * fx + nz * fy < 0) { nx = -nx; nz = -nz; }
-    const turn = Math.atan2(nx, nz) - ry;
-    const t = Math.atan2(Math.sin(turn), Math.cos(turn));
-    if (Math.abs(t) > Math.PI / 4 + 0.01) return { ry, scale: 1 };
-    const a = Math.abs(t), W = b.w, D = b.d;
-    const scale = Math.min(W / (W * Math.cos(a) + D * Math.sin(a)), D / (W * Math.sin(a) + D * Math.cos(a)));
-    return { ry: ry + t, scale };
+    return { ry: b.ang ?? FACING_RY[b.rot || 0], scale: 1 };
   }
 
   // World matrices for a building's parts
   function place(b, parts, cb) {
-    const cx = b.x0 + (b.x1 - b.x0 + 1) / 2;
-    const cz = b.y0 + (b.y1 - b.y0 + 1) / 2;
+    const cx = b.cx ?? b.x0 + (b.x1 - b.x0 + 1) / 2;
+    const cz = b.cz ?? b.y0 + (b.y1 - b.y0 + 1) / 2;
     const { ry, scale } = facing(b);
     const cos = Math.cos(ry), sin = Math.sin(ry);
     const baseY = b.baseY ?? 0;
@@ -301,10 +278,10 @@ export function createBuildingsView(view, state, servicesById) {
   scene.add(arrow);
   arrow.visible = false;
   let ghostKey = '';
-  bv.showGhost = (def, [x0, y0, x1, y1], rot, ok, baseY) => {
+  bv.showGhost = (def, [x0, y0, x1, y1], rot, ok, baseY, turned = null) => {
     const alongX = rot === 1 || rot === 3;
-    const b = { kind: def.kind || 'service', def, type: def.id, x0, y0, x1, y1, rot, w: alongX ? x1 - x0 + 1 : y1 - y0 + 1, d: alongX ? y1 - y0 + 1 : x1 - x0 + 1, seed: 7, level: 1, baseY, households: [], stored: 0 };
-    const key = `${def.id}|${x0},${y0},${x1},${y1}|${rot}|${ok}|${baseY.toFixed(2)}`;
+    const b = { kind: def.kind || 'service', def, type: def.id, x0, y0, x1, y1, rot, w: alongX ? x1 - x0 + 1 : y1 - y0 + 1, d: alongX ? y1 - y0 + 1 : x1 - x0 + 1, seed: 7, level: 1, baseY, households: [], stored: 0, ...(turned || {}) };
+    const key = `${def.id}|${x0},${y0},${x1},${y1}|${rot}|${ok}|${baseY.toFixed(2)}|${turned ? `${turned.cx.toFixed(2)},${turned.cz.toFixed(2)},${turned.ang.toFixed(3)}` : ''}`;
     if (key !== ghostKey) {
       ghostKey = key;
       for (const c of [...ghost.children]) ghost.remove(c);
@@ -316,8 +293,9 @@ export function createBuildingsView(view, state, servicesById) {
         ghost.add(mesh);
       });
       // the arrow sits just outside the front edge, pointing at the road
-      const [fx, fy] = DIRS[rot];
-      const cx = (x0 + x1 + 1) / 2 + fx * ((x1 - x0 + 1) / 2 + 0.05), cz = (y0 + y1 + 1) / 2 + fy * ((y1 - y0 + 1) / 2 + 0.05);
+      const [fx, fy] = turned ? [Math.sin(turned.ang), Math.cos(turned.ang)] : DIRS[rot];
+      const cx = turned ? turned.cx + fx * (turned.d / 2 + 0.05) : (x0 + x1 + 1) / 2 + fx * ((x1 - x0 + 1) / 2 + 0.05);
+      const cz = turned ? turned.cz + fy * (turned.d / 2 + 0.05) : (y0 + y1 + 1) / 2 + fy * ((y1 - y0 + 1) / 2 + 0.05);
       arrow.position.set(cx, baseY + 0.12, cz);
       arrow.rotation.set(0, Math.atan2(-fx, -fy), 0);
       arrowMat.color.set(ok ? '#ffd300' : '#ff5a4f');
@@ -375,14 +353,16 @@ export function createBuildingsView(view, state, servicesById) {
     rubble = [];
     for (const r of state.rebuilds || []) {
       const rr = makeRng(r.x0 * 7919 + r.y0 * 31 + 3);
-      for (let y = r.y0; y <= r.y1; y++) {
-        for (let x = r.x0; x <= r.x1; x++) {
-          const g = cellHeight(state, x, y);
-          for (let k = 0; k < 3; k++) {
-            const s = rr.range(0.18, 0.5);
-            boxMatrix(x + rr.range(0.2, 0.8), g - 0.05, y + rr.range(0.2, 0.8), s, rr.range(0.08, 0.32), s * rr.range(0.6, 1.2), rr.range(0, 3), m);
-            rubble.push({ pool: pools.plain, handle: pools.plain.add(m, rr.pick(['#8d877c', '#77736d', '#a39c90', '#5e5a54'])) });
-          }
+      // (on the cells it stood on: its rectangle, or the cells under it, turned to its road)
+      const cells = r.cells || [];
+      if (!r.cells) for (let y = r.y0; y <= r.y1; y++) for (let x = r.x0; x <= r.x1; x++) cells.push(y * N + x);
+      for (const i of cells) {
+        const x = i % N, y = (i / N) | 0;
+        const g = cellHeight(state, x, y);
+        for (let k = 0; k < 3; k++) {
+          const s = rr.range(0.18, 0.5);
+          boxMatrix(x + rr.range(0.2, 0.8), g - 0.05, y + rr.range(0.2, 0.8), s, rr.range(0.08, 0.32), s * rr.range(0.6, 1.2), rr.range(0, 3), m);
+          rubble.push({ pool: pools.plain, handle: pools.plain.add(m, rr.pick(['#8d877c', '#77736d', '#a39c90', '#5e5a54'])) });
         }
       }
     }

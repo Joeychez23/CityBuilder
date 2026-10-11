@@ -4,7 +4,7 @@
 // number of vehicles, and stations only answer calls within reach, so where you build
 // them (and the traffic in between) matters. Police also patrol their neighbourhood.
 import { N } from '../core/grid.js';
-import { route, accessCell } from './traffic.js';
+import { route, accessCell, backAlong } from './traffic.js';
 import { isService, center, serviceEfficiency } from './services.js';
 import { STEP_MINUTES } from './simulation.js';
 import { rng } from '../core/rng.js';
@@ -64,7 +64,7 @@ export function dispatch(state, ctx, kind, target, extra = {}) {
 function finish(state, ctx, inc) {
   inc.phase = 'return';
   inc.eta = inc.path.length * KINDS[inc.kind].perCell;
-  if (state.buildings.has(inc.station)) bus.emit('vehicle:spawn', { path: [...inc.path].reverse(), type: 'emergency', siren: null, svc: state.buildings.get(inc.station)?.def, owner: inc.station });
+  if (state.buildings.has(inc.station)) bus.emit('vehicle:spawn', { path: backAlong(state, inc.path), type: 'emergency', siren: null, svc: state.buildings.get(inc.station)?.def, owner: inc.station });
 }
 
 // Every simulation step: vehicles arrive, work the scene, and drive back
@@ -138,7 +138,13 @@ export function patrolsHourly(state, ctx) {
       if (!state.road[to] || ctx.net.roadComp[to] !== ctx.net.roadComp[from]) continue;
       ctx.routeBudget = Math.max(ctx.routeBudget || 0, 0) + 1;
       const out = route(state, ctx, from, to, 'service');
-      if (out && out.length > 4) bus.emit('vehicle:spawn', { path: [...out, ...[...out].reverse().slice(1)], type: 'emergency', siren: null, patrol: true, svc: b.def, owner: b.id });
+      if (out && out.length > 4) {
+        // out and back again (turning round at the far end)
+        const back = backAlong(state, out);
+        const path = [...out, ...back.slice(1)];
+        if (out.route && back.route) path.parts = [out.route, back.route];
+        bus.emit('vehicle:spawn', { path, type: 'emergency', siren: null, patrol: true, svc: b.def, owner: b.id });
+      }
       break;
     }
   }

@@ -447,6 +447,8 @@ code { background: var(--ink-3); padding: 0 4px; }
 #menu .btn:hover { background: var(--yellow); color: var(--ink); }
 #menu .btn.primary { background: var(--yellow); color: var(--ink); }
 #menu .btn.primary:hover { background: var(--ink); color: var(--paper); }
+.menu-legacy { margin-top: 14px; max-width: 640px; padding: 12px 14px; border: 1px solid var(--ink-3, #444); }
+.menu-legacy .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 6px; }
 .menu-account { background: var(--ink); color: var(--paper); padding: 16px; margin-top: 18px; max-width: 640px; }
 .menu-account .btn, #menu .menu-account .btn { background: var(--ink-3); color: var(--paper); }
 .menu-account .btn.primary, #menu .menu-account .btn.primary { background: var(--yellow); color: var(--ink); }

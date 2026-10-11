@@ -1,14 +1,13 @@
 // Mouse/keyboard input for the active tool. Each tool kind is a handler object with
 // optional hover/down/drag/up/frame/options callbacks; more kinds are registered by
 // other modules via registerTool().
-import { idx, inBounds, lCells, N, forRadius, DIRS } from '../core/grid.js';
+import { idx, inBounds, lCells, N, forRadius, lineCells } from '../core/grid.js';
 import { ROADS, CLASS_NAMES, ROAD_RANK, lanesText, UPGRADES } from '../data/roads.js';
 import { ZONES } from '../data/zones.js';
 import { pickGround } from '../world/picking.js';
-import { planRoad, placeRoad, planRoadLine, placeRoadLine, planLayer, placeLayer, setZone, canZoneCell, placePlot, plotBlocker, bulldozeCell, bulldozePreview, terraform, brushCells, isOwned, spend, canAfford, planClearTrees, clearTrees, CLEAR_TREE_COST } from '../sim/build.js';
-import { snapEnd, snapToDirs, gridDirs, gridLayout, lineCells } from '../sim/roadsegs.js';
-import { planRoadCrossing, placeRoadCrossing, canPassUnder } from '../sim/bridges.js';
-import { bridgeHover, bridgeClick } from './bridgeSteps.js';
+import { buildingCells, planLayer, placeLayer, setZone, zoneCells, canZoneStrip, placePlot, plotBlocker, bulldozeCell, bulldozePreview, terraform, brushCells, isOwned, spend, canAfford, planClearTrees, clearTrees, CLEAR_TREE_COST } from '../sim/build.js';
+import { zoneLayout, zoneOf, cellAt, cellsNear, cellsInRect, cellOf } from '../sim/zoneblocks.js';
+import { nearestSeg } from '../sim/roadnet.js';
 import { bus } from '../core/events.js';
 import { cellHeight } from '../sim/mapgen.js';
 import { ISSUE_ICONS, ISSUE_TEXT } from '../sim/problems.js';
@@ -191,7 +190,7 @@ export const money = (v) => `₡${Math.round(v).toLocaleString()}`;
 // What using a tool changes, as named on the Undo button (null: nothing that can be undone)
 function changeLabel(t) {
   switch (t.kind) {
-    case 'road': return t.mode === 'replace' ? `${ROADS[t.type].name} (re-surfaced)` : t.mode === 'bridge' ? `${ROADS[t.type].name} bridge` : ROADS[t.type].name;
+    case 'road': return t.mode === 'upgrade' ? `${ROADS[t.type].name} (upgraded)` : t.mode === 'bridge' ? `${ROADS[t.type].name} bridge` : ROADS[t.type].name;
     case 'zone': return t.zone ? `${ZONES[t.zone].name} zoning` : 'Removed zoning';
     case 'bulldoze': return 'Bulldozing';
     case 'plop': case 'landfill': case 'area': return t.def?.name || 'Building';
@@ -274,262 +273,7 @@ registerTool('select', {
   },
 });
 
-// ------------------------------------------------------------------ road tool
-// Straight (the default): click where the road starts, then where it ends. It runs along the
-// grid, or along (or square to) a road at an angle you start from; hold Shift for any angle.
-// Any angle: the same, but the road goes wherever you point (it snaps straight near the grid
-// and 45°; Shift gives 15° steps). Either way it keeps going from the end, click by click, so
-// a road can be laid out piece by piece; right click or Esc stops. Pressing at one point and
-// releasing at another builds that piece in one go. Where a road is drawn across water, the
-// water is bridged with a bridge of the same road type (see planRoadCrossing).
-// Bridge: a bridge of this road type between two points you click, over water, valleys,
-// roads or railways (the same as the Bridge tool).
-const ROAD_MODES = [
-  ['straight', 'Straight', 'Along the grid (or along an angled road you start from). Click the start, then the end; it keeps going from there. Hold Shift for any angle.'],
-  ['angle', 'Any angle', 'Click the start, then the end, at any angle. It snaps straight near the grid and at 45°; hold Shift for 15° steps.'],
-  ['bend', 'Right angle', 'Drag: the road runs along the longer side first, then turns a corner.'],
-  ['grid', 'Grid', 'Lay out a whole grid of roads: click a corner, click to set the first side (its direction and length), then click to set how far it reaches. Turn it with the angle buttons.'],
-  ['replace', 'Replace', 'Re-surface existing road between two points with this road type (more lanes, faster).'],
-  ['bridge', 'Bridge', 'A bridge of this road type: click where it starts, then where it ends. It arches over water, valleys, roads and railways.'],
-];
-const roadTip = (t) => ({
-  straight: 'Click where the road starts, then where it ends. It runs along the grid, or along an angled road you start from. Keep clicking to continue; right click or Esc to stop. Hold Shift for any angle.',
-  angle: 'Click where the road starts, then where it ends — at any angle. Keep clicking to continue the road; right click or Esc to stop. Hold Shift to snap to 15° steps.',
-  bend: 'Drag: the road runs along the longer side first, then turns a right angle.',
-  grid: 'Click a corner, then click where the first side ends, then click how far the grid reaches. Right click goes back a step.',
-  replace: 'Click two points along existing road (any angle) to re-surface it with this road type.',
-  bridge: 'Click where the bridge starts (on land, or on the end of a road), then where it ends. It leaves each end level with the road and arches over water, valleys and the roads or railways below. Bigger roads get sturdier bridges.',
-})[t.mode || 'straight'];
-const bridgeName = (t) => `${ROADS[t.type].name} bridge`;
-
-registerTool('road', {
-  options(app, t, el, rerender) {
-    const r = ROADS[t.type];
-    el.innerHTML = `<h4>${r.name}</h4><div class="road-class"><b>${CLASS_NAMES[r.cls]}</b> · ${lanesText(r)} · ${r.speed} km/h<br><span class="muted">${r.role}</span></div>`;
-    segButtons(el, 'Mode', ROAD_MODES, t.mode || 'straight', (v) => { t.mode = v; t.start = t.gA = t.gB = null; t.bridge = { start: null }; app.preview.clearCells(); rerender(); });
-    if (t.mode === 'grid') {
-      segButtons(el, 'Direction', [['grid', 'On the grid', 'The grid lines up with the map.'], ['free', 'Any angle', 'The first side points where you click (in steps of about 5–15°). Holding Shift does the same.']], t.gridFree ? 'free' : 'grid', (v) => { t.gridFree = v === 'free'; rerender(); });
-      slider(el, `Block size: ${t.spacing || 6} cells (${(t.spacing || 6) * 8} m)`, 4, 12, 1, t.spacing || 6, (v) => { t.spacing = v; rerender(); });
-    }
-    const step = t.mode === 'grid' ? (t.gB ? 'Step 3 of 3: click how far the grid reaches.' : t.gA ? 'Step 2 of 3: click where the first side ends.' : 'Step 1 of 3: click a corner.') : '';
-    const across = t.mode === 'straight' || t.mode === 'angle' || !t.mode ? ' Across water it builds a bridge by itself.' : '';
-    el.insertAdjacentHTML('beforeend', `<p class="muted">${roadTip(t)}${across}${ROADS[t.type].oneway ? ' One-way: it runs from where you start toward where you end.' : ''}</p>
-      ${t.start ? `<p class="muted">Drawing from (${t.start[0]}, ${t.start[1]}).</p>` : ''}${t.mode === 'bridge' && t.bridge?.start ? `<p class="muted">The bridge starts at (${t.bridge.start.cx}, ${t.bridge.start.cy}): click where it ends.</p>` : ''}${step ? `<p><b>${step}</b></p>` : ''}`);
-  },
-  enter(app, t) { t.start = t.gA = t.gB = null; t.bridge = { start: null }; },
-  exit(app) { app.preview.clearCells(); },
-  // Esc / right click: stop the road being drawn, or go back a step in the grid (a further
-  // press puts the tool away)
-  cancel(app, t) {
-    if (t.gB) t.gB = null;
-    else if (t.gA) t.gA = null;
-    else if (t.start) t.start = null;
-    else if (t.bridge?.start) t.bridge.start = null;
-    else return false;
-    app.preview.clearCells();
-    app.tools.renderOptions();
-    return true;
-  },
-  // ---- Grid: a corner, then the first side (direction and length), then how far it reaches
-  gridFor(t, p, e) {
-    if (!t.gA) return null;
-    // once the first side is set, its direction stays as it was clicked
-    const onGrid = t.gB ? t.gridLocked : !t.gridFree && !e?.shiftKey;
-    return gridLayout(t.gA, t.gB || [p.cx, p.cy], t.gB ? [p.cx, p.cy] : null, t.spacing || 6, onGrid);
-  },
-  gridPlans(app, t, lay) {
-    const s = app.state, seen = new Set();
-    let cost = 0, blocked = 0, water = 0;
-    const plans = lay.lines.map(([a, b]) => {
-      const plan = planRoadLine(s, a, b, t.type);
-      for (const [x, y] of plan.cells) { const i = idx(x, y); if (!seen.has(i)) { seen.add(i); cost += ROADS[t.type].cost * (s.bridgeH[i] ? 3 : 1); } }
-      if (plan.bad.length) blocked++;
-      water += plan.water;
-      return plan;
-    });
-    return { plans, cost: Math.round(cost), blocked, water };
-  },
-  gridHover(app, t, p, e) {
-    const s = app.state;
-    const lay = this.gridFor(t, p, e);
-    if (!lay) {
-      app.preview.setCells([[p.cx, p.cy, isOwned(s, p.cx, p.cy) ? ROADS[t.type].color : '#ff4a3a']]);
-      app.tools.showTip(`<b>Road grid</b> · ${ROADS[t.type].name}<br><span class="muted">Click a corner of the grid</span>`);
-      return;
-    }
-    const g = this.gridPlans(app, t, lay);
-    const cells = [];
-    for (const plan of g.plans) {
-      const bad = new Set(plan.bad.map(([x, y]) => idx(x, y)));
-      for (const [x, y] of plan.line) cells.push([x, y, bad.has(idx(x, y)) ? '#ff4a3a' : s.road[idx(x, y)] ? '#ffffff' : '#4fc3ff']);
-    }
-    app.preview.setCells(cells);
-    const afford = s.money >= g.cost || s.options.unlimitedMoney;
-    app.tools.showTip(`${t.gB ? `${lay.cols} × ${lay.rows} block${lay.cols * lay.rows === 1 ? '' : 's'} · ` : ''}${Math.round(lay.len * 8)}${lay.depth ? ` × ${Math.round(lay.depth * 8)}` : ''} m · ${lay.angle ? `turned ${lay.angle}°` : 'on the grid'} · <span class="${afford ? '' : 'bad'}">${money(g.cost)}</span>`
-      + `<br><span class="muted">${t.gB ? 'Click to build the grid' : 'Click where the first side ends'}${t.gridFree || e?.shiftKey ? '' : ' · Shift: any angle'}</span>`
-      + `${g.water ? '<br><span class="bad">Crosses water: draw those roads with Straight (it builds the bridge) or use the Bridge mode first</span>' : g.blocked ? `<br><span class="bad">${g.blocked} of its roads ${g.blocked === 1 ? 'is' : 'are'} blocked and won't be built</span>` : ''}`);
-  },
-  gridClick(app, t, p, e) {
-    const s = app.state;
-    if (!t.gA) { t.gA = [p.cx, p.cy]; app.tools.renderOptions(); this.gridHover(app, t, p, e); return; }
-    const lay = this.gridFor(t, p, e);
-    if (!lay) return;
-    if (!t.gB) { t.gB = lay.lines[0][1]; t.gridLocked = !t.gridFree && !e?.shiftKey; app.tools.renderOptions(); this.gridHover(app, t, p, e); return; }
-    const g = this.gridPlans(app, t, lay);
-    if (!canAfford(s, g.cost)) { app.toast('Not enough money for this grid', 'bad'); return; }
-    let built = 0, failed = 0;
-    for (const [a, b] of lay.lines) {
-      const res = placeRoadLine(s, a, b, t.type);
-      if (res.error) failed++; else built++;
-    }
-    if (failed) app.toast(`${failed} of the grid's roads couldn't be built (water, a steep slope, a railway or a building in the way)`, 'warn', `Built ${built} road${built === 1 ? '' : 's'}`);
-    t.gA = t.gB = null;
-    app.tools.renderOptions();
-    this.gridHover(app, t, p, e);
-  },
-  pointMode: (t) => (t.mode || 'straight') === 'straight' || t.mode === 'angle' || t.mode === 'replace',
-  // Where a road from `from` would end if you clicked at p: on the grid (Straight), or free
-  endFor(app, t, p, e, from = t.start) {
-    if (!from) return [p.cx, p.cy];
-    if ((t.mode || 'straight') === 'straight' && !e?.shiftKey) return snapToDirs(from[0], from[1], p.cx, p.cy, gridDirs(app.state, from[0], from[1]));
-    return snapEnd(from[0], from[1], p.cx, p.cy, t.mode !== 'straight' && !!e?.shiftKey);
-  },
-  // A road across water: the land pieces as usual, the bridges over the water in their own colour
-  showCrossing(app, t, a, b, cr) {
-    const s = app.state;
-    // (a road that can't be built shows red all along)
-    const cells = cr.ok ? [] : lineCells(a[0], a[1], b[0], b[1]).map(([x, y]) => [x, y, '#ff4a3a']);
-    for (const pc of cr.pieces) {
-      if (!pc.plan) continue;
-      if (pc.kind === 'road') for (const [x, y] of pc.plan.line) cells.push([x, y, !cr.ok ? '#ff4a3a' : s.road[idx(x, y)] ? '#ffffff' : '#4fc3ff']);
-      else pc.plan.cells.forEach(([x, y], k) => { const end = k === 0 || k === pc.plan.cells.length - 1; cells.push([x, y, !pc.plan.ok ? '#ff4a3a' : end ? '#ffffff' : '#b9a8ff', pc.plan.ok && !end ? pc.plan.heights[k] - 0.1 : undefined]); });
-    }
-    app.preview.setCells(cells);
-    const ang = Math.round((Math.atan2(b[1] - a[1], b[0] - a[0]) * 180) / Math.PI + 360) % 180;
-    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
-    const afford = s.money >= cr.cost || s.options.unlimitedMoney;
-    app.tools.showTip(cr.ok
-      ? `${Math.round(len * 8)} m · ${ang}° · <span class="${afford ? '' : 'bad'}">${money(cr.cost)}</span><br>🌉 With a ${cr.span}-cell ${bridgeName(t).toLowerCase()} over the water`
-      : `<span class="bad">${cr.reason}</span>`);
-    return cr;
-  },
-  showLine(app, t, a, b) {
-    const s = app.state;
-    if (t.mode !== 'replace') {
-      const cr = planRoadCrossing(s, a, b, t.type);
-      if (cr) return this.showCrossing(app, t, a, b, cr);
-    }
-    const plan = planRoadLine(s, a, b, t.type, { replace: t.mode === 'replace' });
-    const bad = new Set(plan.bad.map(([x, y]) => idx(x, y)));
-    const cells = plan.line.map(([x, y]) => {
-      const i = idx(x, y);
-      const color = bad.has(i) ? '#ff4a3a' : s.road[i] && t.mode !== 'replace' ? '#ffffff' : '#4fc3ff';
-      return [x, y, color];
-    });
-    app.preview.setCells(cells);
-    const ang = Math.round((Math.atan2(b[1] - a[1], b[0] - a[0]) * 180) / Math.PI + 360) % 180;
-    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
-    const afford = s.money >= plan.cost || s.options.unlimitedMoney;
-    const blocked = plan.bad.length - plan.water;
-    // bridges it crosses: it carries on under the high enough ones that run square to it
-    let under = 0, low = 0;
-    if (!plan.diagonal && t.mode !== 'replace') {
-      const alongX = a[1] === b[1];
-      for (let k = 1; k < plan.line.length - 1; k++) {
-        const i = idx(...plan.line[k]);
-        if (!s.bridgeH[i] || s.underRoad[i] || s.bridgeDir[i] === (alongX ? 1 : 2)) continue; // (not along the deck)
-        if (canPassUnder(s, i, alongX)) under++; else low++;
-      }
-    }
-    app.tools.showTip(`${Math.round(len * 8)} m · ${ang}°${plan.diagonal ? '' : ' (straight)'} · <span class="${afford ? '' : 'bad'}">${money(plan.cost)}</span>`
-      + `${under ? `<br>Passes under ${under === 1 ? 'a bridge' : `${under} bridges`} (no junction there)` : ''}`
-      + `${low ? `<br><span class="warn">${low === 1 ? 'A bridge' : `${low} bridges`} too low (or not square to it) to pass under: the road stops either side</span>` : ''}`
-      + `${plan.water ? `<br><span class="bad">Can't re-surface water: use the Bridge mode</span>` : ''}`
-      + `${blocked ? `<br><span class="bad">${blocked} cell${blocked === 1 ? '' : 's'} blocked (steep slope, railway, bridge or building)</span>` : ''}`
-      + `${plan.diagonal && plan.bad.length ? '<br><span class="bad">A road at an angle has to be clear all the way</span>' : ''}`);
-    return plan;
-  },
-  hover(app, t, p, e) {
-    if (t.mode === 'grid') { this.gridHover(app, t, p, e); return; }
-    if (t.mode === 'bridge') { bridgeHover(app, t.bridge || (t.bridge = { start: null }), p, 'road', t.type, bridgeName(t)); return; }
-    if (this.pointMode(t)) {
-      if (t.start) { this.showLine(app, t, t.start, this.endFor(app, t, p, e)); return; }
-      const ok = isOwned(app.state, p.cx, p.cy);
-      app.preview.setCells([[p.cx, p.cy, ok ? ROADS[t.type].color : '#ff4a3a']]);
-      app.tools.showTip(`${ROADS[t.type].name} · ${money(ROADS[t.type].cost)} / cell · ${ROADS[t.type].speed} km/h<br><span class="muted">${t.mode === 'replace' ? 'Click the start of the stretch to re-surface' : 'Click where the road starts'}</span>`);
-      return;
-    }
-    const ok = isOwned(app.state, p.cx, p.cy);
-    app.preview.setCells([[p.cx, p.cy, ok ? ROADS[t.type].color : '#ff4a3a']]);
-    app.tools.showTip(`${ROADS[t.type].name}<br><span class="muted">${money(ROADS[t.type].cost)} / cell · ${ROADS[t.type].speed} km/h</span>`);
-  },
-  drag(app, t, a, b, e) {
-    if (t.mode === 'grid') { this.gridHover(app, t, b, e); return; }
-    if (t.mode === 'bridge') { this.hover(app, t, b, e); return; }
-    if (this.pointMode(t)) {
-      const from = this.fromFor(t, a, b, e);
-      if (!t.start && a.cx === b.cx && a.cy === b.cy) { this.hover(app, t, b, e); return; }
-      this.showLine(app, t, from, this.endFor(app, t, b, e, from));
-      return;
-    }
-    const cells = this.cells(app, t, a, b);
-    const plan = planRoad(app.state, cells, t.type);
-    app.preview.setCells([...plan.ok.map(([x, y]) => [x, y, '#4fc3ff']), ...plan.bad.map(([x, y]) => [x, y, '#ff4a3a'])]);
-    const afford = app.state.money >= plan.cost || app.state.options.unlimitedMoney;
-    app.tools.showTip(`${plan.ok.length} cells · <span class="${afford ? '' : 'bad'}">${money(plan.cost)}</span>${plan.water ? `<br><span class="bad">Can't build on water: draw it with Straight (it builds the bridge) or use the Bridge mode</span>` : ''}${plan.bad.length - plan.water ? `<br><span class="bad">${plan.bad.length - plan.water} blocked (steep slope, railway or building)</span>` : ''}`);
-  },
-  cells(app, t, a, b) {
-    return dragCells(a, b).filter(([x, y]) => !app.state.road[idx(x, y)]);
-  },
-  // Where this piece starts: the end of the last piece (you keep drawing from it), but on a
-  // touch screen a drag that starts somewhere else is a new road from under the finger
-  fromFor(t, a, b, e) {
-    if (!t.start) return [a.cx, a.cy];
-    const dragged = a.cx !== b.cx || a.cy !== b.cy;
-    if (e?.pointerType === 'touch' && dragged && Math.max(Math.abs(a.cx - t.start[0]), Math.abs(a.cy - t.start[1])) > 2) return [a.cx, a.cy];
-    return t.start;
-  },
-  up(app, t, a, b, e) {
-    if (t.mode === 'grid') { this.gridClick(app, t, b, e); return; }
-    if (t.mode === 'bridge') { bridgeClick(app, t.bridge || (t.bridge = { start: null }), b, 'road', t.type, bridgeName(t)); return; }
-    if (this.pointMode(t)) {
-      // the first click (without dragging) just sets where the road starts
-      if (!t.start && a.cx === b.cx && a.cy === b.cy) {
-        t.start = [b.cx, b.cy];
-        app.tools.renderOptions();
-        this.hover(app, t, b, e);
-        return;
-      }
-      const from = this.fromFor(t, a, b, e);
-      const to = this.endFor(app, t, b, e, from);
-      if (from[0] === to[0] && from[1] === to[1]) return;
-      // across water: road on the land, a bridge of this road type over the water
-      const cr = t.mode !== 'replace' ? planRoadCrossing(app.state, from, to, t.type) : null;
-      if (cr) {
-        if (!cr.ok) { app.toast(cr.reason, 'bad', "Can't build here"); return; }
-        const done = placeRoadCrossing(app.state, cr, t.type);
-        if (done.error === 'money') { app.toast('Not enough money', 'bad'); return; }
-        app.toast(`${cr.span}-cell span · ${money(cr.cost)} with the road`, 'good', `🌉 ${bridgeName(t)} built`);
-        t.start = to;
-        app.tools.renderOptions();
-        this.hover(app, t, b, e);
-        return;
-      }
-      const res = placeRoadLine(app.state, from, to, t.type, { replace: t.mode === 'replace' });
-      if (res.error === 'money') { app.toast('Not enough money', 'bad'); return; }
-      if (res.error === 'blocked') { app.toast('Something is in the way of this road (water, a steep slope, a railway, a bridge or a building)', 'bad', "Can't build here"); return; }
-      // keep drawing from the end of this piece
-      t.start = to;
-      app.tools.renderOptions();
-      this.hover(app, t, b, e);
-      return;
-    }
-    const cells = this.cells(app, t, a, b);
-    const res = placeRoad(app.state, cells, t.type, dragDir(a, b), { path: t.mode === 'bend' ? dragCells(a, b) : null });
-    if (!res && cells.length) app.toast('Not enough money', 'bad');
-    app.preview.clearCells();
-  },
-});
+// (the road tool is in ui/toolsRoad.js)
 
 // ------------------------------------------- generic network layer tool (rail, power...)
 const LAYER_COLORS = { rail: '#9b8b77', subway: '#b06be0', power: '#ffd34f', pipe: '#3aa0ff', path: '#e3d6b4' };
@@ -586,21 +330,18 @@ registerTool('zone', {
     if (!t.mode) t.mode = app.zoneMode && (t.zone || app.zoneMode !== 'lots') ? app.zoneMode : t.zone ? 'marquee' : 'paint';
     app.overlays?.setZoneMode(true);
   },
-  exit(app) { app.overlays?.setZoneMode(false); },
+  exit(app) { app.overlays?.setZoneMode(false); app.zones?.clearPreview(); },
+  // The zone cells (of the strips along the roads) a drag from a to b covers
   cells(app, t, a, b) {
+    const Z = zoneLayout(app.state);
     const mode = t.mode || 'marquee';
-    if (mode === 'marquee') return rectCells(a, b);
-    if (mode === 'paint') {
-      const out = [];
-      forRadius(b.cx + 0.5, b.cy + 0.5, (t.size ?? 1) + 0.5, (x, y) => out.push([x, y]));
-      return out;
-    }
-    return floodZone(app, b.cx, b.cy, t.zone);
+    if (mode === 'marquee') return a === b ? [cellAt(Z, b.x, b.z)].filter(Boolean) : cellsInRect(Z, a.x, a.z, b.x, b.z);
+    if (mode === 'paint') return cellsNear(Z, b.x, b.z, (t.size ?? 1) + 0.6);
+    return floodZone(app, b);
   },
   hover(app, t, p) {
     if (t.mode === 'lots') { this.showLots(app, t, p, p); return; }
-    const cells = (t.mode || 'marquee') === 'marquee' ? [[p.cx, p.cy]] : this.cells(app, t, p, p);
-    this.show(app, t, cells);
+    this.show(app, t, this.cells(app, t, p, p));
     app.tools.showTip(this.roadHint(app, t, p));
   },
   // High-density zones only grow beside a collector or bigger: say so over local streets
@@ -612,26 +353,20 @@ registerTool('zone', {
     return best >= 0 && best < ROAD_RANK[need] ? '<span class="warn">Needs a Medium Road, One-Way Road or bigger in front: high density won\'t grow on local streets</span>' : null;
   },
   show(app, t, cells) {
-    const zonable = app.ctx.zonable;
     const color = t.zone ? ZONES[t.zone].color : '#ff6b5a';
-    app.preview.setCells(cells.filter(([x, y]) => (t.zone ? canZoneCell(app.state, zonable, x, y, t.zone) : app.state.zone[idx(x, y)])).map(([x, y]) => [x, y, color]));
+    app.zones.preview(cells.filter((c) => (t.zone ? canZoneStrip(app.state, c, t.zone) : zoneOf(app.state, c))), color);
   },
   showLots(app, t, a, b) {
     const lots = lotPlan(app, t, a, b);
     const color = ZONES[t.zone].color;
-    const cells = [];
+    const items = [];
     for (const lot of lots) {
-      const [x0, y0, x1, y1] = lot.rect;
-      for (let y = y0; y <= y1; y++) {
-        for (let x = x0; x <= x1; x++) {
-          if (!inBounds(x, y)) continue;
-          const edge = x === x0 || x === x1 || y === y0 || y === y1;
-          const yard = lot.yard.has(idx(x, y));
-          cells.push([x, y, !lot.ok ? '#ff4a3a' : yard ? '#e8f0dc' : edge ? shade(color, 0.72) : color]);
-        }
+      for (const c of lot.cells) {
+        const edge = c.col === lot.col || c.col === lot.col + lot.w - 1 || c.row === lot.d - 1;
+        items.push([c, !lot.ok ? '#ff4a3a' : c.row < lot.setback ? '#e8f0dc' : edge ? shade(color, 0.72) : color]);
       }
     }
-    app.preview.setCells(cells);
+    app.zones.preview(items);
     const ok = lots.filter((l) => l.ok).length;
     const L = app.lots;
     app.tools.showTip(lots.length
@@ -642,17 +377,17 @@ registerTool('zone', {
     if (t.mode === 'lots') { this.showLots(app, t, a, b); return; }
     const cells = this.cells(app, t, a, b);
     this.show(app, t, cells);
-    if ((t.mode || 'marquee') === 'paint') setZone(app.state, app.ctx.zonable, cells, t.zone || 0);
+    if ((t.mode || 'marquee') === 'paint') zoneCells(app.state, cells, t.zone || 0);
   },
   up(app, t, a, b) {
     if (t.mode === 'lots') {
       let n = 0;
-      for (const lot of lotPlan(app, t, a, b)) if (lot.ok) { placePlot(app.state, app.ctx.zonable, lot.rect, lot.rot, Math.min(app.lots.setback, app.lots.d - 1), t.zone); n++; }
+      for (const lot of lotPlan(app, t, a, b)) if (lot.ok) { placePlot(app.state, lot, lot.setback, t.zone); n++; }
       if (!n) app.toast('No room for lots there: they need open land of yours beside a road', 'warn');
       this.showLots(app, t, b, b);
       return;
     }
-    if ((t.mode || 'marquee') !== 'paint') setZone(app.state, app.ctx.zonable, this.cells(app, t, a, b), t.zone || 0);
+    if ((t.mode || 'marquee') !== 'paint') zoneCells(app.state, this.cells(app, t, a, b), t.zone || 0);
     this.hover(app, t, b);
   },
 });
@@ -675,71 +410,63 @@ function lotDiagram(L) {
   </svg><span>${L.w * 8} × ${L.d * 8} m lot${L.setback ? `, building ${L.setback * 8} m back from the street` : ''}</span>`;
 }
 
-// Lots along a road from a drag a → b (straight along the grid). Dragging beside a road lays
-// lots out on that side; dragging along the road itself does both sides.
+// Lots along a road from a drag a → b. Dragging beside a road lays lots out along the zone
+// strip on that side; dragging along the road itself does both sides.
 function lotPlan(app, t, a, b) {
-  const s = app.state, zonable = app.ctx.zonable;
-  if (!zonable || !t.zone) return [];
+  const s = app.state;
+  if (!t.zone) return [];
+  const Z = zoneLayout(s);
   const { w: W, d: D } = app.lots;
   const S = Math.min(app.lots.setback, D - 1);
-  const horizontal = Math.abs(b.cx - a.cx) >= Math.abs(b.cy - a.cy);
-  const len = (horizontal ? Math.abs(b.cx - a.cx) : Math.abs(b.cy - a.cy)) + 1;
-  const sx = horizontal ? Math.sign(b.cx - a.cx) || 1 : 0, sy = horizontal ? 0 : Math.sign(b.cy - a.cy) || 1;
-  const count = Math.max(1, Math.floor(len / W));
-  const perp = horizontal ? [1, 3] : [0, 2];
+  // the column of a strip nearest a point
+  const colNear = (strip, x, z) => {
+    let best = 0, bd = Infinity;
+    for (let c = 0; c < strip.cols; c++) { const d = (strip.x[c] - x) ** 2 + (strip.z[c] - z) ** 2; if (d < bd) { bd = d; best = c; } }
+    return best;
+  };
   const sides = [];
-  if (s.road[idx(a.cx, a.cy)]) for (const d of perp) sides.push({ away: d, base: 1 });
+  const start = cellAt(Z, a.x, a.z);
+  if (start) sides.push({ seg: start.seg, side: start.side, at: start.col });
   else {
-    for (const d of perp) {
-      const rx = a.cx + DIRS[d][0], ry = a.cy + DIRS[d][1];
-      if (inBounds(rx, ry) && s.road[idx(rx, ry)]) { sides.push({ away: (d + 2) % 4, base: 0 }); break; }
-    }
+    const q = nearestSeg(s, a.x, a.z, 0.6, (sg) => ROADS[sg.type].zonable && !sg.br && !sg.tn);
+    if (q) for (const side of [0, 1]) { const st = Z.strips.get(`${q.id}:${side}`); if (st?.cols) sides.push({ seg: q.id, side, at: colNear(st, a.x, a.z) }); }
   }
   const lots = [];
-  for (const { away, base } of sides) {
-    const [ax, ay] = DIRS[away];
+  for (const { seg, side, at } of sides) {
+    const strip = Z.strips.get(`${seg}:${side}`);
+    const end = colNear(strip, b.x, b.z);
+    const dir = Math.sign(end - at) || 1;
+    const count = Math.max(1, Math.floor((Math.abs(end - at) + 1) / W));
     for (let k = 0; k < count; k++) {
-      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-      const yard = new Set();
-      for (let j = 0; j < W; j++) {
-        for (let m = 0; m < D; m++) {
-          const x = a.cx + sx * (k * W + j) + ax * (base + m), y = a.cy + sy * (k * W + j) + ay * (base + m);
-          x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
-          if (m < S && inBounds(x, y)) yard.add(idx(x, y));
-        }
-      }
-      const rect = [x0, y0, x1, y1];
-      const reason = plotBlocker(s, zonable, rect, t.zone);
-      lots.push({ rect, rot: (away + 2) % 4, yard, ok: !reason, reason });
+      const col = dir > 0 ? at + k * W : at - k * W - (W - 1);
+      const lot = { seg, side, col, w: W, d: D, setback: S };
+      const cells = [];
+      for (let j = 0; j < W; j++) for (let r = 0; r < D; r++) { const c = cellOf(Z, seg, side, col + j, r); if (c) cells.push(c); }
+      const reason = plotBlocker(s, lot, t.zone);
+      lots.push({ ...lot, cells, ok: !reason, reason });
     }
   }
   return lots;
 }
 
-// Flood fill for zoning: from the clicked cell through the connected patch of the same zone
-// (or of unzoned land), stopping at roads and at other zones. So re-zoning one patch never
-// spills into the zone next to it.
-function floodZone(app, sx, sy) {
-  const { state, ctx } = app;
-  const z = ctx.zonable;
-  if (!z || !inBounds(sx, sy)) return [];
-  const start = idx(sx, sy);
-  if (z[start] === 0 || z[start] === 255) return [];
-  const same = state.zone[start];
-  const seen = new Set([start]);
+// Flood fill for zoning: from the clicked zone cell through the joined-up patch of the same
+// zone (or of unzoned cells). So re-zoning one patch never spills into the zone next to it.
+function floodZone(app, p) {
+  const { state } = app;
+  const Z = zoneLayout(state);
+  const start = cellAt(Z, p.x, p.z);
+  if (!start || !isOwned(state, start.g % N, (start.g / N) | 0)) return [];
+  const same = zoneOf(state, start);
+  const seen = new Set([start.k]);
   const out = [];
   const q = [start];
   for (let h = 0; h < q.length && out.length < 900; h++) {
-    const i = q[h];
-    const x = i % N, y = (i / N) | 0;
-    out.push([x, y]);
-    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      const nx = x + dx, ny = y + dy;
-      if (!inBounds(nx, ny)) continue;
-      const j = idx(nx, ny);
-      if (seen.has(j) || z[j] === 0 || z[j] === 255 || !isOwned(state, nx, ny) || state.zone[j] !== same) continue;
-      seen.add(j);
-      q.push(j);
+    const c = q[h];
+    out.push(c);
+    for (const o of cellsNear(Z, c.x, c.z, 1.15)) {
+      if (seen.has(o.k) || zoneOf(state, o) !== same || !isOwned(state, o.g % N, (o.g / N) | 0)) continue;
+      seen.add(o.k);
+      q.push(o);
     }
   }
   return out;
@@ -779,8 +506,7 @@ registerTool('bulldoze', {
     if (!e) return null;
     const what = e.building ? (e.building.name || e.building.def.name) : ({ road: ROADS[s.road[i]]?.name || 'road', rail: 'railway', power: 'power line', pipe: 'water pipe', path: 'footpath', subway: 'subway' })[e.what] || e.what;
     const b = e.building;
-    const cells = b ? [] : [[x, y]];
-    if (b) for (let yy = b.y0; yy <= b.y1; yy++) for (let xx = b.x0; xx <= b.x1; xx++) cells.push([xx, yy]);
+    const cells = b ? buildingCells(b) : [[x, y]];
     return { cells, text: `Remove ${b ? '' : 'this piece of '}${what}`, refund: e.refund };
   },
   // Remove the thing at (x, y) (once per cell in a stroke). Returns the refund.

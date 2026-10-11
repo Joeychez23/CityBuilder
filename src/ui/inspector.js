@@ -17,9 +17,9 @@ import { idx } from '../core/grid.js';
 import { perWeek } from '../sim/economy.js';
 import { rushCost, rushConstruction, canRush } from '../sim/construction.js';
 import { wonderHtml, wireWonder } from './inspectorWonders.js';
-import { tunnelAt } from '../sim/tunnels.js';
 import { CLOSED_NAMES } from '../sim/closures.js';
 import { zoneStyleName } from '../world/zoneStyles.js';
+import { segAtCell, rn } from '../sim/roadnet.js';
 
 const status = (v) => (v >= 0.95 ? '<span class="good">OK</span>' : v >= 0.5 ? `<span class="warn">${pct(v)}</span>` : `<span class="bad">${pct(v)}</span>`);
 
@@ -70,7 +70,7 @@ registerPanel({
       const r = ROADS[t];
       const vol = s.roadVol[i];
       const cap = cellCapacity(s, i), jk = junctionKind(s, i);
-      const dw = drivewaysAt(i);
+      const dw = drivewaysAt(i, s);
       body.innerHTML = `<h3 style="margin:0 0 2px">${r.name}</h3><div class="muted" style="margin-bottom:8px">${CLASS_NAMES[r.cls]} · ${r.role}</div>
         ${row('Lanes', lanesText(r))}${row('Speed limit', `${r.speed} km/h`)}${row('Condition', pct(s.roadCond[i]), s.roadCond[i] < 0.5 ? 'bad' : '')}
         ${jk ? row('Junction', ['', 'Traffic lights', 'Roundabout', 'Give way (one car at a time)', 'Merge', 'Side street gives way (main road keeps going)'][jk]) : ''}
@@ -79,10 +79,9 @@ registerPanel({
         ${vol > cap ? '<div class="bad" style="font-size:11px">Backed up: more traffic than this road can carry. Add lanes (a bigger road), a roundabout, or another route.</div>' : ''}
         ${row('Snow', pct(s.roadSnow[i]))}${row('Noise', pct(s.noise[i]))}
         ${row('Upgrades', UPGRADES.filter((u) => s.roadUpg[i] & u.bit).map((u) => u.name).join(', ') || '–')}
-        ${(() => { const t = tunnelAt(s, i); if (!t) return ''; const o = t.a === i ? t.b : t.a; return row("Tunnel", `${Math.round(t.len)} cells to (${o % 272}, ${(o / 272) | 0})`); })()}
-        ${s.underRoad?.[i] ? row('Passes over', `${ROADS[s.underRoad[i]].name} (no junction: it runs on underneath)`) : ''}
+        ${(() => { const sg = segAtCell(s, i); if (!sg) return ''; const len = rn(s).geo.get(sg.id)?.len || 0; return row('This stretch', `${Math.round(len * 8)} m${sg.br ? ' · a bridge' : ''}${sg.locked ? ' · outside connection' : ''}`); })()}
         ${s.closed?.[i] ? row('Closed', CLOSED_NAMES[s.closed[i]], 'bad') : ''}
-        ${row('Upkeep', `${money(perWeek(r.upkeep))}/wk per cell`)}`;
+        ${row('Upkeep', `${money(perWeek(r.upkeep))}/wk per cell (8 m)`)}`;
       return;
     }
     const b = s.buildings.get(sel.id);

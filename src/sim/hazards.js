@@ -79,7 +79,7 @@ export function earthquake(state, ctx, x, y, mag) {
   journal(state, 'quake', `Magnitude ${m} earthquake: ${broken.length} road and pipe cells broken, ${destroyed} buildings down`);
   bus.emit('quake', { x, y, mag });
   bus.emit('notify', { kind: mag > 5.5 ? 'bad' : 'warn', icon: '🫨', title: `Earthquake (magnitude ${m})`, cell: idx(x, y),
-    msg: `${broken.length ? `${broken.length} cells of road and pipe broke: they're closed until road maintenance crews mend them (Transport → Road Maintenance Depot). ` : ''}${destroyed ? `${destroyed} building${destroyed === 1 ? '' : 's'} collapsed${hurt ? ` and ${hurt} people died` : ''}. ` : ''}${damaged ? `${damaged} damaged. ` : ''}${fires ? `${fires} fire${fires === 1 ? '' : 's'} broke out.` : ''}`.trim() || 'It was felt across the city, but nothing broke.' });
+    msg: `${broken.length ? `Roads and pipes broke in ${broken.length} places: they're closed until road maintenance crews mend them (Transport → Road Maintenance Depot). ` : ''}${destroyed ? `${destroyed} building${destroyed === 1 ? '' : 's'} collapsed${hurt ? ` and ${hurt} people died` : ''}. ` : ''}${damaged ? `${damaged} damaged. ` : ''}${fires ? `${fires} fire${fires === 1 ? '' : 's'} broke out.` : ''}`.trim() || 'It was felt across the city, but nothing broke.' });
   return { broken: broken.length, destroyed, damaged, fires };
 }
 

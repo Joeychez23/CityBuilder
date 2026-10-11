@@ -7,20 +7,22 @@
 // the change zoned goes, people who lost their homes move back in.
 import { HN, N } from '../core/grid.js';
 import { bus } from '../core/events.js';
-import { removeBuilding, changeHooks } from './build.js';
+import { removeBuilding, changeHooks, bldCells } from './build.js';
 import { difficultyOf } from '../data/difficulty.js';
 import { centerIdx } from './services.js';
+import { commitRoads } from './roadnet.js';
 
 export const UNDO_SECONDS = 60;
 const MAX_STEPS = 20;
 // Map layers a change can touch
-const LAYERS = ['height', 'water', 'road', 'roadDir', 'roadUpg', 'roadCond', 'roadNode', 'bridgeH', 'bridgeDir', 'underRoad', 'underDir',
+// (the per-cell road layers aren't among them: they follow the road network, a list)
+const LAYERS = ['height', 'water',
   'rail', 'railH', 'railDir', 'path', 'pathH', 'pathDir', 'subway', 'power', 'pipe',
   'zone', 'plot', 'bld', 'district', 'tree', 'forestMax', 'surface', 'canal'];
 // Lists a change can touch (compared as JSON)
-const LISTS = ['roadSegs', 'plots', 'powerSpans', 'stops', 'districts', 'rebuilds', 'ruins', 'connections', 'tunnels', 'landmarkBridges'];
+const LISTS = ['roads', 'plots', 'powerSpans', 'stops', 'districts', 'rebuilds', 'ruins', 'connections', 'tunnels', 'landmarkBridges'];
 // Which network each layer belongs to (to redraw and re-route it)
-const NETWORK = { road: 'road', roadDir: 'road', roadUpg: 'road', roadCond: 'road', roadNode: 'road', bridgeH: 'road', bridgeDir: 'road', underRoad: 'road', underDir: 'road',
+const NETWORK = {
   rail: 'rail', railH: 'rail', railDir: 'rail', path: 'path', pathH: 'path', pathDir: 'path', subway: 'subway', power: 'power', pipe: 'pipe' };
 
 // Cells whose value differs between two copies of a layer: { idx, old } (null if none)
@@ -169,18 +171,19 @@ export function createUndo(state) {
     //    it changed (a house grown on new zoning, a shop on the lot of one it knocked down)
     for (const id of st.added) if (state.buildings.has(id)) removeBuilding(state, id);
     const clear = (i) => { const id = state.bld[i]; if (id && id >= st.nextId && !back.has(id) && state.buildings.has(id)) removeBuilding(state, id); };
-    for (const k of ['bld', 'zone', 'plot', 'road', 'rail', 'path', 'power']) if (L[k]) for (const i of L[k].idx) clear(i);
+    for (const k of ['bld', 'zone', 'plot', 'rail', 'path', 'power']) if (L[k]) for (const i of L[k].idx) clear(i);
     // 2) the map layers as they were
     for (const [k, d] of Object.entries(L)) {
       const arr = state[k];
       if (!arr) continue;
       for (let n = 0; n < d.idx.length; n++) arr[d.idx[n]] = d.old[n];
     }
-    // 3) the lists as they were
+    // 3) the lists as they were (the road network's cells worked out again from it)
     for (const [k, json] of Object.entries(st.lists)) {
       const v = JSON.parse(json);
       if (v !== null) state[k] = v;
     }
+    if (st.lists.roads) commitRoads(state, { silent: true });
     // 4) buildings it altered (a landfill it made bigger...) go back to how they were
     for (const { b, was } of st.altered) {
       if (!state.buildings.has(b.id)) continue;
@@ -190,13 +193,10 @@ export function createUndo(state) {
     // 5) the buildings it removed come back, with the people who lived there
     for (const { b, households, citizens, workers } of back.values()) {
       if (state.buildings.has(b.id)) continue;
-      for (let y = b.y0; y <= b.y1; y++) {
-        for (let x = b.x0; x <= b.x1; x++) {
-          const i = y * N + x;
-          const other = state.bld[i];
-          if (other && other !== b.id && other >= st.nextId && state.buildings.has(other)) removeBuilding(state, other);
-          state.bld[i] = b.id;
-        }
+      for (const i of bldCells(b)) {
+        const other = state.bld[i];
+        if (other && other !== b.id && other >= st.nextId && state.buildings.has(other)) removeBuilding(state, other);
+        state.bld[i] = b.id;
       }
       state.buildings.set(b.id, b);
       // its workers come back, unless they've found another job since
@@ -237,7 +237,7 @@ export function createUndo(state) {
     // 7) let everything that depends on these know
     const nets = new Set();
     for (const k of Object.keys(L)) if (NETWORK[k]) nets.add(NETWORK[k]);
-    if (st.lists.roadSegs) nets.add('road');
+    if (st.lists.roads) nets.add('road');
     if (st.lists.powerSpans) nets.add('power');
     if (st.lists.stops) nets.add('stops');
     if (L.height || L.water) {

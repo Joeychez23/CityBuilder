@@ -86,6 +86,7 @@ export function showMenu({ onNew, onContinue, onLoadFile, onLoadCloud, hasSave }
         <button class="btn" id="m-file">Load from file…</button>
         <input type="file" id="m-fileinput" accept=".json,.city" hidden>
       </div>
+      <div id="m-legacy" class="menu-legacy" hidden></div>
 
       <div class="board-head"><span class="n">03</span><h2>Your account</h2><span class="connector"></span><span class="spec t-spec">Cloud saves</span></div>
       <div id="m-account" class="menu-account muted">Checking…</div>
@@ -143,6 +144,16 @@ export function showMenu({ onNew, onContinue, onLoadFile, onLoadCloud, hasSave }
     });
   };
   el.querySelector('#m-cont')?.addEventListener('click', () => { el.classList.add('hidden'); onContinue(); });
+  // cities from before the road network update: kept, and downloadable (sim/legacy.js)
+  import('../sim/legacy.js').then(async ({ listLegacy, downloadLegacy }) => {
+    const list = (await listLegacy()).sort((a, b) => b.keptAt - a.keptAt);
+    if (!list.length) return;
+    const box = el.querySelector('#m-legacy');
+    box.hidden = false;
+    box.innerHTML = `<p class="muted">Roads are now drawn freely, as points joined by curves, instead of on the grid. ${list.length === 1 ? 'This city was' : 'These cities were'} built with grid roads and can't be opened in this version, but ${list.length === 1 ? 'it has' : 'they have'} been kept safe:</p>`
+      + list.map((r, k) => `<div class="row"><span><b>${esc(r.name)}</b> <span class="muted">· kept ${new Date(r.keptAt).toLocaleDateString()}</span></span><button class="btn" data-k="${k}">Download</button></div>`).join('');
+    box.querySelectorAll('[data-k]').forEach((b) => (b.onclick = () => downloadLegacy(list[+b.dataset.k])));
+  }).catch(() => {});
   const acc = el.querySelector('#m-account');
   const drawAccount = async () => {
     const status = await accountStatus();

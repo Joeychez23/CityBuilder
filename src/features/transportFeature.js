@@ -136,7 +136,7 @@ registerPanel({
 export const transportFeature = {
   init(app) {
     const { state } = app;
-    app.vehicles = createVehiclesView(app.view, state);
+    app.vehicles = createVehiclesView(app.view, state, app.ctx);
     app.people = createPeopleView(app);
     app.vehicles.onStop = app.people.onStop;
     // parking is worked out daily; also right away when lots or workplaces change

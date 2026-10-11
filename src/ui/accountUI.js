@@ -62,6 +62,18 @@ export async function renderCityList(el, { onLoad, currentId, onChange } = {}) {
       e.target.textContent = 'Loading…';
       try {
         const { city } = await api(`/cities/${c.id}`);
+        // a city from before the road network update can't be opened: it stays in your account
+        const { isLegacySave } = await import('../sim/save.js');
+        if (await isLegacySave(city.data)) {
+          const { downloadLegacy } = await import('../sim/legacy.js');
+          const nb = document.createElement('button');
+          nb.className = 'btn';
+          nb.textContent = 'Old version: download';
+          nb.title = 'Built with grid roads, before the road network update: it can\'t be opened in this version. It stays in your account.';
+          nb.onclick = () => downloadLegacy({ text: city.data, name: c.name });
+          e.target.replaceWith(nb);
+          return;
+        }
         onLoad(city);
       } catch (err) { e.target.textContent = err.message; }
     });

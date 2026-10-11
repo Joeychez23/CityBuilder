@@ -9,20 +9,20 @@ const u8 = () => new Uint8Array(NN);
 
 // Typed-array layers that get saved. Derived layers (coverage, demand maps...) are rebuilt.
 export const SAVED_LAYERS = [
-  'height', 'water', 'road', 'roadDir', 'roadUpg', 'roadCond', 'zone', 'bld', 'district',
+  'height', 'water', 'zone', 'bld', 'district',
   'rail', 'subway', 'power', 'pipe', 'path', 'tree', 'surface',
   'fertile', 'ore', 'oil', 'groundwater', 'gwPollution', 'forestMax',
   'air', 'ground', 'noise', 'waterPoll', 'landValue', 'burnt',
-  'bridgeH', 'bridgeDir', 'railH', 'railDir', 'pathH', 'pathDir', 'canal', 'underRoad', 'underDir',
+  'railH', 'railDir', 'pathH', 'pathDir', 'canal',
 ];
+// Per-cell road layers worked out from the road network (sim/roadraster.js): never saved
+// (and the layers older versions kept, which are left out of saves too)
+export const ROAD_RASTER = ['road', 'roadSeg', 'roadUpg', 'roadCond', 'bridgeH', 'roadDir', 'bridgeDir', 'underRoad', 'underDir', 'roadNode', 'roadDay', 'roadLinks', 'roadJumps'];
 
 export function createState(map, options = {}) {
   return {
-    version: 8, // 3: power lines need Power Connectors to feed roads (older cities get them added)
-                // 4: roads at an angle connect only at their ends and junctions (see roadNode)
-                // 5: the ground under the whole width of roads at an angle is graded
-                // 6: the outside highway and railway cross water on arched bridges (bridgeConnection)
-                // 7: forest no longer grows back on railways and footpaths
+    version: 9, // 9: roads are a network of nodes and segments (sim/roadnet.js). Cities from
+                //    before it (grid roads) can't be opened: see LegacyCityError in sim/save.js
     cityName: options.cityName || 'New City',
     mapId: map.id,
     mapName: map.name,
@@ -51,8 +51,11 @@ export function createState(map, options = {}) {
     flow: [1, 0],           // dominant water current, used to carry water pollution
 
     // --- Networks
-    road: u8(),             // road type id (0 = none)
-    roadDir: u8(),          // one-way direction (0..3)
+    // Roads: nodes joined by segments (sim/roadnet.js). The per-cell road layers below are
+    // worked out from them (sim/roadraster.js) for everything that works cell by cell.
+    roads: { nodes: [], segs: [], nextId: 1 },
+    road: u8(),             // road type id on the cell (0 = none)
+    roadSeg: new Int32Array(NN), // the road segment on the cell
     roadUpg: u8(),          // upgrade bitmask (UPG in data/roads.js)
     roadCond: new Float32Array(NN).fill(1), // 1 = perfect, 0 = crumbling
     roadSnow: f32(),
@@ -64,17 +67,11 @@ export function createState(map, options = {}) {
     subway: u8(),
     power: u8(),            // power pylons (1 = pylon on this cell)
     powerSpans: [],         // overhead wires: [cellA, cellB] pairs between pylons
-    roadSegs: [],           // roads at an angle: { a: [x, y], b: [x, y] } (see sim/roadsegs.js)
-    roadDay: new Uint16Array(NN), // the day each road cell was laid (for the time-lapse)
-    roadNode: u8(),         // 1 = a junction you built on a road at an angle (see linked() in sim/bridges.js)
     pipe: u8(),             // standalone water pipes
     canal: u8(),            // 1 = a canal you dug (sim/projects.js)
     path: u8(),             // pedestrian paths
-    // Bridges: deck height (0 = on the ground) and axis (1 = east-west, 2 = north-south)
-    bridgeH: f32(), bridgeDir: u8(),
-    // A road passing under a road bridge: its type and one-way direction (the cell's own road
-    // is the bridge above it; see underpasses in sim/bridges.js)
-    underRoad: u8(), underDir: u8(),
+    // Raised roads: deck height over the cell (0 = on the ground)
+    bridgeH: f32(),
     railH: f32(), railDir: u8(),
     pathH: f32(), pathDir: u8(),
 

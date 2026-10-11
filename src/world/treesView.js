@@ -5,7 +5,7 @@ import { N, idx } from '../core/grid.js';
 import { UPG } from '../data/roads.js';
 import { cellHeight } from '../sim/mapgen.js';
 import { makeRng } from '../core/rng.js';
-import { roadsideSpots } from '../sim/roadsegs.js';
+import { roadsideSpots } from '../sim/roadnet.js';
 
 const m = new THREE.Matrix4();
 const q = new THREE.Quaternion();
@@ -77,7 +77,7 @@ export function createTreesView(view, state) {
       for (let x = 0; x < N; x++) {
         const i = idx(x, y);
         const n = state.tree[i];
-        const roadTrees = state.road[i] && (state.roadUpg[i] & UPG.TREES) && !state.water[i]; // no trees on bridges
+        const roadTrees = state.road[i] && (state.roadUpg[i] & UPG.TREES) && !state.water[i] && !state.bridgeH[i]; // no trees on bridges
         if (!n && !roadTrees) continue;
         if (state.water[i] && !roadTrees) continue;
         const r = makeRng(i * 2654435761);
