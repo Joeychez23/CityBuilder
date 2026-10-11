@@ -8,6 +8,7 @@ import { N, idx, DIRS, inBounds } from '../core/grid.js';
 import { cellHeight } from '../sim/mapgen.js';
 import { hasConnector, isPowerBuilding } from '../sim/power.js';
 import { roadsideSpots, roadLevel } from '../sim/roadnet.js';
+import { layerBox } from '../sim/extent.js';
 
 export const PYLON_H = 2.6; // tall enough to carry wires over roads and low buildings
 export const POLE_H = 1.15; // a Power Connector's pole
@@ -17,8 +18,9 @@ export function createPowerView(view, state) {
   const towerGeo = new THREE.CylinderGeometry(0.05, 0.2, PYLON_H, 4, 1).translate(0, PYLON_H / 2, 0).rotateY(Math.PI / 4);
   const armGeo = new THREE.BoxGeometry(ARM * 2, 0.05, 0.06).translate(0, PYLON_H - 0.25, 0);
   const mat = new THREE.MeshStandardMaterial({ color: '#b4bcc4', metalness: 0.25, roughness: 0.55 });
-  const towers = new THREE.InstancedMesh(towerGeo, mat, 2048);
-  const arms = new THREE.InstancedMesh(armGeo, mat, 2048);
+  const MAX = 8192; // pylons drawn
+  const towers = new THREE.InstancedMesh(towerGeo, mat, MAX);
+  const arms = new THREE.InstancedMesh(armGeo, mat, MAX);
   for (const im of [towers, arms]) { im.count = 0; im.castShadow = true; im.frustumCulled = false; view.scene.add(im); }
 
   const wireMat = new THREE.LineBasicMaterial({ color: '#2a2d31' });
@@ -85,9 +87,14 @@ export function createPowerView(view, state) {
   }
 
   // Pylons standing right next to a connector or a plant they feed from: a short drop wire
+  // (the pylons' cells, row by row of the part of the map they're on)
+  function eachPylon(fn) {
+    const box = layerBox(state, 'power');
+    if (!box) return;
+    for (let y = box[1]; y <= box[3]; y++) for (let i = y * N + box[0], e = y * N + box[2]; i <= e; i++) if (state.power[i]) fn(i);
+  }
   function dropSegments(out) {
-    for (let i = 0; i < N * N; i++) {
-      if (!state.power[i]) continue;
+    eachPylon((i) => {
       const x = i % N, y = (i / N) | 0;
       for (const [dx, dy] of DIRS) {
         const nx = x + dx, ny = y + dy;
@@ -98,7 +105,7 @@ export function createPowerView(view, state) {
         if (state.powerSpans.some(([a, b]) => (a === i && b === j) || (a === j && b === i))) continue;
         spanSegments(i, j, out);
       }
-    }
+    });
   }
 
   const pv = { dirty: true };
@@ -111,8 +118,8 @@ export function createPowerView(view, state) {
       for (const i of [a, b]) if (!dir.has(i)) dir.set(i, ang);
     }
     let n = 0;
-    for (let i = 0; i < N * N; i++) {
-      if (!state.power[i]) continue;
+    eachPylon((i) => {
+      if (n >= MAX) return;
       const [x, y, z] = base(i);
       // the cross-arm runs across the line, so rotate by the span angle + 90°
       q.setFromAxisAngle(up, (dir.get(i) ?? 0) + Math.PI / 2);
@@ -121,7 +128,7 @@ export function createPowerView(view, state) {
       towers.setMatrixAt(n, m);
       arms.setMatrixAt(n, m);
       n++;
-    }
+    });
     towers.count = arms.count = n;
     towers.instanceMatrix.needsUpdate = arms.instanceMatrix.needsUpdate = true;
     const pts = [];

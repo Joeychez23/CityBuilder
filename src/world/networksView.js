@@ -10,6 +10,7 @@ import { ROADS, UPG } from '../data/roads.js';
 import { getDeck } from '../sim/deck.js';
 import { roadsideSpots, roadLevel } from '../sim/roadnet.js';
 import { POLE_H } from './powerView.js';
+import { union, roadBox, layerBox } from '../sim/extent.js';
 
 const m = new THREE.Matrix4();
 const col = new THREE.Color();
@@ -102,18 +103,23 @@ export function createNetworksView(view, state) {
   // Layers without bridges (subway, pipes) just follow the ground
   let groundL = null;
   function groundLayer(ground) {
-    if (groundL && groundL.center === ground) return groundL;
+    if (groundL && groundL.center === ground && groundL.box === groundBox) return groundL;
     const edge = new Float32Array(N * N * 4);
-    for (let i = 0; i < N * N; i++) {
-      const x = i % N, y = (i / N) | 0;
-      for (let d = 0; d < 4; d++) {
-        const nx = x + DIRS[d][0], ny = y + DIRS[d][1];
-        edge[i * 4 + d] = inBounds(nx, ny) ? (ground[i] + ground[idx(nx, ny)]) / 2 : ground[i];
+    // (only where there are subway tunnels or pipes)
+    const [x0, y0, x1, y1] = groundBox || [0, 0, -1, -1];
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const i = idx(x, y);
+        for (let d = 0; d < 4; d++) {
+          const nx = x + DIRS[d][0], ny = y + DIRS[d][1];
+          edge[i * 4 + d] = inBounds(nx, ny) ? (ground[i] + ground[idx(nx, ny)]) / 2 : ground[i];
+        }
       }
     }
-    groundL = { center: ground, edge };
+    groundL = { center: ground, edge, box: groundBox };
     return groundL;
   }
+  let groundBox = null;
 
   // Bridge structure: girders under the deck, piers to the ground, railings on both sides,
   // and an abutment where the deck lands on the road at either end. Road bridges are built
@@ -161,9 +167,14 @@ export function createNetworksView(view, state) {
     lamps.clear();
     const D = getDeck(state);
     const RL = D.rail, P = D.path;
+    const under = union(layerBox(state, 'subway'), layerBox(state, 'pipe'));
+    if (String(under) !== String(groundBox)) groundBox = under;
     const G = groundLayer(D.ground);
-    for (let y = 0; y < N; y++) {
-      for (let x = 0; x < N; x++) {
+    // (the part of the map with roads, railways, footpaths, subway tunnels or pipes)
+    const box = union(union(roadBox(state), layerBox(state, 'rail')), union(layerBox(state, 'path'), under));
+    const [bx0, by0, bx1, by1] = box || [0, 0, -1, -1];
+    for (let y = by0; y <= by1; y++) {
+      for (let x = bx0; x <= bx1; x++) {
         const i = idx(x, y);
         const type = state.road[i];
         if (type) {

@@ -5,13 +5,16 @@ import { N, idx, inBounds, DIRS } from '../core/grid.js';
 import { pruneTunnels, joinThroughLinks } from './tunnels.js';
 import { linked } from './bridges.js';
 import { graph } from './roadgraph.js';
+import { roadBox, layerBox } from './extent.js';
 
 // linkFn(i, j, d) -> may i connect to neighbour j? (bridges only connect along their axis)
-export function labelComponents(layer, extraLink, linkFn) {
+// box: [x0, y0, x1, y1], a box all the layer's cells are in (to skip the rest of the map)
+export function labelComponents(layer, extraLink, linkFn, box = null) {
   const comp = new Int32Array(N * N).fill(-1);
   let count = 0;
   const stack = [];
-  for (let i = 0; i < N * N; i++) {
+  const [bx0, by0, bx1, by1] = box || [0, 0, N - 1, N - 1];
+  for (let y = by0; y <= by1; y++) for (let i = y * N + bx0, e = y * N + bx1; i <= e; i++) {
     if (!layer[i] || comp[i] !== -1) continue;
     comp[i] = count;
     stack.push(i);
@@ -42,10 +45,18 @@ export function computeRoadNetwork(state, ctx) {
   const comp = new Int32Array(N * N).fill(-1);
   const count = Gr.compCount;
   const segComp = (sid) => { const sg = X.seg.get(sid); return sg ? Gr.comp.get(sg.a) ?? -1 : -1; };
-  for (let i = 0; i < N * N; i++) if (state.road[i]) comp[i] = segComp(state.roadSeg[i]);
-  const outside = new Uint8Array(count);
   const size = new Int32Array(count);
-  for (let i = 0; i < N * N; i++) if (comp[i] >= 0) size[comp[i]]++;
+  const rb = roadBox(state);
+  if (rb) {
+    for (let y = rb[1]; y <= rb[3]; y++) {
+      for (let i = y * N + rb[0], e = y * N + rb[2]; i <= e; i++) {
+        if (!state.road[i]) continue;
+        comp[i] = segComp(state.roadSeg[i]);
+        if (comp[i] >= 0) size[comp[i]]++;
+      }
+    }
+  }
+  const outside = new Uint8Array(count);
   for (const n of X.node.values()) if (n.out) outside[Gr.comp.get(n.id)] = 1;
   for (const c of state.connections) {
     if (c.type !== 'road') continue;
@@ -56,7 +67,7 @@ export function computeRoadNetwork(state, ctx) {
   ctx.net.roadOutside = outside;
   ctx.net.roadSize = size;
 
-  const rail = labelComponents(state.rail, null, (i, j, d) => linked(state, 'rail', i, j, d));
+  const rail = labelComponents(state.rail, null, (i, j, d) => linked(state, 'rail', i, j, d), layerBox(state, 'rail'));
   joinThroughLinks(state, 'rail', rail.comp, rail.count);
   const railOutside = new Uint8Array(rail.count);
   for (const c of state.connections) {
@@ -66,7 +77,7 @@ export function computeRoadNetwork(state, ctx) {
   }
   ctx.net.railComp = rail.comp;
   ctx.net.railOutside = railOutside;
-  ctx.net.subwayComp = labelComponents(state.subway).comp;
+  ctx.net.subwayComp = labelComponents(state.subway, null, null, layerBox(state, 'subway')).comp;
 }
 
 // The road component a building's front faces (or any adjacent road), -1 if none.

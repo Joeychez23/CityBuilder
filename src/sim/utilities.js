@@ -10,13 +10,15 @@ import { hourOf } from './simulation.js';
 import { hasPerk } from '../data/progression.js';
 import { earn, charge } from './economy.js';
 import { powerLinked } from './power.js';
+import { union, roadBox, buildingBox, layerBox } from './extent.js';
 
 const IMPORT_PRICE = { power: 260, water: 0.32, sewage: 0.28 };   // per MW·day / per m³
 const EXPORT_PRICE = { power: 90, water: 0.08 };
 const IMPORT_CAP = { power: 6, water: 6000, sewage: 6000 };
 
-// Overhead wires connect distant pylons: merge their components (union-find on labels)
-function joinBySpans(labels, spans) {
+// Overhead wires connect distant pylons: merge their components (union-find on labels).
+// (box: the labelled cells are all in it)
+function joinBySpans(labels, spans, [x0, y0, x1, y1]) {
   if (!spans?.length) return;
   const parent = Array.from({ length: labels.count }, (_, k) => k);
   const find = (k) => { while (parent[k] !== k) { parent[k] = parent[parent[k]]; k = parent[k]; } return k; };
@@ -24,7 +26,8 @@ function joinBySpans(labels, spans) {
     const ca = labels.comp[a], cb = labels.comp[b];
     if (ca >= 0 && cb >= 0) parent[find(ca)] = find(cb);
   }
-  for (let i = 0; i < labels.comp.length; i++) if (labels.comp[i] >= 0) labels.comp[i] = find(labels.comp[i]);
+  const comp = labels.comp;
+  for (let y = y0; y <= y1; y++) for (let i = y * N + x0, e = y * N + x1; i <= e; i++) if (comp[i] >= 0) comp[i] = find(comp[i]);
 }
 
 // Monthly use per building
@@ -135,19 +138,23 @@ export const temperatureFactor = (t) => 1 + Math.max(0, 18 - t) * 0.018 + Math.m
 function feeFactor(fee, def) { return clamp(1 - (fee / def - 1) * 0.12, 0.6, 1.15); }
 
 export function computeUtilities(state, ctx, opts = {}) {
-  // --- network components
+  // --- network components (of the part of the map with roads, buildings, power lines or
+  // pipes on it)
+  const box = union(union(roadBox(state), buildingBox(state)), union(layerBox(state, 'power'), layerBox(state, 'pipe'))) || [0, 0, 0, 0];
   const elecLayer = new Uint8Array(N * N);
   const waterLayer = new Uint8Array(N * N);
   // (roads broken by an earthquake carry no water; under flood water, no power either)
   const shut = state.closed;
-  for (let i = 0; i < N * N; i++) {
-    const net = state.road[i] || state.bld[i];
-    elecLayer[i] = (net || state.power[i]) && shut[i] !== 3 ? 1 : 0;
-    waterLayer[i] = (net || state.pipe[i]) && !(shut[i] >= 2) ? 1 : 0;
+  for (let y = box[1]; y <= box[3]; y++) {
+    for (let i = y * N + box[0], e = y * N + box[2]; i <= e; i++) {
+      const net = state.road[i] || state.bld[i];
+      elecLayer[i] = (net || state.power[i]) && shut[i] !== 3 ? 1 : 0;
+      waterLayer[i] = (net || state.pipe[i]) && !(shut[i] >= 2) ? 1 : 0;
+    }
   }
-  const elec = labelComponents(elecLayer, null, (i, j) => powerLinked(state, i, j));
-  joinBySpans(elec, state.powerSpans);
-  const wat = labelComponents(waterLayer);
+  const elec = labelComponents(elecLayer, null, (i, j) => powerLinked(state, i, j), box);
+  joinBySpans(elec, state.powerSpans, box);
+  const wat = labelComponents(waterLayer, null, null, box);
   const outsideCell = state.connections.find((c) => c.type === 'road');
   const watOutside = outsideCell ? wat.comp[idx(outsideCell.x, outsideCell.y)] : -1;
   // Networks fed by the outside power line can import (and export) electricity

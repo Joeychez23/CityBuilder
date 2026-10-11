@@ -122,15 +122,26 @@ function startGame(state, isNew) {
   // --- world events -> views
   for (const b of state.buildings.values()) app.buildings.add(b);
   const plant = (b) => b.def.power || b.def.battery;
-  bus.on('building:add', (b) => { app.buildings.add(b); app.overlays.dirty = true; if (plant(b)) app.power.dirty = true; });
-  bus.on('building:remove', (b) => { app.buildings.remove(b); app.overlays.dirty = true; if (plant(b)) app.power.dirty = true; });
+  // (the ground overlay shows the fields and quarries of specialised industry)
+  const fields = (b) => b.kind === 'zone' && b.def?.cat === 'spec';
+  bus.on('building:add', (b) => { app.buildings.add(b); if (fields(b)) app.overlays.dirty = true; if (plant(b)) app.power.dirty = true; });
+  bus.on('building:remove', (b) => { app.buildings.remove(b); if (fields(b)) app.overlays.dirty = true; if (plant(b)) app.power.dirty = true; });
   bus.on('building:changed', (b) => { app.buildings.refresh(b); if (plant(b)) app.power.dirty = true; });
   bus.on('network:changed', (e) => { app.networks.dirty = true; if (!e || e.layer === 'road') app.roads.dirty = true; app.trees.dirty = true; app.overlays.dirty = true; app.power.dirty = true; });
   bus.on('network:recomputed', () => { app.overlays.dirty = true; });
   bus.on('zones:changed', () => { app.overlays.dirty = true; });
   bus.on('trees:changed', () => { app.trees.dirty = true; });
-  let terrainDirty = false;
-  bus.on('terrain:changed', () => { terrainDirty = true; });
+  // (the part of the map whose terrain changed since the ground was last redrawn; null: all)
+  let terrainDirty = false, terrainBox = null;
+  bus.on('terrain:changed', (r) => {
+    const all = !r || r.x0 == null;
+    if (!terrainDirty) terrainBox = all ? null : { ...r };
+    else if (terrainBox) {
+      if (all) terrainBox = null;
+      else terrainBox = { x0: Math.min(terrainBox.x0, r.x0), y0: Math.min(terrainBox.y0, r.y0), x1: Math.max(terrainBox.x1, r.x1), y1: Math.max(terrainBox.y1, r.y1) };
+    }
+    terrainDirty = true;
+  });
 
   // --- keyboard shortcuts
   window.addEventListener('keydown', (e) => {
@@ -154,8 +165,7 @@ function startGame(state, isNew) {
     if (terrainDirty && terrainTimer > 0.08) {
       terrainTimer = 0;
       terrainDirty = false;
-      app.terrain.updateHeights();
-      app.features?.climate?.recolorTerrain?.();
+      app.terrain.updateHeights(terrainBox);
       app.networks.dirty = true;
       app.roads.dirty = true;
       app.power.dirty = true;

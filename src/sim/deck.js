@@ -11,6 +11,7 @@ import { N, idx, hidx, DIRS, inBounds } from '../core/grid.js';
 import { cellHeight } from './mapgen.js';
 import { bridgeLayers, linked, WATER_CLEARANCE } from './bridges.js';
 import { bus } from '../core/events.js';
+import { layerBox } from './extent.js';
 
 const NN = N * N;
 let cache = null;
@@ -44,8 +45,12 @@ function solveLayer(state, layer) {
   const edge = new Float32Array(NN * 4);
   const masks = new Uint8Array(NN);
   const H0 = state.height;
-  for (let y = 0; y < N; y++) {
-    for (let x = 0; x < N; x++) {
+  // (only where the layer has cells)
+  const box = layerBox(state, layer);
+  if (!box) return { center, edge, masks };
+  const [bx0, by0, bx1, by1] = box;
+  for (let y = by0; y <= by1; y++) {
+    for (let x = bx0; x <= bx1; x++) {
       const i = idx(x, y);
       if (!net[i]) continue;
       const mask = linkMask(state, layer, x, y);
@@ -62,8 +67,8 @@ function solveLayer(state, layer) {
       center[i] = c;
     }
   }
-  for (let y = 0; y < N; y++) {
-    for (let x = 0; x < N; x++) {
+  for (let y = by0; y <= by1; y++) {
+    for (let x = bx0; x <= bx1; x++) {
       const i = idx(x, y);
       const mask = masks[i];
       if (!net[i]) continue;

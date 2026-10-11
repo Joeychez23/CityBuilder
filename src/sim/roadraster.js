@@ -11,6 +11,7 @@
 import { N, idx, inBounds } from '../core/grid.js';
 import { ROADS, UPG, rankOf } from '../data/roads.js';
 import { bez, tAtS } from './roadgeom.js';
+import { union, roadBox } from './extent.js';
 
 const NN = N * N;
 const SEG_UPG = UPG.TREES | UPG.LIGHTS | UPG.BARRIER | UPG.BUSLANE | UPG.TRAM;
@@ -48,18 +49,24 @@ export function chainCells(c, tab) {
 // Write the network into the per-cell layers. X: the network index (rn() in roadnet.js);
 // heightAt(seg, s): a raised road's deck height s along it; openAt(seg, s): whether a road
 // is open to the sky there (not inside a tunnel: nothing's on the surface there).
+// (the part of the map each city's roads were last written over)
+const written = new WeakMap();
 export function writeRaster(state, X, heightAt, openAt = () => true) {
   const S = state;
   if (!S.roadSeg || S.roadSeg.length !== NN) S.roadSeg = new Int32Array(NN);
+  const before = written.get(S) || [0, 0, N - 1, N - 1], now = roadBox(S);
+  written.set(S, now);
+  // (each cell of a box, row by row)
+  const each = (b, fn) => { if (b) for (let y = b[1]; y <= b[3]; y++) for (let i = y * N + b[0], e = y * N + b[2]; i <= e; i++) fn(i); };
   // a road's wear is kept by its cells meanwhile (sim/traffic.js): bring it back to the road
   const sum = new Map();
-  for (let i = 0; i < NN; i++) {
+  each(before, (i) => {
     const id = S.roadSeg[i];
-    if (!id || !S.road[i]) continue;
+    if (!id || !S.road[i]) return;
     const e = sum.get(id) || [0, 0];
     e[0] += S.roadCond[i]; e[1]++;
     sum.set(id, e);
-  }
+  });
   for (const [id, [c, n]] of sum) { const s = X.seg.get(id); if (s) s.cond = c / n; }
 
   const was = S.road.slice();
@@ -101,7 +108,7 @@ export function writeRaster(state, X, heightAt, openAt = () => true) {
     if (i < 0 || !S.road[i]) continue;
     if (n.ctrl === 'roundabout') S.roadUpg[i] |= UPG.ROUNDABOUT;
   }
-  for (let i = 0; i < NN; i++) if (!S.road[i]) { S.roadVol[i] = 0; S.roadCond[i] = 1; }
+  each(union(before, now), (i) => { if (!S.road[i]) { S.roadVol[i] = 0; S.roadCond[i] = 1; } });
 }
 
 // The chain cell nearest distance s along the road
