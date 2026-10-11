@@ -18,7 +18,6 @@ import { ROADS, CLASS_NAMES, lanesText } from '../data/roads.js';
 import { registerTool, money, segButtons, slider } from './tools.js';
 import { planRoad, buildRoad, nearestNode, nearestSeg, rn, leaveDir, retypeSeg, retypeCost, reverseSeg } from '../sim/roadnet.js';
 import { quadCurve, straightCurve, bezTan, isStraight } from '../sim/roadgeom.js';
-import { gridLayout } from '../sim/roadsegs.js';
 import { roadWidth } from '../sim/lanes.js';
 import { canAfford } from '../sim/build.js';
 import { landmarkSpanReason, landmarkCost, markLandmark } from '../sim/landmarkBridges.js';
@@ -114,6 +113,62 @@ function freeBend(A, T, B) {
   if (dot < 0.05 * Math.sqrt(L2)) return null;
   const k = Math.min(L2 / (2 * dot), 0.9 * Math.sqrt(L2));
   return [A.x + T[0] * k, A.z + T[1] * k];
+}
+
+// ------------------------------------------------------------------ grid mode
+// The road directions a grid can be laid out at (on whole-cell steps, so its corners land on
+// cell middles): 0°, 14°, 18°, 27°, 34°, 45°, and the same mirrored and turned.
+const BASE_STEPS = [[1, 0], [4, 1], [3, 1], [2, 1], [3, 2], [1, 1]];
+const GRID_STEPS = (() => {
+  const out = [], seen = new Set();
+  for (const [p, q] of BASE_STEPS) for (const [a, b] of [[p, q], [q, p]]) for (const sx of [1, -1]) for (const sy of [1, -1]) {
+    const k = `${a * sx},${b * sy}`;
+    if (!seen.has(k)) { seen.add(k); out.push([a * sx, b * sy]); }
+  }
+  return out;
+})();
+const AXIS_STEPS = [[1, 0], [0, 1], [-1, 0], [0, -1]];
+
+// A road grid from corner A: its first side runs toward `toward` (along the map's grid when
+// onGrid, else at the nearest of GRID_STEPS) and it reaches out toward `reach` on one side,
+// with a road about every `block` cells. Returns the roads as [[a, b], ...] cell pairs.
+function gridLayout(A, toward, reach, block, onGrid) {
+  const vx = toward[0] - A[0], vy = toward[1] - A[1];
+  if (!vx && !vy) return null;
+  let u = null, best = -Infinity;
+  for (const st of onGrid ? AXIS_STEPS : GRID_STEPS) {
+    const c = (vx * st[0] + vy * st[1]) / Math.hypot(st[0], st[1]);
+    if (c > best) { best = c; u = st; }
+  }
+  const ul = Math.hypot(u[0], u[1]);
+  const ku = Math.max(1, Math.round(best / ul));
+  let w = [-u[1], u[0]], kd = 0;
+  if (reach) {
+    let d = ((reach[0] - A[0]) * w[0] + (reach[1] - A[1]) * w[1]) / ul;
+    if (d < 0) { w = [-w[0], -w[1]]; d = -d; }
+    kd = Math.max(1, Math.round(d / ul));
+  }
+  const n = Math.max(1, Math.round(block / ul)); // steps between roads
+  const at = (i, j) => [A[0] + u[0] * i + w[0] * j, A[1] + u[1] * i + w[1] * j];
+  // where the roads go along one side: every n steps, and at the far edge (a last block much
+  // shorter than the rest is merged into the one before)
+  const marks = (k) => {
+    const m = [];
+    for (let i = 0; i < k; i += n) m.push(i);
+    if (m.length > 1 && k - m[m.length - 1] < n / 2) m.pop();
+    m.push(k);
+    return m;
+  };
+  const lines = [];
+  if (!kd) lines.push([at(0, 0), at(ku, 0)]);
+  else {
+    for (const j of marks(kd)) lines.push([at(0, j), at(ku, j)]);
+    for (const i of marks(ku)) lines.push([at(i, 0), at(i, kd)]);
+  }
+  // how far it's turned from the map's grid (0–45°)
+  const a = (Math.atan2(Math.abs(u[1]), Math.abs(u[0])) * 180) / Math.PI;
+  const angle = Math.round(Math.min(a, 90 - a));
+  return { lines, angle, cols: marks(ku).length - 1, rows: kd ? marks(kd).length - 1 : 0, len: ku * ul, depth: kd * ul };
 }
 
 registerTool('road', {

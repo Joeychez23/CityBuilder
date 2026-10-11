@@ -129,7 +129,6 @@ function resizeSave(data, map, oldN) {
   data.stops = Object.fromEntries(Object.entries(data.stops || {}).map(([c, s]) => [shift(+c), s]));
   for (const l of data.lines || []) { l.stops = l.stops.map(shift); l.path = null; l.stopIndex = null; l.valid = false; }
   for (const r of data.ruins || []) { r.x0 += O; r.x1 += O; r.y0 += O; r.y1 += O; }
-  for (const sg of data.roadSegs || []) { sg.a = [sg.a[0] + O, sg.a[1] + O]; sg.b = [sg.b[0] + O, sg.b[1] + O]; if (sg.cut) sg.cut = sg.cut.map(([x, y]) => [x + O, y + O]); }
   for (const pl of data.plots || []) { pl.x0 += O; pl.x1 += O; pl.y0 += O; pl.y1 += O; }
   for (const rb of data.rebuilds || []) { rb.x0 += O; rb.x1 += O; rb.y0 += O; rb.y1 += O; }
   data.events = [];

@@ -2,7 +2,8 @@
 // are paid out together when Saturday ends. Until then the HUD shows a projection that moves
 // with the city (it's re-estimated every hour). Construction, refunds and loans are paid at
 // once. Also: daily upkeep, loans and interest, the government subsidy, and the charts.
-import { ROADS, UPGRADES } from '../data/roads.js';
+import { ROADS, UPGRADES, UPG } from '../data/roads.js';
+import { rn } from './roadnet.js';
 import { newLedger } from '../core/state.js';
 import { isService, buildingUpkeep } from './services.js';
 import { clamp } from '../core/grid.js';
@@ -89,14 +90,21 @@ export function dailyCosts(state, ctx) {
     if (b.def.centralBank) ctx.centralBank = true;
     if (b.def.eduLevel === 4) ctx.hasUniversity = true;
   }
+  // roads: by their length (8 m a cell), with what's along them; booths, connectors and
+  // roundabouts each
   let roads = 0;
-  for (let i = 0; i < state.road.length; i++) {
-    const t = state.road[i];
-    if (!t) continue;
-    roads += ROADS[t].upkeep;
-    const u = state.roadUpg[i];
-    if (u) for (const up of UPGRADES) if (u & up.bit) roads += up.upkeep;
+  const X = rn(state);
+  const each = (bit) => UPGRADES.find((up) => up.bit === bit).upkeep;
+  for (const sg of X.seg.values()) {
+    const g = X.geo.get(sg.id);
+    if (!g) continue;
+    let per = ROADS[sg.type].upkeep;
+    for (const up of UPGRADES) if ((sg.upg || 0) & up.bit && !up.single && !up.intersectionOnly) per += up.upkeep;
+    roads += per * g.len;
+    if (sg.toll != null) roads += each(UPG.TOLL);
+    if (sg.power != null) roads += each(UPG.POWER);
   }
+  for (const n of X.node.values()) if (n.ctrl === 'roundabout') roads += each(UPG.ROUNDABOUT);
   const rate = interestRate(state, ctx);
   const interest = (state.loan * rate) / 100 / 365;
   // The government subsidy shrinks as the city earns its own money

@@ -22,7 +22,7 @@ registerCategory({
     })),
     ...UPGRADES.map((u) => ({
       group: 'Road upgrades', name: u.name, color: u.bit === 128 ? '#4f7a52' : '#8fa3a8',
-      meta: u.single || u.intersectionOnly ? `${money(u.cost)} each · click a road` : `${money(u.cost)}/cell · click or drag on roads`,
+      meta: u.single || u.intersectionOnly ? `${money(u.cost)} each · click a road` : `${money(u.cost)} per 8 m · click or drag on roads`,
       desc: u.desc,
       tool: { kind: 'upgrade', bit: u.bit, key: u.key },
       isActive: (t) => t.kind === 'upgrade' && t.bit === u.bit,

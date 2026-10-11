@@ -41,8 +41,6 @@ const TUNNEL_COVER = 1.1;          // ground (or river bed) over a tunnel's roof
 export const OPEN_DEPTH = 0.9;     // a tunnel road this far below the ground has gone in
 
 export const emptyRoads = () => ({ nodes: [], segs: [], nextId: 1 });
-export const roadDef = (s) => ROADS[s.type];
-
 // ------------------------------------------------------------------- the index
 // Looked up constantly, so it's built once per change: nodes and segments by id, the
 // segments at each node, each segment's curve (with its length, samples and the cells it runs

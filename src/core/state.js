@@ -16,7 +16,8 @@ export const SAVED_LAYERS = [
   'railH', 'railDir', 'pathH', 'pathDir', 'canal',
 ];
 // Per-cell road layers worked out from the road network (sim/roadraster.js): never saved
-export const ROAD_RASTER = ['road', 'roadSeg', 'roadDir', 'roadUpg', 'roadCond', 'bridgeH', 'bridgeDir', 'underRoad', 'underDir', 'roadNode', 'roadDay', 'roadLinks', 'roadJumps'];
+// (and the layers older versions kept, which are left out of saves too)
+export const ROAD_RASTER = ['road', 'roadSeg', 'roadUpg', 'roadCond', 'bridgeH', 'roadDir', 'bridgeDir', 'underRoad', 'underDir', 'roadNode', 'roadDay', 'roadLinks', 'roadJumps'];
 
 export function createState(map, options = {}) {
   return {
@@ -55,7 +56,6 @@ export function createState(map, options = {}) {
     roads: { nodes: [], segs: [], nextId: 1 },
     road: u8(),             // road type id on the cell (0 = none)
     roadSeg: new Int32Array(NN), // the road segment on the cell
-    roadDir: u8(),          // one-way direction (0..3)
     roadUpg: u8(),          // upgrade bitmask (UPG in data/roads.js)
     roadCond: new Float32Array(NN).fill(1), // 1 = perfect, 0 = crumbling
     roadSnow: f32(),
@@ -67,16 +67,11 @@ export function createState(map, options = {}) {
     subway: u8(),
     power: u8(),            // power pylons (1 = pylon on this cell)
     powerSpans: [],         // overhead wires: [cellA, cellB] pairs between pylons
-    roadSegs: [],           // (no longer used: grid roads at an angle)
-    roadDay: new Uint16Array(NN), // the day each road cell was laid (for the time-lapse)
-    roadNode: u8(),         // (no longer used)
     pipe: u8(),             // standalone water pipes
     canal: u8(),            // 1 = a canal you dug (sim/projects.js)
     path: u8(),             // pedestrian paths
-    // Raised roads: deck height over the cell (0 = on the ground). (bridgeDir, underRoad and
-    // underDir are no longer used by roads: they stay empty)
-    bridgeH: f32(), bridgeDir: u8(),
-    underRoad: u8(), underDir: u8(),
+    // Raised roads: deck height over the cell (0 = on the ground)
+    bridgeH: f32(),
     railH: f32(), railDir: u8(),
     pathH: f32(), pathDir: u8(),
 

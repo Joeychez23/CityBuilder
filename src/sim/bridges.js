@@ -7,7 +7,6 @@ import { N, idx, hidx, inBounds } from '../core/grid.js';
 import { cellHeight } from './mapgen.js';
 import { isOwned, spend, removeBuilding, LAYER_COST, refund, networkValue, REFUND_RATE, clearZoneCell } from './build.js';
 import { gradeCells } from './grade.js';
-import { cellLinks } from './roadraster.js';
 import { bus } from '../core/events.js';
 
 export const WATER_CLEARANCE = 0.9;  // deck above the water
@@ -17,17 +16,15 @@ export const UNDER_CLEARANCE = 1.0;  // deck above a road passing under it
 export const MAX_BRIDGE_GRADE = 0.6; // height change per cell
 const AXIS_X = 1, AXIS_Z = 2;
 
-// Layer name -> [network array, height array, axis array]
+// Layer name -> [network array, height array, axis array] (railways and footpaths: roads are
+// a network of their own, sim/roadnet.js)
 export function bridgeLayers(state, layer) {
-  if (layer === 'rail') return [state.rail, state.railH, state.railDir];
   if (layer === 'path') return [state.path, state.pathH, state.pathDir];
-  return [state.road, state.bridgeH, state.bridgeDir];
+  return [state.rail, state.railH, state.railDir];
 }
 
 // May network cells i and j (j is i's neighbour in direction d) connect?
-// Roads: only along a road of the network, or through a node's cell (see roadMasks)
 export function linked(state, layer, i, j, d) {
-  if (layer === 'road') return (cellLinks(state)[i] >> d) & 1;
   return baseLinked(state, layer, i, j, d);
 }
 
@@ -42,13 +39,6 @@ function baseLinked(state, layer, i, j, d) {
   if (dj && dj !== axis) return false;
   return true;
 }
-
-// Per road cell, a bitmask of the neighbours it connects to (1 = E, 2 = S, 4 = W, 8 = N):
-// along each road of the network, and through the cell of each node (sim/roadraster.js)
-export const roadMasks = (state) => cellLinks(state);
-
-// How many roads a road cell connects to (3 or more = a junction)
-export const roadLinks = (state, i) => { const m = roadMasks(state)[i]; return (m & 1) + ((m >> 1) & 1) + ((m >> 2) & 1) + ((m >> 3) & 1); };
 
 const maxCorner = (state, x, y) => {
   const H = state.height;

@@ -1,16 +1,15 @@
 // Road upgrade tool and decorative surface painting.
 import { registerTool, segButtons, slider, money } from './tools.js';
-import { idx, lCells, forRadius, DIRS, inBounds } from '../core/grid.js';
+import { idx, lCells, forRadius, DIRS, inBounds, lineCells } from '../core/grid.js';
 import { UPGRADES, UPG, ROADS } from '../data/roads.js';
 import { spend, isOwned } from '../sim/build.js';
 import { bus } from '../core/events.js';
-import { lineCells, snapEnd, onDiagonal } from '../sim/roadsegs.js';
 import { dropSpansAt } from '../sim/power.js';
-import { roadLinks } from '../sim/bridges.js';
+import { graph } from '../sim/roadgraph.js';
 import { setCellUpgrade, segAtCell, rn } from '../sim/roadnet.js';
 
-// Roads this cell connects to (3 or more = a junction)
-const roadNeighbours = (state, x, y) => roadLinks(state, idx(x, y));
+// How many roads meet at the junction in this cell (0: there's none)
+const roadNeighbours = (state, x, y) => { const Gr = graph(state); const n = Gr.cellNode.get(idx(x, y)); return n == null ? 0 : Gr.X.at.get(n)?.length || 0; };
 
 export function upgradeAllowed(state, x, y, u) {
   const i = idx(x, y);
@@ -24,8 +23,6 @@ export function upgradeAllowed(state, x, y, u) {
   // one booth per stretch: no toll booth right next to another
   if (u.single) for (const [dx, dy] of DIRS) { const nx = x + dx, ny = y + dy; if (inBounds(nx, ny) && state.roadUpg[idx(nx, ny)] & u.bit) return false; }
   if (u.bit === UPG.TOLL && state.bridgeH[idx(x, y)]) return false;
-  // gantries, tram tracks and barriers are built along the grid
-  if ((u.bit === UPG.TOLL || u.bit === UPG.TRAM || u.bit === UPG.BARRIER) && onDiagonal(state, idx(x, y))) return false;
   return true;
 }
 
@@ -34,13 +31,12 @@ registerTool('upgrade', {
     const u = UPGRADES.find((k) => k.bit === t.bit);
     el.innerHTML = `<h4>${u.name}</h4>`;
     segButtons(el, 'Mode', [['add', 'Add'], ['remove', 'Remove']], t.mode || 'add', (v) => { t.mode = v; rerender(); });
-    el.insertAdjacentHTML('beforeend', `<p class="muted">${money(u.cost)} ${u.single || u.intersectionOnly ? 'each' : 'per cell of road'}.${u.intersectionOnly ? ' Click an intersection.' : u.single ? ' Click a road (not a junction).' : ' Click or drag along roads: each road you touch gets it from end to end.'}${u.desc ? ` ${u.desc}` : ''}</p>`);
+    el.insertAdjacentHTML('beforeend', `<p class="muted">${money(u.cost)} ${u.single || u.intersectionOnly ? 'each' : 'per 8 m of road'}.${u.intersectionOnly ? ' Click an intersection.' : u.single ? ' Click a road (not a junction).' : ' Click or drag along roads: each road you touch gets it from end to end.'}${u.desc ? ` ${u.desc}` : ''}</p>`);
   },
   cells(app, t, a, b) {
     if (UPGRADES.find((k) => k.bit === t.bit)?.single) return [[b.cx, b.cy]];
-    // drag along a road: straight at any angle (it snaps to the grid and to 45°)
-    const [ex, ey] = snapEnd(a.cx, a.cy, b.cx, b.cy);
-    return lineCells(a.cx, a.cy, ex, ey);
+    // drag along roads: every road the line touches
+    return lineCells(a.cx, a.cy, b.cx, b.cy);
   },
   hover(app, t, p) { this.drag(app, t, p, p); },
   drag(app, t, a, b) {

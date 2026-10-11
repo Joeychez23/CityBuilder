@@ -397,7 +397,6 @@ export function bulldozePreview(state, x, y, layers = ['building', 'road', 'rail
 export function clearRoadCell(state, i) {
   const connector = state.roadUpg[i] & UPG.POWER;
   state.roadUpg[i] = 0;
-  state.roadNode[i] = 0;
   if (connector) dropSpansAt(state, [i]);
 }
 

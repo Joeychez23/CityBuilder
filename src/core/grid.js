@@ -62,3 +62,24 @@ export function lCells(x0, y0, x1, y1, horizontalFirst) {
 
 export const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 export const lerp = (a, b, t) => a + (b - a) * t;
+
+// Cells a straight line from cell centre (ax, ay) to (bx, by) passes through, in order.
+// Consecutive cells always share an edge (where the line passes exactly through a corner,
+// both cells next to it are taken), so the road stays connected for the simulation.
+export function lineCells(ax, ay, bx, by) {
+  const cells = [[ax, ay]];
+  const dx = bx - ax, dy = by - ay;
+  const sx = Math.sign(dx), sy = Math.sign(dy);
+  const nx = Math.abs(dx), ny = Math.abs(dy);
+  let x = ax, y = ay, ix = 0, iy = 0;
+  while (ix < nx || iy < ny) {
+    // compare where the line next crosses a vertical vs a horizontal cell edge
+    const tx = nx ? (ix + 0.5) / nx : Infinity, ty = ny ? (iy + 0.5) / ny : Infinity;
+    if (Math.abs(tx - ty) < 1e-9) {
+      x += sx; ix++; cells.push([x, y]);
+      y += sy; iy++; cells.push([x, y]);
+    } else if (tx < ty) { x += sx; ix++; cells.push([x, y]); }
+    else { y += sy; iy++; cells.push([x, y]); }
+  }
+  return cells;
+}

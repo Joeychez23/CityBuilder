@@ -1,14 +1,13 @@
 // Mouse/keyboard input for the active tool. Each tool kind is a handler object with
 // optional hover/down/drag/up/frame/options callbacks; more kinds are registered by
 // other modules via registerTool().
-import { idx, inBounds, lCells, N, forRadius } from '../core/grid.js';
+import { idx, inBounds, lCells, N, forRadius, lineCells } from '../core/grid.js';
 import { ROADS, CLASS_NAMES, ROAD_RANK, lanesText, UPGRADES } from '../data/roads.js';
 import { ZONES } from '../data/zones.js';
 import { pickGround } from '../world/picking.js';
 import { buildingCells, planLayer, placeLayer, setZone, zoneCells, canZoneStrip, placePlot, plotBlocker, bulldozeCell, bulldozePreview, terraform, brushCells, isOwned, spend, canAfford, planClearTrees, clearTrees, CLEAR_TREE_COST } from '../sim/build.js';
 import { zoneLayout, zoneOf, cellAt, cellsNear, cellsInRect, cellOf } from '../sim/zoneblocks.js';
 import { nearestSeg } from '../sim/roadnet.js';
-import { lineCells } from '../sim/roadsegs.js';
 import { bus } from '../core/events.js';
 import { cellHeight } from '../sim/mapgen.js';
 import { ISSUE_ICONS, ISSUE_TEXT } from '../sim/problems.js';

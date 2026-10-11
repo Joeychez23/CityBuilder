@@ -2,28 +2,25 @@
 // It runs straight underground between them, under anything (sim/tunnels.js). (Road tunnels
 // are drawn with the road tool's Tunnel mode, see toolsRoad.js.)
 import { registerTool, money } from './tools.js';
-import { N, idx, CELL_M } from '../core/grid.js';
-import { lineCells } from '../sim/roadsegs.js';
+import { N, idx, CELL_M, lineCells } from '../core/grid.js';
 import { planTunnel, buildTunnel, TUNNEL_MAX, TUNNEL_COST } from '../sim/tunnels.js';
 
-const netOf = (s, layer) => (layer === 'rail' ? s.rail : s.road);
-const raisedOf = (s, layer) => (layer === 'rail' ? s.railH : s.bridgeH);
+const onTrack = (s, i) => s.rail[i] && !s.railH[i];
 
 registerTool('tunnel', {
   enter(app, t) { t.start = null; t.layer = 'rail'; },
   exit(app) { app.preview.clearCells(); },
   options(app, t, el) {
-    const road = t.layer !== 'rail';
-    el.innerHTML = `<h4>🚇 ${road ? 'Road' : 'Railway'} tunnel</h4>
-      <p class="muted">${t.start != null ? 'Now click where it comes out.' : `Click a ${road ? 'road' : 'railway track'} where the tunnel goes in.`} It runs straight underground, up to ${TUNNEL_MAX} cells (${TUNNEL_MAX * CELL_M} m), under hills, water, buildings and other roads: nothing above it is touched. ${road ? 'Traffic takes it when it\'s quicker, so you can take away a jammed road above it.' : 'Trains take it on their way.'} Right click or Esc to pick a new start.</p>
-      <div class="row"><span class="k">Cost</span><span>about ${money(TUNNEL_COST[t.layer] + (road ? 40 : 120))}+ per cell</span></div>`;
+    el.innerHTML = `<h4>🚇 Railway tunnel</h4>
+      <p class="muted">${t.start != null ? 'Now click where it comes out.' : 'Click a railway track where the tunnel goes in.'} It runs straight underground, up to ${TUNNEL_MAX} cells (${TUNNEL_MAX * CELL_M} m), under hills, water, buildings and roads: nothing above it is touched. Trains take it on their way. Right click or Esc to pick a new start.</p>
+      <div class="row"><span class="k">Cost</span><span>about ${money(TUNNEL_COST + 120)}+ per cell</span></div>`;
   },
   hover(app, t, p) {
     const s = app.state, i = idx(p.cx, p.cy);
     if (t.start == null) {
-      const ok = netOf(s, t.layer)[i] && !raisedOf(s, t.layer)[i];
+      const ok = onTrack(s, i);
       app.preview.setCells([[p.cx, p.cy, ok ? '#ffb84f' : '#ff4a3a']]);
-      app.tools.showTip(ok ? 'Tunnel · click to start here' : `<span class="bad">Start on a ${t.layer === 'rail' ? 'railway' : 'road'}</span>`);
+      app.tools.showTip(ok ? 'Tunnel · click to start here' : '<span class="bad">Start on a railway</span>');
       return;
     }
     const plan = planTunnel(s, t.layer, t.start, i);
@@ -34,7 +31,7 @@ registerTool('tunnel', {
   up(app, t, a, p) {
     const s = app.state, i = idx(p.cx, p.cy);
     if (t.start == null) {
-      if (!netOf(s, t.layer)[i] || raisedOf(s, t.layer)[i]) { app.toast(`Start the tunnel on a ${t.layer === 'rail' ? 'railway' : 'road'}`, 'warn'); return; }
+      if (!onTrack(s, i)) { app.toast('Start the tunnel on a railway', 'warn'); return; }
       t.start = i;
       app.tools.renderOptions();
       return;

@@ -381,13 +381,16 @@ export function createRoadsView(view, state) {
     const X = rn(state);
     const B = new Builder(), L = new Builder();
     const { trims, shapes } = junctionLayout(state);
+    // (the time-lapse shows only the roads there were on the day it's at)
+    const shown = (sid) => !rv.filter || rv.filter(X.seg.get(sid));
     for (const s of X.seg.values()) {
-      if (!X.geo.has(s.id)) continue;
+      if (!X.geo.has(s.id) || !shown(s.id)) continue;
       drawSegment(B, X, s, trims);
       drawLines(L, X, s, trims);
     }
     const kerbHalf = (e) => e.w, asphaltHalf = (e) => e.a;
     for (const sh of shapes) {
+      if (!sh.ends.every((e) => shown(e.id))) continue;
       // the junction takes the colours of its biggest road
       const top = sh.ends.reduce((a, e) => (ROADS[X.seg.get(e.id).type].capacity > ROADS[X.seg.get(a.id).type].capacity ? e : a), sh.ends[0]);
       const def = ROADS[X.seg.get(top.id).type];
@@ -408,7 +411,7 @@ export function createRoadsView(view, state) {
         B.box(sh.n.x, g - 0.2, sh.n.z, 0.4, nodeY(state, sh.n) - 0.2, 0.4, 0, PIER_C);
       }
     }
-    for (const n of X.node.values()) if (n.out) drawOutside(B, X, n);
+    for (const n of X.node.values()) if (n.out && shown(X.at.get(n.id)?.[0])) drawOutside(B, X, n);
     const T = new Builder(), tc = new THREE.Color('#ffb84f');
     for (const sg of X.seg.values()) {
       const g = X.geo.get(sg.id);
@@ -442,6 +445,8 @@ export function createRoadsView(view, state) {
     attr.needsUpdate = true;
   };
   rv.setRoadColorFn = (fn) => { rv.roadColorFn = fn; rv.recolorRoads(); };
+  // Draw only the roads fn(segment) says (null: all of them)
+  rv.setFilter = (fn) => { rv.filter = fn; rv.dirty = true; };
   rv.setVisible = (v) => { if (mesh) mesh.visible = v; if (lines) lines.visible = v; };
 
   // ------------------------------------------------------------- tool ghost

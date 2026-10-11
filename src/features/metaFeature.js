@@ -95,7 +95,7 @@ export const UI_SIZES = [[0.8, 'Small'], [0.9, 'Medium'], [1, 'Large'], [1.15, '
 
 // ---------------------------------------------------------------- beginner's guide
 const GUIDE = [
-  { t: 'Connect a road to the highway', tip: 'Roads → Small Road. Drag from the end of the highway into your land.', done: (s, ctx) => { let n = 0; for (let i = 0; i < s.road.length; i++) if (s.road[i] && s.road[i] !== 6 && ctx.net.roadOutside[ctx.net.roadComp[i]]) n++; return n > 5; } },
+  { t: 'Connect a road to the highway', tip: 'Roads → Small Road. Click the end of the highway, then click inside your land (curve it with the Curved mode).', done: (s, ctx) => { let n = 0; for (let i = 0; i < s.road.length; i++) if (s.road[i] && s.road[i] !== 6 && ctx.net.roadOutside[ctx.net.roadComp[i]]) n++; return n > 5; } },
   { t: 'Zone residential land', tip: 'Zoning → Low Density Housing, then click next to your road (Fill mode).', done: (s) => [...s.zone].some((z) => ZONES[z]?.cat === 'res') },
   { t: 'Zone commercial and industrial land', tip: 'Shops need customers, factories need workers. Keep industry a few blocks from homes: factory noise upsets residents.', done: (s) => [...s.zone].some((z) => ZONES[z]?.cat === 'com') && [...s.zone].some((z) => ZONES[z]?.cat === 'ind') },
   { t: 'Get electricity to your roads', tip: 'Build a power plant next to a road (it feeds the roads it touches; roads carry power to every building beside them), or run a Power Line from the outside power line (pylons at the map edge) and end it on one of your roads: a Power Connector is added there. Map → ⚡ Power grid shows what is connected.', done: (s, ctx) => (ctx.elecNets || []).some((n) => n.hasSource && n.demand > 0) },

@@ -85,6 +85,7 @@ export function createZonesView(view, state) {
     view.scene.add(preview);
   };
   zv.clearPreview = () => { if (preview) { view.scene.remove(preview); preview.geometry.dispose(); preview = null; } };
-  zv.update = () => { if (zv.dirty) zv.rebuild(); };
+  zv.update = () => { if (zv.dirty) zv.rebuild(); if (mesh) mesh.visible = !zv.hidden; };
+  zv.setHidden = (on) => { zv.hidden = !!on; };
   return zv;
 }

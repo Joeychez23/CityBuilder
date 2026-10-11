@@ -4,8 +4,6 @@
 // from that quadratic curve. Everything else (lanes, kerbs, zoning strips, the cells a road
 // covers) is measured off the curve by distance along it.
 
-export const len2 = (ax, az, bx, bz) => Math.hypot(bx - ax, bz - az);
-
 // Point and direction on the curve at parameter t (0..1)
 export function bez(c, t, out = [0, 0]) {
   const u = 1 - t, a = u * u * u, b = 3 * u * u * t, d = 3 * u * t * t, e = t * t * t;
@@ -41,7 +39,6 @@ export function splitCurve(c, t) {
   const a = L(p0, p1), b = L(p1, p2), d = L(p2, p3), e = L(a, b), f = L(b, d), g = L(e, f);
   return [[...p0, ...a, ...e, ...g], [...g, ...f, ...d, ...p3]];
 }
-export const reverseCurve = (c) => [c[6], c[7], c[4], c[5], c[2], c[3], c[0], c[1]];
 
 // Arc-length table: samples at even parameter steps with the distance along at each
 export function arcTable(c, steps = 0) {
@@ -167,6 +164,3 @@ export function segX(ax, az, bx, bz, cx, cz, dx, dz) {
   const e = 1e-7;
   return t >= -e && t <= 1 + e && u >= -e && u <= 1 + e ? [Math.min(1, Math.max(0, t)), Math.min(1, Math.max(0, u))] : null;
 }
-
-// Signed angle between two directions (radians, -π..π)
-export const angleBetween = (ax, az, bx, bz) => Math.atan2(ax * bz - az * bx, ax * bx + az * bz);

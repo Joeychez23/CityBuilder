@@ -214,7 +214,7 @@ function studioDaily(state, ctx) {
   const film = titles[rng.int(0, titles.length - 1)];
   addDecision(state, {
     kind: 'filmShoot', icon: '🎬', title: `Film shoot: "${film}"`,
-    text: `The director of "${film}" wants to close ${cells.length} cells of road near ${b.name || b.def.name} for a day of filming. The studio pays a location fee, and the film brings tourists when it comes out.`,
+    text: `The director of "${film}" wants to close ${cells.length * 8} m of road near ${b.name || b.def.name} for a day of filming. The studio pays a location fee, and the film brings tourists when it comes out.`,
     cell: cells[0], data: { cells, film, fee: 30000 }, expires: state.time.day + 2,
     options: [{ label: 'Close the streets (+₡30,000)', detail: 'Roads closed for 24 hours · +12 attractiveness for a week' }, { label: 'Not this time', detail: 'Traffic keeps moving' }],
   });
