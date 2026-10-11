@@ -8,8 +8,9 @@ import { registerPanel, row } from '../ui/panels.js';
 import { CLIMATES } from '../data/maps.js';
 import { bus } from '../core/events.js';
 import { N } from '../core/grid.js';
+import { earthquake, startSurge, startHeatwave } from '../sim/hazards.js';
 
-const ICON = { budget: '💰', fire: '🔥', forestfire: '🌲🔥', destroyed: '💥', hail: '🌨️', tornado: '🌪️', accident: '🚗💥', milestone: '🏆', policy: '📜', crime: '🚔', info: 'ℹ️' };
+const ICON = { budget: '💰', fire: '🔥', forestfire: '🌲🔥', destroyed: '💥', hail: '🌨️', tornado: '🌪️', accident: '🚗💥', milestone: '🏆', policy: '📜', crime: '🚔', info: 'ℹ️', quake: '🫨', flood: '🌊', heat: '🌡️', climate: '🌍' };
 
 registerPanel({
   key: 'journal', icon: '📰', title: 'Event Journal & Climate', order: 60,
@@ -25,14 +26,28 @@ registerPanel({
       ${row('Snow on the ground', `${Math.round((app.ctx.snowCover || 0) * 100)}%`)}
       <div class="muted" style="font-size:11px;margin:4px 0">${months}</div>
       <div class="muted" style="font-size:11px">Cold and heat raise power use for heating & cooling. Clouds cut solar output; wind drives turbines. Rain cleans the air; snow needs road maintenance.</div>`;
+    const C = s.climateChange, ctx = app.ctx;
+    if (ctx.heatwave) html += row('Heatwave', `${ctx.heatwave.days} more day${ctx.heatwave.days === 1 ? '' : 's'} · +${ctx.heatwave.boost} °C`, 'bad');
+    if (ctx.surge) html += row('Storm surge', `the sea is ${Math.round(ctx.surge.rise * 8)} m up · ${ctx.surge.cells.length} cells flooded`, 'bad');
+    const broken = (s.closures || []).filter((c) => c.why === 'quake').reduce((a, c) => a + c.cells.length, 0);
+    if (broken) html += row('Earthquake damage', `${broken} road and pipe cells still broken`, 'warn');
+    html += '<div class="section-title">Long-term climate</div>';
+    if (s.options.climateChange === false) html += '<div class="muted" style="font-size:11px">Climate change is off for this city (Game panel).</div>';
+    else html += row('Warming since the city was founded', `+${(C?.warming || 0).toFixed(2)} °C`, (C?.warming || 0) > 1 ? 'bad' : (C?.warming || 0) > 0.5 ? 'warn' : '')
+      + (s.connectionsAvailable.ship ? row('Sea level', `+${((C?.seaRise || 0) * 8).toFixed(1)} m`, (C?.seaRise || 0) > 0 ? 'bad' : '') : '')
+      + `<div class="muted" style="font-size:11px">The city's smog builds up in the atmosphere over the years and warms the region: hotter summers, more heatwaves${s.connectionsAvailable.ship ? ' and, once it passes a degree, a slowly rising sea' : ''}. Clean power, carbon capture, the Eco Dome and trees slow it; a cleaner city lets it ease off again.</div>`;
     if (s.options.unlimitedMoney || s.options.unlockAll) {
-      html += `<div class="section-title">Sandbox</div><div class="grid2"><button class="btn" data-x="tornado">Spawn tornado</button><button class="btn" data-x="fire">Start forest fire</button></div>`;
+      html += `<div class="section-title">Sandbox</div><div class="grid2"><button class="btn" data-x="tornado">Spawn tornado</button><button class="btn" data-x="fire">Start forest fire</button>
+        <button class="btn" data-x="quake">Earthquake</button><button class="btn" data-x="heat">Heatwave</button>${s.connectionsAvailable.ship ? '<button class="btn" data-x="surge">Storm surge</button>' : ''}</div>`;
     }
     html += '<div class="section-title">Event journal</div>';
     const items = [...s.journal].reverse().slice(0, 60);
     html += items.length ? items.map((e) => `<div class="row"><span>${ICON[e.kind] || '•'} ${e.text}</span><span class="muted num">${formatDate(e.day)}</span></div>`).join('') : '<div class="muted">Nothing has happened yet.</div>';
     body.innerHTML = html;
     body.querySelector('[data-x="tornado"]')?.addEventListener('click', () => startTornado(s, app.ctx));
+    body.querySelector('[data-x="quake"]')?.addEventListener('click', () => { const c = app.view.cam.cur || app.view.controls.target; earthquake(s, app.ctx, Math.floor(c.x), Math.floor(c.z), 5.5 + Math.random()); });
+    body.querySelector('[data-x="heat"]')?.addEventListener('click', () => startHeatwave(s, app.ctx));
+    body.querySelector('[data-x="surge"]')?.addEventListener('click', () => startSurge(s, app.ctx, 0.9));
     body.querySelector('[data-x="fire"]')?.addEventListener('click', () => {
       for (let k = 0; k < 400; k++) { const i = Math.floor(Math.random() * N * N); if (s.tree[i] >= 2) { igniteCell(s, app.ctx, i, 'sandbox'); break; } }
     });

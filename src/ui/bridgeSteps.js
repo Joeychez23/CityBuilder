@@ -4,6 +4,7 @@ import { money } from './tools.js';
 import { ROADS } from '../data/roads.js';
 import { idx, CELL_M } from '../core/grid.js';
 import { planBridge, buildBridge } from '../sim/bridges.js';
+import { landmarkReason, landmarkCost, buildLandmarkBridge } from '../sim/landmarkBridges.js';
 
 // Hovering with a bridge being laid out from t.start (or choosing where it starts)
 export function bridgeHover(app, t, p, layer, type, name) {
@@ -24,6 +25,13 @@ export function bridgeHover(app, t, p, layer, type, name) {
   });
   app.preview.setCells(cells);
   if (!plan.ok) { app.tools.showTip(`<span class="bad">${plan.reason}</span>`); return; }
+  // a landmark suspension bridge (Bridge tool → Style)
+  if (t.style === 'landmark') {
+    const why = landmarkReason(plan);
+    const cost = landmarkCost(plan);
+    app.tools.showTip(why ? `<span class="bad">${why}</span>` : `🌉 Suspension bridge · ${plan.cells.length - 2} cells · <span class="${s.options.unlimitedMoney || s.money >= cost ? '' : 'bad'}">${money(cost)}</span><br><span class="muted">A landmark: +15 attractiveness, and well-being at either end</span>`);
+    return;
+  }
   const span = plan.cells.length - 2;
   const rise = Math.max(...plan.heights) - Math.min(plan.heights[0], plan.heights[plan.heights.length - 1]);
   const over = [plan.spanOver.water && `${plan.spanOver.water} over water`, plan.spanOver.cross && `${plan.spanOver.cross} over track`, plan.spanOver.land && `${plan.spanOver.land} over land`].filter(Boolean).join(', ');
@@ -41,8 +49,12 @@ export function bridgeClick(app, t, p, layer, type, name) {
   }
   const plan = planBridge(app.state, layer, type, t.start, p);
   if (!plan.ok) { app.toast(plan.reason, 'bad', "Can't build this bridge"); return false; }
-  if (!buildBridge(app.state, plan)) { app.toast('Not enough money', 'bad'); return false; }
-  app.toast(`${plan.cells.length - 2} cell span · ${money(plan.cost)}`, 'good', `${name} built`);
+  if (t.style === 'landmark') {
+    const res = buildLandmarkBridge(app.state, plan);
+    if (res.error) { app.toast(res.error, 'bad', "Can't build this bridge"); return false; }
+    app.toast(`${plan.cells.length - 2} cell span · ${money(landmarkCost(plan))}`, 'good', `🌉 ${res.bridge.name} opened`);
+  } else if (!buildBridge(app.state, plan)) { app.toast('Not enough money', 'bad'); return false; }
+  else app.toast(`${plan.cells.length - 2} cell span · ${money(plan.cost)}`, 'good', `${name} built`);
   t.start = null;
   app.tools.renderOptions();
   app.preview.clearCells();

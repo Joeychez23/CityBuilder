@@ -2,6 +2,8 @@
 // it per week). power: MW produced ; water/sewage: m³ per day handled ; capacity: people/tonnes.
 // Numbers are scaled for a ~1 km² playable map, so they're not 1:1 with CS2.
 import { registerDefs } from './registry.js';
+import { WONDERS } from './wonders.js';
+import { PROJECTS } from './projects.js';
 
 // --- shape helpers (x along the road, z toward the road; sizes in cells) ---
 const box = (x, z, w, d, h, color, y = 0, pool = 'body') => ({ pool, x, z, w, d, h, y, color });
@@ -15,13 +17,14 @@ const lawn = (w, d, color = '#7fb35a') => plain(0, 0, w, d, 0.06, color);
 export const SERVICE_CATS = {
   electricity: { name: 'Electricity', icon: '⚡', color: '#ffd34f', order: 30 },
   water: { name: 'Water & Sewage', icon: '💧', color: '#3aa0ff', order: 31 },
-  garbage: { name: 'Garbage', icon: '🗑️', color: '#a3825a', order: 32 },
+  garbage: { name: 'Garbage & Pollution', icon: '🗑️', color: '#a3825a', order: 32 },
   health: { name: 'Healthcare & Deathcare', icon: '🏥', color: '#ff6b81', order: 33 },
   fire: { name: 'Fire & Rescue', icon: '🚒', color: '#ff7a3d', order: 34 },
   police: { name: 'Police & Administration', icon: '🚓', color: '#5b8cff', order: 35 },
   education: { name: 'Education & Research', icon: '🎓', color: '#ffb84f', order: 36 },
   parks: { name: 'Parks & Recreation', icon: '🌳', color: '#5fd38a', order: 37 },
   comms: { name: 'Communications', icon: '📡', color: '#b07cff', order: 38 },
+  landmarks: { name: 'Landmarks & Wonders', icon: '🏛️', color: '#d4af37', order: 39 },
   transport: { name: 'Transportation', icon: '🚌', color: '#4fc3ff', order: 40 },
 };
 
@@ -178,6 +181,9 @@ const S = [
   { id: 'telecom', cat: 'comms', name: 'Telecom Tower', cost: 120000, upkeep: 3500, w: 2, d: 2, radius: 55, net: 3000, workers: 6, milestone: 6, devNode: 'comms_telecom',
     desc: 'High-capacity internet over a wide area.', shape: [cyl(0, 0, 0.18, 5.5, '#e9e9e9'), cyl(0, 0, 0.45, 0.4, '#d24a3a', 4.4), plain(0, 0, 1.2, 1.2, 0.3, '#9a9a9a')] },
 ];
+
+// Wonders, the capital, big attractions and giant industry (data/wonders.js)
+S.push(...WONDERS, ...PROJECTS); // and the parks and theme park you lay out (data/projects.js)
 
 export const SERVICES = {};
 for (const s of S) {

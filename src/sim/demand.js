@@ -3,6 +3,9 @@
 import { clamp } from '../core/grid.js';
 import { AGE } from './citizens.js';
 
+// Booms bring businesses in, recessions keep them away (the stimulus props them up)
+const economyPull = (ctx) => (ctx.economy ? (ctx.economy.index - 1) * 1.2 + (ctx.stimulus ? 0.06 : 0) : 0);
+
 export function computeDemand(state, ctx) {
   const s = state.stats;
   let hhCap = { low: 0, med: 0, high: 0 }, hhUsed = { low: 0, med: 0, high: 0 };
@@ -25,7 +28,7 @@ export function computeDemand(state, ctx) {
   for (const c of state.citizens.values()) {
     if (c.age < AGE.adult || c.age >= AGE.senior || c.jail) continue;
     adults++;
-    if (!c.job && !c.school) { unemployed++; if (c.edu >= 2) eduUnemployed++; else lowEduUnemployed++; }
+    if (!c.job && !c.school && !c.outsideJob) { unemployed++; if (c.edu >= 2) eduUnemployed++; else lowEduUnemployed++; }
     else if (c.job && c.edu >= 2 && c.edu > c.jobLevel + 1) overqualified++;
   }
   const pop = state.citizens.size;
@@ -59,6 +62,7 @@ export function computeDemand(state, ctx) {
     workforce: unemployed > 10 ? 0.08 : -0.05,
     taxes: tax(T.com),
     tourists: clamp((s.tourists || 0) / 2000, 0, 0.2),
+    economy: economyPull(ctx),
   };
   const com = clamp(Object.values(fc).reduce((a, c) => a + c, 0), 0, 1);
 
@@ -71,6 +75,7 @@ export function computeDemand(state, ctx) {
     workforce: clamp(lowEduUnemployed / Math.max(20, adults * 0.08), 0, 1) * 0.3,
     jobsBalance: indJobs > pop * 0.3 ? -0.2 : 0,
     taxes: tax(T.ind),
+    economy: economyPull(ctx),
   };
   const ind = clamp(Object.values(fi).reduce((a, c) => a + c, 0), 0, 1);
 
@@ -80,8 +85,10 @@ export function computeDemand(state, ctx) {
     educated: clamp(eduUnemployed / Math.max(15, adults * 0.06), 0, 1) * 0.5,
     overqualified: clamp(overqualified / Math.max(20, adults * 0.15), 0, 1) * 0.35,
     university: ctx.hasUniversity ? 0.12 : 0,
+    landmarks: ctx.wonders?.officeDemand || 0,
     jobsBalance: offJobs > pop * 0.25 ? -0.2 : 0,
     taxes: tax(T.off),
+    economy: economyPull(ctx),
   };
   const off = clamp(Object.values(fo).reduce((a, c) => a + c, 0), 0, 1);
 

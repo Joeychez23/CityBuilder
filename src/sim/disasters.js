@@ -12,6 +12,9 @@ import { dispatch } from './emergency.js';
 import { rememberRuin } from './construction.js';
 import { difficultyOf } from '../data/difficulty.js';
 
+// How often natural disasters strike: the difficulty, and the Weather Control Tower
+export const disasterOdds = (state, ctx) => difficultyOf(state).disasters * (ctx.wonders?.weatherControl ? 0.33 : 1);
+
 function journal(state, kind, text) {
   state.journal.push({ day: state.time.day, minutes: state.time.minutes, kind, text });
   if (state.journal.length > 200) state.journal.shift();
@@ -80,7 +83,7 @@ export function firesHourly(state, ctx) {
   const w = state.weather;
   if (state.options.disasters) {
     // lightning during storms, and spontaneous fires in very dry weather
-    const odds = difficultyOf(state).disasters;
+    const odds = disasterOdds(state, ctx);
     if (w.storm > 0.4 && rng.chance(0.25 * odds)) lightning(state, ctx);
     if ((ctx.dryness || 0) > 0.75 && rng.chance(((ctx.dryness - 0.75) * 0.25) * odds)) {
       const i = Math.floor(rng.next() * N * N);
@@ -183,7 +186,7 @@ export function tornadoStep(state, ctx) {
   const t = ctx.tornado;
   if (!t) {
     // rare: a few times per decade, more in stormy weather
-    if (state.options.disasters && state.time.day > 6 && rng.chance((0.00012 + state.weather.storm * 0.0004) * difficultyOf(state).disasters)) startTornado(state, ctx);
+    if (state.options.disasters && state.time.day > 6 && rng.chance((0.00012 + state.weather.storm * 0.0004) * disasterOdds(state, ctx))) startTornado(state, ctx);
     return;
   }
   t.x += t.vx * 0.9; t.y += t.vy * 0.9; t.life -= 0.9;

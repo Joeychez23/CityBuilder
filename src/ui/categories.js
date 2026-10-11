@@ -6,6 +6,7 @@ import { ZONE_LIST } from '../data/zones.js';
 import { SURFACES } from '../world/overlays.js';
 import { money } from './tools.js';
 import './toolsBridge.js';
+import './toolsTunnel.js';
 
 registerCategory({
   key: 'roads', icon: '🛣️', name: 'Roads', order: 10,
@@ -28,7 +29,11 @@ registerCategory({
       locked: () => app.lockReason(u),
     })),
     { group: 'Bridges', name: 'Road bridge', color: '#bdb9b0', meta: 'Any road type · click start, then end', desc: 'A bridge for any road type: choose the road it carries in the tool options, or start it on a road and it takes that road\'s type. Bigger roads get sturdier bridges. It leaves each end level with the road and arches over water, valleys and tracks (and can cross at an angle). Roads you draw across water get their bridges by themselves; each road also has a Bridge mode.',
-      tool: { kind: 'bridge', kindKey: 'road:2' }, isActive: (t) => t.kind === 'bridge' && t.kindKey?.startsWith('road') },
+      tool: { kind: 'bridge', kindKey: 'road:2', style: 'plain' }, isActive: (t) => t.kind === 'bridge' && t.kindKey?.startsWith('road') && t.style !== 'landmark' },
+    { group: 'Bridges', name: 'Suspension bridge', color: '#c8352b', meta: 'A landmark over open water · 10+ cells', desc: 'A road bridge with tall towers and cables, for a long crossing over open water. It costs twice an ordinary bridge plus ₡300,000, and it\'s a landmark: +15 attractiveness, and well-being in the neighbourhoods at either end.',
+      tool: { kind: 'bridge', kindKey: 'road:4', style: 'landmark', picked: false }, isActive: (t) => t.kind === 'bridge' && t.style === 'landmark', locked: () => app.lockReason({ milestone: 13 }) },
+    { group: 'Tunnels', name: 'Road tunnel', color: '#ffb84f', meta: '₡490+/cell · portal to portal', desc: 'Bore a tunnel between two roads, straight under hills, rivers or the middle of town (up to 512 m). Nothing above it is touched; traffic takes it when it\'s quicker, so it\'s how you can take away a jammed road above it.',
+      tool: { kind: 'tunnel', layer: 'road' }, isActive: (t) => t.kind === 'tunnel' && t.layer === 'road', locked: () => app.lockReason({ milestone: 11 }) },
     { group: 'Bridges', name: 'Footbridge', color: '#d9cfb5', meta: '₡24/cell span', tool: { kind: 'bridge', kindKey: 'path' }, isActive: (t) => t.kind === 'bridge' && t.kindKey === 'path' },
     { group: 'Pedestrian', name: 'Footpath', color: '#e3d6b4', meta: '₡8/cell', tool: { kind: 'layer', layer: 'path', label: 'Footpath' }, isActive: (t) => t.layer === 'path' },
   ],

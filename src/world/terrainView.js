@@ -110,6 +110,7 @@ export function createTerrainView(view, state) {
   const tv = { terrain, overlay, overlayData, overlayTex, heat, heatData, heatTex, res, resData, resTex, water };
 
   tv.updateHeights = () => {
+    water.position.y = state.seaLevel - 0.05; // (the sea can rise: sim/hazards.js)
     const H = state.height;
     for (let i = 0; i < HN * HN; i++) pos[i * 3 + 1] = H[i];
     geo.attributes.position.needsUpdate = true;

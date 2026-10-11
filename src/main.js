@@ -227,9 +227,22 @@ async function loadFrom(text, cloudId = null) {
 // ?map=<id> skips the menu (useful while developing)
 const params = new URLSearchParams(location.search);
 const quick = MAPS.find((m) => m.id === params.get('map'));
-// A city picked from your account arrives through sessionStorage (see accountFeature)
+// A city picked from your account arrives through sessionStorage (see accountFeature); a
+// neighbour city you're going to, by its id in the region's store (features/regionFeature.js)
 let pending = null;
 try {
+  const regionCity = sessionStorage.getItem('gridlock-region-load');
+  if (regionCity) {
+    sessionStorage.removeItem('gridlock-region-load');
+    document.getElementById('menu').classList.add('hidden');
+    pending = 'region';
+    import('./sim/region.js').then((m) => m.getCityText(regionCity)).then((text) => {
+      if (text) loadFrom(text);
+      else { alert('That city is no longer in this browser.'); location.reload(); }
+    });
+  }
+} catch { /* storage blocked */ }
+if (!pending) try {
   pending = sessionStorage.getItem(PENDING_LOAD);
   if (pending) {
     const cloudId = sessionStorage.getItem(PENDING_CLOUD);

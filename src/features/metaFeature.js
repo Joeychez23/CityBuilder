@@ -3,6 +3,7 @@
 import { registerPanel, row } from '../ui/panels.js';
 import { registerSystem, formatDate } from '../sim/simulation.js';
 import { pack, SAVE_KEY } from '../sim/save.js';
+import { saveToRegion } from '../sim/region.js';
 import { EDU_NAMES, ZONES } from '../data/zones.js';
 import { ageGroup, AGE } from '../sim/citizens.js';
 import { bus } from '../core/events.js';
@@ -18,6 +19,8 @@ function download(name, href) {
 }
 
 async function saveLocal(app, quiet) {
+  // (a city in a region is kept in the region's store too: sim/region.js)
+  if (app.state.region) saveToRegion(app.state).catch(() => {});
   try {
     const text = await pack(app.state);
     localStorage.setItem(SAVE_KEY, text);
@@ -40,6 +43,8 @@ registerPanel({
       <label class="row"><span class="k">Name</span><input type="text" value="${s.cityName}" data-name></label>
       ${row('Map', `${s.mapName} (${s.climate})`)}${row('Today', formatDate(s.time.day, true))}
       <label class="row"><span class="k">Difficulty</span><select data-diff>${DIFFICULTY_KEYS.map((k) => `<option value="${k}" ${DIFFICULTIES[k] === difficultyOf(s) ? 'selected' : ''}>${DIFFICULTIES[k].name}</option>`).join('')}</select></label>
+      <label class="row"><span class="k">Elections</span><input type="checkbox" data-elections ${s.options.elections === false ? '' : 'checked'}></label>
+      <label class="row"><span class="k">Long-term climate change</span><input type="checkbox" data-climate ${s.options.climateChange === false ? '' : 'checked'}></label>
       <div class="muted" style="font-size:11px;margin:-2px 0 4px">${difficultyOf(s).blurb} ${difficultyRows(difficultyOf(s)).slice(1).map(([k, v]) => `${k} ${v}`).join(' · ')}${difficultyOf(s) === DIFFICULTIES.normal ? '' : '.'} Changing it doesn't touch the money you have.</div>
       <div class="section-title">Save</div>
       <div class="grid2"><button class="btn primary" data-a="save">💾 Save in browser</button><button class="btn" data-a="export">⬇ Export to file</button>
@@ -55,7 +60,7 @@ registerPanel({
       <label class="row"><span class="k">Tilt as you zoom</span><input type="checkbox" data-o="tiltWithZoom" ${o.tiltWithZoom ? 'checked' : ''}></label>
       <label class="row"><span class="k">Pan at the screen edge</span><input type="checkbox" data-o="edgeScroll" ${o.edgeScroll ? 'checked' : ''}></label>
       <div class="section-title">More</div>
-      <div class="grid2"><button class="btn" data-a="photo">📷 Photo mode (P)</button><button class="btn" data-a="guide">📘 Beginner's guide</button>
+      <div class="grid2"><button class="btn" data-a="photo">📷 Photo mode (P)</button><button class="btn" data-a="timelapse">🎞 Time-lapse</button><button class="btn" data-a="guide">📘 Beginner's guide</button>
       <button class="btn" data-a="editor">🛠 Editors & mods</button><button class="btn" data-a="menu">🏠 Main menu</button></div>
       <div class="muted" style="font-size:11px;margin-top:8px">Camera: wheel zooms toward the cursor · left drag (no tool) or middle drag pans · right drag rotates & tilts · double click flies there · WASD/arrows pan · Q/E rotate · Z/X zoom · T/G tilt · Home: back to town · Shift: faster<br>Tools: right click or Esc cancels · R rotates a building · Space pause · 1–3 speed · V resources · P photo mode</div>
       ${document.body.classList.contains('touch') ? '<div class="muted" style="font-size:11px;margin-top:6px">Touch: one finger pans (or uses the tool in hand) · two fingers pan, pinch to zoom and twist to rotate · three fingers up and down tilt · double tap flies there · hold a button to see what it does · ✕ Cancel (bottom right) stops a tool</div>' : ''}`;
@@ -65,12 +70,15 @@ registerPanel({
       app.toast(`Difficulty: ${DIFFICULTIES[e.target.value].name}`, 'info');
       rerender();
     };
+    body.querySelector('[data-climate]').onchange = (e) => { s.options.climateChange = e.target.checked; rerender(); };
+    body.querySelector('[data-elections]').onchange = (e) => { s.options.elections = e.target.checked; if (!e.target.checked && s.politics) s.politics.council = null; rerender(); };
     body.querySelector('[data-a="save"]').onclick = () => saveLocal(app);
     body.querySelector('[data-a="export"]').onclick = async () => {
       const text = await pack(s);
       download(`${s.cityName.replace(/\W+/g, '_')}.city`, URL.createObjectURL(new Blob([text], { type: 'text/plain' })));
     };
     body.querySelector('[data-a="photo"]').onclick = () => app.photoMode(true);
+    body.querySelector('[data-a="timelapse"]').onclick = () => app.timelapse?.start();
     body.querySelector('[data-a="account"]').onclick = () => app.panels.open('account');
     body.querySelector('[data-a="guide"]').onclick = () => app.panels.open('guide');
     body.querySelector('[data-a="editor"]').onclick = () => app.panels.open('editors');
@@ -142,7 +150,7 @@ registerPanel({
         ${row('Age', `${Math.floor(c.age)} (${ageGroup(c.age)})`)}${row('Education', EDU_NAMES[c.edu])}
         ${row('Health', `${Math.round(c.health)}%${c.sick ? ' · sick' : ''}`)}${row('Well-being', `${Math.round(c.wellbeing)}%`)}
         ${row('Home', home ? home.name || home.def.name : 'Homeless')}${row('Household wealth', hh ? `₡${Math.round(hh.wealth).toLocaleString()}` : '–')}
-        ${row('Work', job ? job.name || job.def.name : c.age >= AGE.adult && c.age < AGE.senior ? 'Unemployed' : '–')}${row('School', school ? school.def.name : '–')}
+        ${row('Work', job ? job.name || job.def.name : c.outsideJob ? 'In a neighbouring city (hyperloop)' : c.age >= AGE.adult && c.age < AGE.senior ? 'Unemployed' : '–')}${row('School', school ? school.def.name : '–')}
         ${c.jail ? row('Status', '<span class="bad">In jail</span>') : ''}
         <div style="display:flex;gap:6px;margin:8px 0"><button class="btn ${following ? '' : 'primary'}" data-a="follow">${following ? 'Stop following' : '👣 Follow'}</button><button class="btn" data-a="home">Go to home</button><button class="btn" data-a="newborn">Follow a newborn</button></div>
         <div class="section-title">Life path</div>${log || '<div class="muted">Nothing yet.</div>'}`;

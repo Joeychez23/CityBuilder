@@ -239,6 +239,9 @@ export function createNetworksView(view, state) {
     if (cond < 0.7) col.lerp(new THREE.Color('#8a8578'), (0.7 - cond) * 0.9);
     if (state.roadSnow[i] > 0.05) col.lerp(new THREE.Color('#f2f5f8'), clamp(state.roadSnow[i], 0, 0.9));
     if (state.accident[i] > 0) col.set('#d24a3a');
+    // closed: a film shoot (orange), broken by an earthquake (rubble brown), under water (blue)
+    const shut = state.closed?.[i];
+    if (shut) col.set(shut === 1 ? '#f0a020' : shut === 2 ? '#6e5b47' : '#4f8fbf');
     return col.getHex();
   }
 

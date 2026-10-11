@@ -6,10 +6,11 @@ import { THEMES } from '../data/maps.js';
 import { makeRng } from '../core/rng.js';
 import { storageCap } from '../sim/services.js';
 import { segIndex } from '../sim/roadsegs.js';
-import { cellHeight } from '../sim/mapgen.js';
+import { cellHeight, terrainAt } from '../sim/mapgen.js';
 import { bus } from '../core/events.js';
 import { DIRS, idx, inBounds, hidx } from '../core/grid.js';
 import { FLOOR, zoneParts } from './zoneStyles.js';
+import { liveParts } from '../data/wonders.js';
 
 export { FLOOR };
 
@@ -98,7 +99,9 @@ export function createBuildingsView(view, state, servicesById) {
   }
 
   function serviceParts(b, def) {
-    if (def.shape) return def.shape.map((p) => ({ ...p, w: p.w * (p.rel ? b.w : 1), d: p.d * (p.rel ? b.d : 1) }));
+    if (def.parts) return def.parts(b); // laid out to the size you drew (data/projects.js)
+    // (the car factory's yard and the shipyard's slipway change as they work)
+    if (def.shape) return [...def.shape, ...(def.factory ? liveParts(b) : [])].map((p) => ({ ...p, w: p.w * (p.rel ? b.w : 1), d: p.d * (p.rel ? b.d : 1) }));
     const h = (def.height || 2) * FLOOR;
     return [
       { pool: 'body', x: 0, z: 0, w: b.w * 0.85, d: b.d * 0.8, h, color: def.color || '#d8d4cc' },
@@ -210,6 +213,7 @@ export function createBuildingsView(view, state, servicesById) {
   // On sloping land a building stands on a stone foundation that reaches down to the lowest
   // ground under it, so it never floats on the downhill side
   function withBase(b, parts) {
+    if (b.def.noBase) return parts; // (a beach lies on the ground as it is)
     const H = state.height;
     let lo = Infinity;
     for (let y = b.y0; y <= b.y1 + 1; y++) for (let x = b.x0; x <= b.x1 + 1; x++) lo = Math.min(lo, H[hidx(x, y)]);
@@ -258,8 +262,9 @@ export function createBuildingsView(view, state, servicesById) {
       const px = p.x * scale, pz = p.z * scale;
       const wx = cx + px * cos + pz * sin;
       const wz = cz - px * sin + pz * cos;
-      // roofs sit a hair above the walls they cap, so their eaves never flicker against them
-      const y = baseY + (p.y || 0) + (p.pool === 'roof' || p.pool === 'hip' ? 0.006 : 0);
+      // roofs sit a hair above the walls they cap, so their eaves never flicker against them;
+      // `ground` parts stand on the terrain where they are (umbrellas down a sloping beach)
+      const y = (p.ground ? terrainAt(state, wx, wz) : baseY) + (p.y || 0) + (p.pool === 'roof' || p.pool === 'hip' ? 0.006 : 0);
       // a turned part (a gable end to the street) is the same box a quarter turn round
       const sx = (p.turn ? p.d : p.w) * scale, sz = (p.turn ? p.w : p.d) * scale;
       boxMatrix(wx, y - (p.y ? 0 : 0.3), wz, sx, p.h + (p.y ? 0 : 0.3), sz, ry + (p.turn ? Math.PI / 2 : 0), m); // sink 0.3 so slopes don't show gaps

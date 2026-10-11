@@ -22,6 +22,7 @@ import { roadMasks, linked } from '../sim/bridges.js';
 import { congestion, jamFactor, junctionKind, rushFactor, makeRoadCost, pathCost } from '../sim/traffic.js';
 import { astar } from '../sim/pathfind.js';
 import { hourOf } from '../sim/simulation.js';
+import { tunnelLinks, isJump } from '../sim/tunnels.js';
 
 const CAP = 1800;
 const CAR_COLORS = ['#d9d9d9', '#3a3d42', '#b8302a', '#2f5ba8', '#e6e2d6', '#6b7b8c', '#2e6b46', '#c9a227', '#7a2f5a'];
@@ -344,6 +345,7 @@ export function createVehiclesView(view, state) {
     const z = z0 + (z1 - z0) * f + fx * lane;
     const underground = a.type === 'subway';
     if (underground && !vv.showUnderground) return;
+    if (L && isJump(i0, i1)) return; // inside a tunnel (sim/tunnels.js)
     const y = surface(i0, i1, f, a.type) + (underground ? 0.2 : 0.1);
     const [sl, sh, sw] = SIZES[a.type] || SIZES.car;
     q.setFromAxisAngle(up, Math.atan2(-fz, fx));
@@ -362,6 +364,7 @@ export function createVehiclesView(view, state) {
     else if (t < 0 || t > L) return false;
     const k = Math.min(Math.floor(t), L - 1), f = t - k;
     const i0 = a.path[k], i1 = a.path[k + 1];
+    if (isJump(i0, i1)) return false; // (in a tunnel)
     const x0 = i0 % N, z0 = (i0 / N) | 0;
     out.x = x0 + 0.5 + ((i1 % N) - x0) * f;
     out.z = z0 + 0.5 + (((i1 / N) | 0) - z0) * f;
@@ -574,7 +577,7 @@ export function createVehiclesView(view, state) {
     const base = makeRoadCost(state, null, vehicleKind(a));
     const cost = (u, w, d) => (u === from && w === back ? Infinity : base(u, w, d) + queueAt(u, w, d));
     const now = pathCost(a.path.slice(k + 1), cost);
-    const alt = astar(from, goal, (i) => state.road[i] > 0, cost, 0.4, 8000);
+    const alt = astar(from, goal, (i) => state.road[i] > 0, cost, 0.4, 8000, tunnelLinks(state, 'road'));
     if (!alt || alt.length < 2 || !(pathCost(alt, cost) < now * BETTER)) return;
     const path = a.path.slice(0, k + 1).concat(alt);
     const pts = roadPathPoints(state, path);

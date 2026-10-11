@@ -27,6 +27,8 @@ registerTool('bridge', {
     el.innerHTML = `<h4>🌉 ${describe(t)}</h4>`;
     segButtons(el, 'Carries', KINDS(app), t.kindKey, (v) => { t.kindKey = v; t.picked = true; rerender(); });
     const road = parseKind(t.kindKey).layer === 'road';
+    if (road) segButtons(el, 'Style', [['plain', 'Ordinary'], ['landmark', 'Suspension (landmark)']], t.style || 'plain', (v) => { t.style = v; rerender(); });
+    if (road && t.style === 'landmark') el.insertAdjacentHTML('beforeend', '<p class="muted">A suspension bridge with tall towers and cables, for a long crossing over open water (at least 10 cells). It costs twice an ordinary bridge plus ₡300,000, and it\'s a landmark: visitors come to see it, and the neighbourhoods at either end feel the lift.</p>');
     el.insertAdjacentHTML('beforeend', `<p class="muted">${t.start ? `Start set at (${t.start.cx}, ${t.start.cy}). Now click the <b>end point</b>. Backspace to restart.` : `Click the <b>start point</b>: on a road end to connect to it${road && !t.picked ? ' (the bridge takes that road\'s type)' : ''}, or on open land.`}
       The deck leaves each end level with the road and arches just high enough over water, valleys, and railways or roads below. Bigger roads get sturdier bridges.${road ? ' Road bridges can cross at any angle (they snap straight near the grid and 45°). Roads you draw across water get bridges by themselves.' : ''} Both ends must be on land. Right click or Esc to pick a new start.</p>`);
   },
@@ -39,6 +41,7 @@ registerTool('bridge', {
     // starting on a road: the bridge carries that road (unless you've chosen a type yourself)
     if (!t.start && !t.picked && t.kindKey.startsWith('road:') && s.road[idx(p.cx, p.cy)] && !s.bridgeH[idx(p.cx, p.cy)]) t.kindKey = `road:${s.road[idx(p.cx, p.cy)]}`;
     const { layer, type } = parseKind(t.kindKey);
+    if (layer !== 'road') t.style = 'plain';
     bridgeClick(app, t, p, layer, type, describe(t));
   },
   key(app, t, e) {

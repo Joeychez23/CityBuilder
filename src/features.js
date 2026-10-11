@@ -16,11 +16,19 @@ import { editorsFeature } from './features/editorsFeature.js';
 import { accountFeature } from './features/accountFeature.js';
 import { notificationsFeature } from './features/notificationsFeature.js';
 import { layersFeature } from './features/layersFeature.js';
+import { landmarksFeature } from './features/landmarksFeature.js';
+import { deskFeature } from './features/deskFeature.js';
+import { projectsFeature } from './features/projectsFeature.js';
+import { regionalFeature } from './features/regionalFeature.js';
+import { hazardsFeature } from './features/hazardsFeature.js';
+import { politicsFeature } from './features/politicsFeature.js';
+import { regionFeature } from './features/regionFeature.js';
+import { timelapseFeature } from './features/timelapseFeature.js';
 import './features/powerPanel.js';
 import './features/happinessPanel.js';
 
 export const features = [
-  progressionFeature, editorsFeature, climateFeature, servicesFeature, cityFeature, transportFeature,
-  governanceFeature, signatureFeature, infoViewsFeature, economyPanels, metaFeature, achievementsFeature, accountFeature,
-  notificationsFeature, layersFeature,
+  progressionFeature, editorsFeature, climateFeature, hazardsFeature, servicesFeature, landmarksFeature, projectsFeature, cityFeature, transportFeature, regionalFeature, deskFeature,
+  governanceFeature, politicsFeature, regionFeature, signatureFeature, infoViewsFeature, economyPanels, metaFeature, achievementsFeature, accountFeature,
+  notificationsFeature, layersFeature, timelapseFeature,
 ];

@@ -11,6 +11,7 @@ import { gradeCells, cornerTouches, gradeAlongSegment } from './grade.js';
 import { clearBridgeCell, pruneBridges, roadLinks } from './bridges.js';
 import { removePylon, pylonValue, dropSpansAt } from './power.js';
 import { lineCells, isAxisLine, stepDirs, segIndex, clipToCell } from './roadsegs.js';
+import { maxSlopeAt } from './projects.js';
 
 export const MAX_BUILD_SLOPE = 1.3; // height change across one cell (~10 m over 8 m): anything less is buildable
 
@@ -225,7 +226,7 @@ export function computeZonable(state) {
 export function canZoneCell(state, zonable, x, y, zoneId) {
   const i = idx(x, y);
   if (!isOwned(state, x, y) || zonable[i] === 0 || zonable[i] > ZONE_DEPTH || state.power[i]) return false;
-  if (cellSlope(state, x, y) > MAX_BUILD_SLOPE) return false;
+  if (cellSlope(state, x, y) > maxSlopeAt(state, x, y)) return false;
   const b = state.bld[i] && state.buildings.get(state.bld[i]);
   if (b && (b.kind !== 'zone' || b.def.signature)) return false;
   const def = ZONES[zoneId];
@@ -412,7 +413,7 @@ export function footprintBlocker(state, x0, y0, x1, y1, zoneId = 0, allowZoneBui
         if (!allowZoneBuildings || !b || b.kind !== 'zone') return 'Another building is in the way';
       }
       if (zoneId && state.zone[i] !== zoneId) return 'Not zoned for it';
-      if (cellSlope(state, x, y) > MAX_BUILD_SLOPE) return 'Too steep here';
+      if (cellSlope(state, x, y) > maxSlopeAt(state, x, y)) return 'Too steep here';
     }
   }
   return null;

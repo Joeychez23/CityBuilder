@@ -1,6 +1,7 @@
 // Citizens and households: moving in and out, ageing, births and deaths, schooling, jobs.
 // One in-game day is one year of a citizen's life (lives are compressed; the budget is weekly).
 import { ZONES, WAGES } from '../data/zones.js';
+import { specIs } from './specialisations.js';
 import { newId } from '../core/state.js';
 import { rng } from '../core/rng.js';
 import { clamp, idx } from '../core/grid.js';
@@ -42,7 +43,8 @@ function immigrantEdu(state) {
   // Newcomers roughly follow the city's open jobs, with a universal baseline
   const open = state.stats.openJobsEdu || [1, 1, 1, 1, 1];
   const tot = open.reduce((a, c) => a + c, 0) || 1;
-  const base = [0.2, 0.3, 0.28, 0.16, 0.06];
+  // (a Tech Hub draws more highly educated people)
+  const base = state.districts.some((d) => d.spec === 'tech') ? [0.15, 0.25, 0.28, 0.2, 0.12] : [0.2, 0.3, 0.28, 0.16, 0.06];
   const w = base.map((v, k) => v * 0.55 + (open[k] / tot) * 0.45);
   let r = rng.next() * w.reduce((a, c) => a + c, 0);
   for (let k = 0; k < 5; k++) { r -= w[k]; if (r <= 0) return k; }
@@ -150,7 +152,7 @@ export function matchJobsHourly(state, ctx) {
   let budget = 400;
   for (const c of state.citizens.values()) {
     if (budget <= 0) break;
-    if (c.job || c.school || c.jail || c.age < AGE.teen || c.age >= AGE.senior) continue;
+    if (c.job || c.school || c.jail || c.outsideJob || c.age < AGE.teen || c.age >= AGE.senior) continue;
     if (c.age < AGE.adult && rng.chance(0.7)) continue; // most teens are not job-hunting
     budget--;
     const hh = state.households.get(c.hh);
@@ -159,7 +161,11 @@ export function matchJobsHourly(state, ctx) {
     const comp = accessComp(state, ctx, home);
     let best = null, bestLevel = -1, bestDist = 1e9;
     const [hx, hy] = center(home);
-    for (let t = 0; t < 10; t++) {
+    // live-work towers: residents take the jobs upstairs first
+    if (home.def.liveWork && home.jobs > home.workers.length && home.workersByLevel) {
+      for (let lv = c.edu; lv >= 0; lv--) if (home.jobsEdu[lv] - home.workersByLevel[lv] > 0) { best = home; bestLevel = lv; bestDist = 0; break; }
+    }
+    for (let t = 0; t < 10 && !best; t++) {
       const b = places[Math.floor(rng.next() * places.length)];
       if (b.comp !== comp || b.workers.length >= b.jobs) continue;
       for (let lv = c.edu; lv >= 0; lv--) {
@@ -204,7 +210,9 @@ function educationDaily(state, ctx, c, home) {
     const s = state.buildings.get(c.school);
     if (!s) { c.school = 0; return; }
     c.studyDays++;
-    if (c.studyDays >= STUDY_DAYS[c.studyLevel] - (c.studyLevel >= 3 && hasPerk(state, 'edu_scholarships') ? 1 : 0)) {
+    // (the National Library takes another day off college and university)
+    // (and living in a University Town another)
+    if (c.studyDays >= STUDY_DAYS[c.studyLevel] - (c.studyLevel >= 3 && hasPerk(state, 'edu_scholarships') ? 1 : 0) - (c.studyLevel >= 3 ? (ctx.wonders?.studyBoost || 0) + (specIs(ctx, home, 'campus') >= 1 ? 1 : 0) : 0)) {
       c.edu = Math.max(c.edu, c.studyLevel);
       logLife(state, c, `Graduated from ${s.def.name}`);
       leaveSchool(state, c);
@@ -254,7 +262,7 @@ export function citizensDaily(state, ctx) {
       educationDaily(state, ctx, c, home);
 
       // Sickness and treatment
-      if (!c.sick && rng.chance(((100 - c.health) / 100) * 0.05 + (c.age > 70 ? 0.02 : 0))) c.sick = 1;
+      if (!c.sick && rng.chance(((100 - c.health) / 100) * 0.05 + (c.age > 70 ? 0.02 + (ctx.heatwave ? 0.04 : 0) : 0))) c.sick = 1; // (a heatwave is hard on the old)
       if (c.sick) {
         sickNow++;
         const p = healthProviders.find((h) => (h.patientsToday || 0) < h.def.patients * (h.efficiency || 1) &&
@@ -320,12 +328,18 @@ export function householdFinances(state, ctx) {
         const tax = wage * rate;
         income += wage - tax;
         resTax += tax;
+      } else if (c.outsideJob) {
+        // works in a neighbouring city (hyperloop): paid there, taxed here
+        const wage = WAGES[Math.min(4, c.edu)] * 0.25, tax = wage * clamp(T.res, -10, 30) / 100;
+        income += wage - tax;
+        resTax += tax;
       } else if (c.age >= AGE.senior) income += 160; // pension
     }
     const covWelfare = covAt(ctx, 'welfare', home);
     if (hh.wealth < 1500 && covWelfare > 0.2) income += 120 * covWelfare;
     const lv = state.landValue[idx(...center(home))] || 0;
-    const rent = (40 + lv * 160) * (ZONES[home.type]?.rent ?? 1) * (1 + (home.level - 1) * 0.25) * (home.def.lowRent ? 0.55 : 1);
+    // (rents rise where the neighbourhood is popular: sim/society.js)
+    const rent = (40 + lv * 160) * (ZONES[home.type]?.rent ?? 1) * (1 + (home.level - 1) * 0.25) * (home.def.lowRent ? 0.55 : 1) * (home.rentIndex ?? 1);
     const spend = Math.max(0, income * 0.35 + hh.wealth * 0.01);
     hh.income = income;
     hh.rent = rent;

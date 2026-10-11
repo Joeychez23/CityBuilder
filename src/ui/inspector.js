@@ -15,7 +15,10 @@ import { onSiteSpaces, parkReach } from '../sim/parking.js';
 import { unitsOf } from '../sim/emergency.js';
 import { idx } from '../core/grid.js';
 import { perWeek } from '../sim/economy.js';
-import { rushCost, rushConstruction } from '../sim/construction.js';
+import { rushCost, rushConstruction, canRush } from '../sim/construction.js';
+import { wonderHtml, wireWonder } from './inspectorWonders.js';
+import { tunnelAt } from '../sim/tunnels.js';
+import { CLOSED_NAMES } from '../sim/closures.js';
 import { zoneStyleName } from '../world/zoneStyles.js';
 
 const status = (v) => (v >= 0.95 ? '<span class="good">OK</span>' : v >= 0.5 ? `<span class="warn">${pct(v)}</span>` : `<span class="bad">${pct(v)}</span>`);
@@ -76,6 +79,8 @@ registerPanel({
         ${vol > cap ? '<div class="bad" style="font-size:11px">Backed up: more traffic than this road can carry. Add lanes (a bigger road), a roundabout, or another route.</div>' : ''}
         ${row('Snow', pct(s.roadSnow[i]))}${row('Noise', pct(s.noise[i]))}
         ${row('Upgrades', UPGRADES.filter((u) => s.roadUpg[i] & u.bit).map((u) => u.name).join(', ') || '–')}
+        ${(() => { const t = tunnelAt(s, i); if (!t) return ''; const o = t.a === i ? t.b : t.a; return row("Tunnel", `${Math.round(t.len)} cells to (${o % 272}, ${(o / 272) | 0})`); })()}
+        ${s.closed?.[i] ? row('Closed', CLOSED_NAMES[s.closed[i]], 'bad') : ''}
         ${row('Upkeep', `${money(perWeek(r.upkeep))}/wk per cell`)}`;
       return;
     }
@@ -87,11 +92,14 @@ registerPanel({
     if (b.cons) {
       // a building site: how far along it is, and (for city services) the option to rush it
       const left = Math.max(0, (1 - b.cons.progress) * b.cons.hours);
-      html += `<div class="section-title">🏗️ Under construction</div>${meter(b.cons.progress, 'var(--yellow)')}
-        ${row('Done', pct(b.cons.progress))}${row('Ready in', left < 1 ? 'less than an hour' : `about ${Math.ceil(left)} game hour${Math.ceil(left) === 1 ? '' : 's'}`)}
-        <div class="muted" style="font-size:11px;margin:4px 0">${b.kind === 'zone' ? 'People move in (or start work) once it\'s finished.' : 'It starts working once it\'s finished. No upkeep is charged while it\'s being built.'}</div>
-        ${b.kind !== 'zone' ? `<button class="btn primary" data-a="rush">⏩ Rush it · ${money(rushCost(b))}</button>` : ''}`;
+      const lb = b.def.longBuild;
+      html += `<div class="section-title">🏗️ Under construction${b.cons.paused ? ' · paused' : ''}</div>${meter(b.cons.progress, 'var(--yellow)')}
+        ${row('Done', pct(b.cons.progress))}${row('Ready in', b.cons.paused ? 'paused' : left < 1 ? 'less than an hour' : left > 48 ? `about ${Math.ceil(left / 24)} days` : `about ${Math.ceil(left)} game hour${Math.ceil(left) === 1 ? '' : 's'}`)}
+        ${lb ? row('Builders', `${money(perWeek(lb.perDay))}/wk while the work goes on`) + row('Visitors already', `+${Math.round(b.def.attract * (0.15 + 0.6 * b.cons.progress))} attractiveness`, 'good') : ''}
+        <div class="muted" style="font-size:11px;margin:4px 0">${b.kind === 'zone' ? 'People move in (or start work) once it\'s finished.' : lb ? 'A grand project, built stage by stage over many days and paid as it goes. Pause the work if money is tight.' : 'It starts working once it\'s finished. No upkeep is charged while it\'s being built.'}</div>
+        ${canRush(b) ? `<button class="btn primary" data-a="rush">⏩ Rush it · ${money(rushCost(b))}</button>` : ''}${lb ? `<button class="btn" data-a="pause">${b.cons.paused ? '▶ Carry on building' : '⏸ Pause the work'}</button>` : ''}`;
       body.innerHTML = html;
+      body.querySelector('[data-a="pause"]')?.addEventListener('click', () => { b.cons.paused = !b.cons.paused; app.panels.refresh('inspect'); });
       body.querySelector('[data-a="rush"]')?.addEventListener('click', () => {
         if (rushConstruction(s, b)) app.toast(`${b.name || b.def.name} is finished`, 'good', '🏗️ Rushed');
         else app.toast('Not enough money', 'bad');
@@ -117,6 +125,7 @@ registerPanel({
         }
       }
       if (b.salesRatio != null && b.product === 'retail') html += row('Customers', `${pct(Math.min(1, b.salesRatio))} of what it could sell`, b.salesRatio < 0.5 ? 'bad' : b.salesRatio < 0.75 ? 'warn' : 'good');
+      if (b.mallPull > 0.05) html += row('Lost to the mega-mall', `about ${pct(b.mallPull)} of its customers`, 'warn');
       html += levelHtml(app, b);
     } else if (isService(b)) {
       const d = b.def;
@@ -154,10 +163,12 @@ registerPanel({
         const occ = b.occupancy;
         html += row('Guests last night', occ == null ? '<span class="muted">opens tonight</span>' : `${b.guests} / ${d.rooms} rooms · ${pct(occ)}`, occ != null && occ < 0.4 ? 'warn' : '')
           + (occ == null ? '' : meter(occ, 'var(--blue)'))
+          + (b.delegates ? row('Business travellers', `${b.delegates} of them (convention centre)`) : '')
           + row('Room price', `${money(d.roomRate)} a night`) + row('Rooms earned', `${money(b.roomIncome || 0)} a day`)
           + row('Appeal to guests', b.appeal == null ? '–' : b.appeal >= 1.1 ? 'high' : b.appeal >= 0.75 ? 'fair' : 'low', b.appeal != null && b.appeal < 0.75 ? 'warn' : '');
         if (occ != null && occ < 0.9) html += `<div class="muted" style="font-size:11px;margin:2px 0 6px">${(s.stats.hotelWanted || 0) <= (s.stats.hotelRooms || 0) ? 'More rooms than tourists who want to stay: parks, landmarks and attractions (and a train, harbor or airport) bring more.' : 'Guests choose hotels near parks and landmarks first' + (d.resort ? ', and resorts by the water.' : '.')}</div>`;
       }
+      html += wonderHtml(app, b);
       if (d.deathRate) html += row('Deceased collected today', `${Math.round(b.doneToday || 0)} / ${Math.round(d.deathRate * eff)}`, (b.doneToday || 0) >= d.deathRate * eff - 0.5 ? 'warn' : '');
       if (d.parking) {
         html += row('Cars parked (workday)', `${b.used || 0} / ${b.spaces ?? d.parking}${(b.used || 0) >= (b.spaces ?? d.parking) ? ' · full' : ''}`) + meter((b.used || 0) / (b.spaces || d.parking), (b.used || 0) >= (b.spaces ?? d.parking) ? 'var(--bad)' : 'var(--blue)');
@@ -174,7 +185,7 @@ registerPanel({
         html += `<div class="row"><span class="k">Serve only district</span><select data-district><option value="0">Whole city</option>${s.districts.map((x) => `<option value="${x.id}" ${b.serveDistrict === x.id ? 'selected' : ''}>${x.name}</option>`).join('')}</select></div>`;
       }
     }
-    if (b.def.signature) html += `<div class="chip">★ Signature building</div> <span class="muted">${b.def.effect}</span>`;
+    if (b.def.signature) html += `<div class="chip">★ ${b.def.bought ? 'Landmark' : 'Signature building'}</div> <span class="muted">${b.def.effect}</span>`;
 
     const kw = (v) => (v < 1 ? `${Math.round(v * 1000)} kW` : `${v.toFixed(1)} MW`);
     html += '<div class="section-title">Utilities</div>' + row('Electricity', `${b.powerUse > 0 ? `<span class="muted">${kw(b.powerUse)}</span> · ` : ''}${status(b.power)}${b.power < 0.995 && b.powerUse > 0 ? ' · <span class="bad">lights out at night</span>' : ''}`) + row('Water', status(b.water)) + row('Sewage', status(b.sewage));
@@ -195,6 +206,7 @@ registerPanel({
     html += `<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">${b.def.permanent ? '' : `<button class="btn" data-a="bulldoze">🚜 Bulldoze${back ? ` (+${money(back)})` : ''}</button>`}
       ${b.kind !== 'zone' && (b.def.cat === 'transport' || b.def.parking) ? `<label class="row" style="gap:6px"><span class="k">Parking fee</span><input type="number" min="0" max="50" value="${b.parkingFee ?? 0}" data-parking style="width:56px"></label>` : ''}</div>`;
     body.innerHTML = html;
+    wireWonder(app, b, body);
     body.querySelector('[data-a="bulldoze"]')?.addEventListener('click', () => {
       const r = app.undo.wrap(`Bulldozed ${b.name || b.def.name}`, () => demolishBuilding(s, b));
       if (r) app.toast(`+${money(r)} refunded`, 'good');

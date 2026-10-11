@@ -13,7 +13,7 @@ export function registerProblems(fn) { checks.push(fn); }
 // Icons for building issues (also used by the notification center)
 export const ISSUE_ICONS = {
   power: '⚡', water: '💧', sewage: '💩', garbage: '🗑️', dead: '⚰️', fire: '🔥', crime: '🚨', full: '⛔',
-  parking: '🅿️', lotfull: '🅿️', abandoned: '🏚️', noroad: '🚧', polluted: '☣️', sick: '🤒', staff: '👷', customers: '🛍️',
+  parking: '🅿️', lotfull: '🅿️', abandoned: '🏚️', noroad: '🚧', polluted: '☣️', sick: '🤒', staff: '👷', customers: '🛍️', supplies: '📦', needs: '🔒',
 };
 // What each icon means, for tooltips and the inspector
 export const ISSUE_TEXT = {
@@ -21,9 +21,10 @@ export const ISSUE_TEXT = {
   fire: 'On fire', crime: 'High crime', full: 'Full', parking: 'Not enough parking: some workers walk to work', lotfull: 'Full: more drivers wanted to park here (they walk to work instead)', abandoned: 'Abandoned',
   noroad: 'No road access', polluted: 'Polluted tap water', sick: 'Sick residents', staff: 'Short of staff',
   customers: 'Not enough customers (too many shops for the people nearby)',
+  supplies: 'Short of the goods it makes things from (link it to the highway to import them)', needs: 'Missing something it needs to run',
 };
 // Most urgent first: a building shows up to three icons above it
-const ISSUE_ORDER = ['fire', 'noroad', 'power', 'water', 'sewage', 'garbage', 'parking', 'full', 'lotfull', 'polluted', 'dead', 'crime', 'staff', 'customers', 'abandoned'];
+const ISSUE_ORDER = ['fire', 'noroad', 'needs', 'power', 'water', 'sewage', 'garbage', 'parking', 'full', 'lotfull', 'polluted', 'dead', 'crime', 'staff', 'supplies', 'customers', 'abandoned'];
 
 // The deceased in it have waited most of a morning for a hearse
 const deadWaiting = (b) => (b.dead || 0) >= 1 && (b.deadHours || 0) >= 8;
@@ -50,6 +51,8 @@ export function buildingIssues(state, ctx, b) {
   if (b.def.parking && (b.turnedAway || 0) > 0 && (b.used || 0) >= (b.spaces || 0)) out.push('lotfull');
   if (b.roadAccess === false || (b.kind === 'zone' && b.comp === -1 && b.compStamp === ctx.netStamp)) out.push('noroad');
   if (isService(b) && b.def.workers && (b.staff ?? b.def.workers) < b.def.workers * 0.4) out.push('staff');
+  if (isService(b) && b.shortInputs) out.push('supplies');
+  if (isService(b) && b.missing) out.push('needs');
   // grown workplaces: jobs nobody fills, shops nobody shops at (once they've been open a while)
   const open = state.time.day - (b.built ?? state.time.day) > 3;
   if (b.kind === 'zone' && !b.def.signature && open && b.jobs >= 2 && (b.workerCount ?? b.workers.length) < b.jobs * 0.4) out.push('staff');

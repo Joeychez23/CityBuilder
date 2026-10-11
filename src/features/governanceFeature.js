@@ -10,6 +10,8 @@ import { centerIdx } from '../sim/services.js';
 import { bus } from '../core/events.js';
 import { money } from '../ui/tools.js';
 import { charge, perWeek } from '../sim/economy.js';
+import { SPECIALISATIONS, specDef, specialisationsDaily } from '../sim/specialisations.js';
+import { meter } from '../ui/panels.js';
 
 const NAMES = ['Oakridge', 'Riverside', 'Old Town', 'Harborview', 'Maple Heights', 'Ironworks', 'Midtown', 'Westgate', 'Sunnyvale', 'Brookside', 'Northfield', 'Cedar Park'];
 
@@ -87,7 +89,13 @@ registerPanel({
           const on = d.policies[p.key];
           return `<label class="row" title="${p.desc}"><span>${p.name}${p.cost ? ` <span class="muted">(${money(perWeek(p.cost))}/wk)</span>` : ''}${lock ? ` <span class="muted">🔒 ${lock}</span>` : ''}</span>
             <span>${p.value && on ? `<input type="number" min="${p.min}" max="${p.max}" value="${on}" data-val="${p.key}" style="width:52px"> ` : ''}<input type="checkbox" data-pol="${p.key}" ${on ? 'checked' : ''} ${lock ? 'disabled' : ''}></span></label>`;
-        }).join('')}`;
+        }).join('')}
+        <div class="section-title">Specialisation</div>
+        ${d.spec ? `<div class="row"><b>${specDef(d.spec).icon} ${specDef(d.spec).name}</b><button class="btn" data-unspec>Drop it</button></div><div class="muted" style="font-size:11px">${specDef(d.spec).effect}${(d.specProgress?.[d.spec] ?? 1) < 1 ? ' <span class="warn">It no longer has what it takes: half the bonus until it does again.</span>' : ''}</div>`
+          : SPECIALISATIONS.map((sp) => {
+            const prog = d.specProgress?.[sp.key] || 0;
+            return `<div class="list-item" title="${sp.effect}"><div class="row"><span>${sp.icon} ${sp.name}</span>${prog >= 1 ? `<button class="btn primary" data-spec="${sp.key}">Declare</button>` : `<span class="muted num">${Math.round(prog * 100)}%</span>`}</div>${prog < 1 ? meter(prog, 'var(--blue)') : ''}<div class="muted" style="font-size:11px">${prog >= 1 ? sp.effect : `Needs ${sp.req}`}</div></div>`;
+          }).join('')}`;
       el.querySelector('[data-name]').onchange = (e) => { d.name = e.target.value; };
       el.querySelector('[data-del]').onclick = () => {
         for (let i = 0; i < s.district.length; i++) if (s.district[i] === d.id) s.district[i] = 0;
@@ -104,6 +112,14 @@ registerPanel({
         rerender();
       }));
       el.querySelectorAll('[data-val]').forEach((inp) => (inp.onchange = () => { d.policies[inp.dataset.val] = Math.max(1, Math.min(50, +inp.value)); }));
+      el.querySelectorAll('[data-spec]').forEach((b) => (b.onclick = () => {
+        d.spec = b.dataset.spec;
+        specialisationsDaily(s, app.ctx);
+        s.journal.push({ day: s.time.day, kind: 'policy', text: `${d.name} became a ${specDef(d.spec).name}` });
+        app.toast(specDef(d.spec).effect, 'good', `${specDef(d.spec).icon} ${d.name}: ${specDef(d.spec).name}`);
+        rerender();
+      }));
+      el.querySelector('[data-unspec]')?.addEventListener('click', () => { d.spec = null; specialisationsDaily(s, app.ctx); rerender(); });
       body.appendChild(el);
     }
     body.querySelector('[data-a="paint"]').onclick = () => app.tools.set({ kind: 'district', mode: 'paint', district: s.districts[0]?.id });
@@ -143,6 +159,9 @@ function policyCosts(state) {
 export const governanceFeature = {
   init(app) {
     registerSystem({ name: 'policies', every: 'day', run: policyCosts });
+    registerSystem({ name: 'specialisations', every: 'day', run: specialisationsDaily });
+    specialisationsDaily(app.state, app.ctx);
+    bus.on('districts:changed', () => specialisationsDaily(app.state, app.ctx));
     registerCategory({ key: 'districts', icon: '🗾', name: 'Districts', order: 90, toolKind: 'district',
       direct: (a) => a.tools.set({ kind: 'district', mode: 'paint', district: a.state.districts[0]?.id }) });
     bus.on('building:add', (b) => { b.district = app.state.district[centerIdx(b)]; });

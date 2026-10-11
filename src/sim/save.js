@@ -54,9 +54,14 @@ export function deserialize(text) {
     else state[k] = v;
   }
   if (resized) recomputeWater(state);
-  for (const b of state.buildings.values()) {
+  // buildings of a type the game no longer has (e.g. the hydro dam and the airport parts) are
+  // taken down, so the rest of the city still loads
+  for (const b of [...state.buildings.values()]) {
     b.def = defFor(b.kind, b.type);
-    if (!b.def) throw new Error(`Unknown building type ${b.kind}/${b.type}`);
+    if (b.def) continue;
+    console.warn(`Removed a building of a type that no longer exists: ${b.kind}/${b.type}`);
+    for (let y = b.y0; y <= b.y1; y++) for (let x = b.x0; x <= b.x1; x++) if (state.bld?.[y * N + x] === b.id) state.bld[y * N + x] = 0;
+    state.buildings.delete(b.id);
   }
   // Core layers must exist; newer layers (e.g. bridges) default to empty for older saves
   for (const k of ['height', 'road', 'zone', 'bld']) if (!data[k]) throw new Error(`Save is missing layer ${k}`);

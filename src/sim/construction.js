@@ -26,6 +26,8 @@ const CLEANUP_HOURS = 10;           // rubble is cleared before rebuilding start
 export function buildHours(b) {
   const def = b.def;
   const area = (b.x1 - b.x0 + 1) * (b.y1 - b.y0 + 1);
+  if (def.longBuild) return def.longBuild.days * 24; // a grand project: built over many days
+  if (b.kind === 'zone' && def.bought) return clamp(10 + area * 0.6, 12, 48);
   if (b.kind === 'zone') return clamp(3 + area * 1.2 + (def.floors || 1) * 1.3 + (b.level - 1) * 2, 4, 36);
   return clamp(4 + (def.cost || 0) / 12000 + area * 0.25, 4, 72);
 }
@@ -79,8 +81,9 @@ export function finishConstruction(state, b) {
 
 // Pay to finish a city service right away
 export function rushCost(b) { return Math.round((b.def.cost || 0) * RUSH_SHARE); }
+export const canRush = (b) => b.kind !== 'zone' && !b.def.longBuild;
 export function rushConstruction(state, b) {
-  if (!b.cons || b.kind === 'zone') return false;
+  if (!b.cons || !canRush(b)) return false;
   if (!spend(state, rushCost(b), b.def.cat || 'construction')) return false;
   finishConstruction(state, b);
   return true;
@@ -99,6 +102,7 @@ export function constructionStep(state, ctx) {
     }
     if (!b.cons) continue;
     sites++;
+    if (b.cons.paused) continue; // a grand project whose work you paused
     b.cons.progress = Math.min(1, b.cons.progress + STEP_MINUTES / 60 / b.cons.hours);
     const step = Math.floor(b.cons.progress * 10);
     if (step !== b.step) { b.step = step; bus.emit('building:changed', b); }

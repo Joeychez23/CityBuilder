@@ -16,6 +16,8 @@ import { linked, roadLinks, roadMasks } from './bridges.js';
 import { hasPerk } from '../data/progression.js';
 import { earn } from './economy.js';
 import { isOwned } from './build.js';
+import { waterTaxiOption } from './projects.js';
+import { tunnelLinks } from './tunnels.js';
 
 const NN = N * N;
 
@@ -114,8 +116,10 @@ export function makeRoadCost(state, ctx, vehicle = 'car') {
   const highSpeed = state.policies.highSpeedHighways;
   const dists = state.districts;
   const distPol = (i) => (state.district[i] ? dists.find((d) => d.id === state.district[i])?.policies : null);
+  const closed = state.closed;
   return (from, to, d) => {
     if (!linked(state, 'road', from, to, d)) return Infinity;
+    if (closed && closed[to]) return Infinity; // closed road (sim/closures.js)
     const t = state.road[to];
     const def = ROADS[t];
     // one-way rules
@@ -180,7 +184,7 @@ export function route(state, ctx, a, b, vehicle = 'car') {
     (age < FRESH || !hit.path || pathCost(hit.path, cost) <= hit.cost * SLOWER)) return hit.path;
   if (ctx.routeBudget <= 0) return hit?.path ?? null;
   ctx.routeBudget--;
-  const path = astar(a, b, (i) => state.road[i] > 0, cost, 0.4);
+  const path = astar(a, b, (i) => state.road[i] > 0, cost, 0.4, undefined, tunnelLinks(state, 'road'));
   cache.delete(key);
   cache.set(key, { path, stamp: ctx.netStamp, step: ctx.stepCount, cost: path ? pathCost(path, cost) : 0 });
   if (cache.size > 3000) cache.delete(cache.keys().next().value);
@@ -205,7 +209,7 @@ export function rebuildTripPools(state, ctx) {
       if (b.product === 'retail') shops.push(b.id);
       if (b.def.cat === 'ind' || b.def.cat === 'spec') industry.push(b.id);
     } else if (isService(b)) {
-      if (b.def.leisure || b.def.attract) leisure.push(b.id);
+      if (b.def.leisure || b.def.attract || b.def.themeGate) leisure.push(b.id);
       if (b.def.rooms && b.guests) hotels.push(b.id);
       // (garbage trucks aren't drawn from here: their real rounds are in garbage.js)
       if (b.def.patrol || b.def.mail || b.def.deathRate || b.def.roadMaint) services.push(b.id);
@@ -315,6 +319,9 @@ export function trafficStep(state, ctx) {
       if (parkFull) trip.car = false;
       const tr = transitOption(state, ctx, a, b, dist, trip.car);
       if (tr) { transitRiders += W; tr.line.ridersToday = (tr.line.ridersToday || 0) + W; continue; }
+      // a water taxi between piers near both ends
+      const boat = waterTaxiOption(state, ctx, a, b, dist);
+      if (boat) { boat.riders += W; transitRiders += W; continue; }
       if (parkFull) { ctx.walkTrips = (ctx.walkTrips || 0) + W; continue; }
       if (!trip.car) {
         if (ctx.taxis > 0) { trip.type = 'taxi'; ctx.taxiTrips = (ctx.taxiTrips || 0) + W; }

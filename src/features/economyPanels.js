@@ -9,11 +9,12 @@ import { takeLoan, repayLoan, loanLimit, interestRate, projection, perWeek } fro
 import { WEEKDAYS, formatDate } from '../sim/simulation.js';
 import { AGE } from '../sim/citizens.js';
 import '../ui/inspector.js';
+import { COUNCIL_TAX_CAP } from '../sim/politics.js';
 
 const LABELS = {
   resTax: 'Residential tax', comTax: 'Commercial tax', indTax: 'Industrial tax', offTax: 'Office tax', fees: 'Service fees',
-  transit: 'Public transport fares', exports: 'Utility exports', subsidy: 'Government subsidy', parking: 'Parking fees', tolls: 'Road tolls', hotels: 'Hotel rooms', refunds: 'Demolition refunds (paid at once)',
-  services: 'Service upkeep', roads: 'Road upkeep', loanInterest: 'Loan interest', imports: 'Imported utilities & services', policies: 'Policies', transitCost: 'Transit',
+  transit: 'Public transport fares', exports: 'Utility exports', subsidy: 'Government subsidy', parking: 'Parking fees', tolls: 'Road tolls', hotels: 'Hotel rooms', conventions: 'Convention fees', casino: 'Gaming licences', film: 'Film studio fees', factories: 'City factories (sales)', grants: 'National government grant', themepark: 'Theme park tickets', promenade: 'Boardwalk kiosks', regional: 'Regional trade', refunds: 'Demolition refunds (paid at once)',
+  services: 'Service upkeep', roads: 'Road upkeep', loanInterest: 'Loan interest', imports: 'Imported utilities & services', supplies: 'Factory supplies', projects: 'Grand projects (building)', policies: 'Policies', transitCost: 'Transit',
 };
 
 function slider(body, label, min, max, step, value, fmt, onChange) {
@@ -57,9 +58,9 @@ registerPanel({
       lineChart(c1, [{ values: w.map((x) => x.money), color: '#2f55ff' }]);
       lineChart(c2, [{ values: w.map((x) => x.income), color: '#5fd38a' }, { values: w.map((x) => x.expense), color: '#ff6b5a' }]);
     } else if (tab === 'taxes') {
-      el.innerHTML = '<div class="muted">10% is neutral. Higher taxes earn more but lower demand and well-being; negative rates subsidise.</div><div class="section-title">By zone</div>';
+      el.innerHTML = `<div class="muted">10% is neutral. Higher taxes earn more but lower demand and well-being; negative rates subsidise.</div>${s.politics?.council ? `<div class="warn" style="font-size:11px;margin-top:4px">The opposition council won't let taxes go above ${COUNCIL_TAX_CAP}% until the next election.</div>` : ''}<div class="section-title">By zone</div>`;
       for (const [k, name] of [['res', 'Residential'], ['com', 'Commercial'], ['ind', 'Industrial'], ['off', 'Office']]) {
-        slider(el, name, -10, 30, 1, s.taxes[k], (v) => `${v}%`, (v) => { s.taxes[k] = v; });
+        slider(el, name, -10, s.politics?.council ? COUNCIL_TAX_CAP : 30, 1, s.taxes[k], (v) => `${v}%`, (v) => { s.taxes[k] = v; });
       }
       el.insertAdjacentHTML('beforeend', '<div class="section-title">Residential adjustment by education</div>');
       EDU_NAMES.forEach((n, k) => slider(el, n, -5, 5, 1, s.taxes.resEdu[k], (v) => `${v > 0 ? '+' : ''}${v}%`, (v) => { s.taxes.resEdu[k] = v; }));
@@ -81,7 +82,7 @@ registerPanel({
       const lim = loanLimit(s);
       el.innerHTML = `${row('Current loan', money(s.loan))}${row('Loan limit', money(lim))}${row('Interest rate', `${interestRate(s, app.ctx).toFixed(1)}% / year`)}
         ${row('Interest per week', money(perWeek((s.loan * interestRate(s, app.ctx)) / 100 / 365)))}
-        <div class="muted" style="margin:6px 0">City Hall lowers interest by 1%, Central Bank by 2%. Milestones raise the limit.</div>
+        <div class="muted" style="margin:6px 0">City Hall lowers interest by 1%, Central Bank by 2%. Milestones raise the limit.</div>${s.politics?.council ? '<div class="warn" style="font-size:11px;margin:4px 0">The opposition council won\'t let you borrow until the next election.</div>' : ''}
         <div class="grid2"><button class="btn" data-a="b50">Borrow ₡50,000</button><button class="btn" data-a="b250">Borrow ₡250,000</button>
         <button class="btn" data-a="r50">Repay ₡50,000</button><button class="btn" data-a="rall">Repay all</button></div>`;
       el.querySelectorAll('button').forEach((b) => (b.onclick = () => {

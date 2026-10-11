@@ -16,6 +16,7 @@ export const DISTRICT_POLICIES = [
   { key: 'speedBumps', name: 'Speed Bumps', cost: 200, desc: 'Slower traffic: fewer accidents and less noise.' },
   { key: 'heavyBan', name: 'Heavy Traffic Ban', cost: 0, desc: 'Trucks avoid the district: less noise and pollution, longer deliveries.' },
   { key: 'gated', name: 'Gated Community', cost: 500, desc: 'Only residents and workers may enter: better well-being, less crime, no through traffic.' },
+  { key: 'rentControl', name: 'Rent Control', cost: 0, milestone: 6, desc: 'Rents can\'t rise more than 15% above the going rate, so nobody is priced out; but landlords put less into their buildings, so homes level up more slowly.' },
   { key: 'combustionBan', name: 'Combustion Engine Ban', cost: 300, milestone: 12, desc: 'Fuel-burning vehicles are banned except for locals: far less air pollution.' },
 ];
 

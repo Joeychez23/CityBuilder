@@ -12,6 +12,7 @@ import { makeRoadCost } from './traffic.js';
 import { linked } from './bridges.js';
 import { hasPerk } from '../data/progression.js';
 import { earn, charge } from './economy.js';
+import { tunnelLinks } from './tunnels.js';
 
 export const LINE_COLORS = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#42d4f4', '#f032e6', '#bfef45', '#fabed4', '#469990', '#dcbeff'];
 export const DEFAULT_TICKET = { bus: 2, tram: 2, train: 4, subway: 3 };
@@ -54,7 +55,8 @@ export function computeLinePath(state, ctx, line) {
   if (n < 2) { line.path = null; line.valid = false; return; }
   for (let k = 0; k < n; k++) {
     const a = line.stops[k], b = line.stops[(k + 1) % n];
-    const seg = astar(a, b, pass, (f, t, d) => (Number.isFinite(cost(f, t, d)) ? Math.max(0.3, cost(f, t, d)) : 3), 0.3, N * N);
+    const links = line.type === 'train' ? tunnelLinks(state, 'rail') : line.type === 'bus' || line.type === 'tram' ? tunnelLinks(state, 'road') : null;
+    const seg = astar(a, b, pass, (f, t, d) => (Number.isFinite(cost(f, t, d)) ? Math.max(0.3, cost(f, t, d)) : 3), 0.3, N * N, links);
     if (!seg) { line.path = null; line.valid = false; line.problem = `No ${LINE_TYPES[line.type].name.toLowerCase()} route between stops ${k + 1} and ${((k + 1) % n) + 1}`; return; }
     stopIndex.push(path.length);
     path.push(...(k === 0 ? seg : seg.slice(1)));
@@ -106,6 +108,7 @@ export const lineUpkeep = (line) => LINE_TYPES[line.type].upkeep * line.vehicles
 
 export function lineRunning(state, line) {
   if (!line.valid || !line.active || !line.vehicles) return false;
+  if (state.strike?.cat === 'transport') return false; // the transit workers are on strike
   return (SCHEDULES[line.schedule] || SCHEDULES.both).runs(hourOf(state));
 }
 

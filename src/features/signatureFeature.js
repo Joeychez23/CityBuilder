@@ -63,16 +63,26 @@ function placeSignature(state, ctx, def, x0, y0, x1, y1, rot) {
   return { building: b };
 }
 
+// Well-being around landmarks: signature buildings, and the wonders and attractions that
+// lift a neighbourhood (wellbeing within boostRadius, see data/wonders.js)
 export function computeSigBoost(state, ctx) {
   const g = ctx.sigBoost || (ctx.sigBoost = new Float32Array(N * N));
   g.fill(0);
   for (const b of state.buildings.values()) {
-    if (!b.def.signature || b.cons) continue;
+    const sig = b.def.signature;
+    if ((!sig && !(b.kind === 'service' && b.def.wellbeing && b.def.boostRadius)) || b.cons) continue;
+    const r = sig ? b.def.radius : b.boostRadius || b.def.boostRadius;
     const [cx, cy] = center(b);
-    forRadius(cx + 0.5, cy + 0.5, b.def.radius, (x, y, d) => {
+    forRadius(cx + 0.5, cy + 0.5, r, (x, y, d) => {
       const i = idx(x, y);
-      g[i] = Math.max(g[i], b.def.wellbeing * (1 - (d / b.def.radius) * 0.5));
+      g[i] = Math.max(g[i], b.def.wellbeing * (1 - (d / r) * 0.5));
     });
+  }
+  // suspension bridges lift the neighbourhoods at either end
+  for (const lb of state.landmarkBridges || []) {
+    for (const end of [lb.cells[0], lb.cells[lb.cells.length - 1]]) {
+      forRadius((end % N) + 0.5, ((end / N) | 0) + 0.5, 16, (x, y, d) => { const i = idx(x, y); g[i] = Math.max(g[i], 3 * (1 - (d / 16) * 0.5)); });
+    }
   }
 }
 
@@ -96,8 +106,10 @@ export const signatureFeature = {
       },
     });
     bus.on('signatures:changed', () => computeSigBoost(state, ctx));
+    bus.on('landmarkbridges:changed', () => computeSigBoost(state, ctx));
     bus.on('building:remove', (b) => { if (b.def.signature) computeSigBoost(state, ctx); });
-    bus.on('construction:done', (b) => { if (b.def.signature) computeSigBoost(state, ctx); });
+    bus.on('construction:done', (b) => { if (b.def.signature || b.def.boostRadius) computeSigBoost(state, ctx); });
+    bus.on('building:remove', (b) => { if (b.def.boostRadius) computeSigBoost(state, ctx); });
     computeSigBoost(state, ctx);
 
     registerCategory({

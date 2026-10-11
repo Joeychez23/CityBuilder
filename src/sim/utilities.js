@@ -138,10 +138,12 @@ export function computeUtilities(state, ctx, opts = {}) {
   // --- network components
   const elecLayer = new Uint8Array(N * N);
   const waterLayer = new Uint8Array(N * N);
+  // (roads broken by an earthquake carry no water; under flood water, no power either)
+  const shut = state.closed;
   for (let i = 0; i < N * N; i++) {
     const net = state.road[i] || state.bld[i];
-    elecLayer[i] = net || state.power[i] ? 1 : 0;
-    waterLayer[i] = net || state.pipe[i] ? 1 : 0;
+    elecLayer[i] = (net || state.power[i]) && shut[i] !== 3 ? 1 : 0;
+    waterLayer[i] = (net || state.pipe[i]) && !(shut[i] >= 2) ? 1 : 0;
   }
   const elec = labelComponents(elecLayer, null, (i, j) => powerLinked(state, i, j));
   joinBySpans(elec, state.powerSpans);
@@ -169,9 +171,13 @@ export function computeUtilities(state, ctx, opts = {}) {
   const stats = { produced: 0, consumed: 0, imported: 0, exported: 0, capacity: 0, battery: 0, batteryCap: 0, batteryOut: 0, byCat: {}, waterProduced: 0, waterConsumed: 0, sewageTreated: 0, sewageProduced: 0, waterImported: 0, sewageImported: 0, pollutedWater: 0 };
   ctx.sewageOut = [];
 
+  // rides in a theme park get their power and water through its gate
+  let gate = null;
+  for (const b of state.buildings.values()) if (b.def.themeGate) { gate = b; break; }
+  const gateCell = gate ? idx(...center(gate)) : -1;
   for (const b of state.buildings.values()) {
     const [cx, cy] = center(b);
-    const ci = idx(cx, cy);
+    const ci = b.def.inPark && gate ? gateCell : idx(cx, cy);
     const ek = elec.comp[ci], wk = wat.comp[ci];
     b.elecComp = ek; b.waterComp = wk;
     const def = b.def;
@@ -200,7 +206,8 @@ export function computeUtilities(state, ctx, opts = {}) {
         } else {
           const near = nearestWaterPollution(state, b);
           if (near < 0) out = 0;
-          poll = Math.max(0, near);
+          // (desalination filters out whatever is in the water)
+          poll = def.desal ? 0 : Math.max(0, near);
         }
         b.output = out;
         b.waterQuality = 1 - poll;
@@ -216,7 +223,7 @@ export function computeUtilities(state, ctx, opts = {}) {
       }
     }
     const pu = powerUse(state, b) * tf * pf;
-    const wu = waterUse(state, b) * wf;
+    const wu = waterUse(state, b) * wf * (ctx.heatwave ? 1.15 : 1); // (more in a heatwave)
     b.powerUse = pu; b.waterUse = wu;
     if (pu > 0) {
       const c = get(P, ek);
@@ -262,7 +269,8 @@ export function computeUtilities(state, ctx, opts = {}) {
     stats.batteryOut += fromBatteries;
     if (elecOutside.has(k)) {
       if (deficit > 0) {
-        imp = Math.min(deficit, IMPORT_CAP.power + c.demand * 0.05);
+        // (neighbour cities you founded share their spare power: sim/region.js)
+        imp = Math.min(deficit, IMPORT_CAP.power + c.demand * 0.05 + (ctx.region?.offer?.powerSpare || 0));
         supply += imp; deficit -= imp; stats.imported += imp;
       } else if (deficit < 0) stats.exported += -deficit;
     }
@@ -332,6 +340,7 @@ export function computeUtilities(state, ctx, opts = {}) {
     b.power = b.powerUse > 0 ? powerRatio.get(b.elecComp) ?? 0 : 1;
     b.water = b.waterUse > 0 ? waterRatio.get(b.waterComp) ?? 0 : 1;
     b.sewage = b.waterUse > 0 ? sewageRatio.get(b.waterComp) ?? 0 : 1;
+    if (b.flooded) { b.power = 0; b.water = 0; b.sewage = 0; } // under flood water
     b.waterPolluted = waterPoll.get(b.waterComp) ?? 0;
     if (b.power < 0.6 && b.powerUse > 0) unpowered++;
     if (b.water < 0.6 && b.waterUse > 0) dry++;
@@ -344,8 +353,10 @@ export function computeUtilities(state, ctx, opts = {}) {
   if (opts.preview) return; // recomputed mid-hour after a change: no money moves
 
   // --- trade money, per hour
-  const hourCost = (stats.imported * IMPORT_PRICE.power + stats.waterImported * IMPORT_PRICE.water + stats.sewageImported * IMPORT_PRICE.sewage) / 24;
-  const hourIncome = (stats.exported * EXPORT_PRICE.power + (stats.waterExported || 0) * EXPORT_PRICE.water) / 24;
+  // power from (and to) the neighbour cities goes at a friendlier price
+  const fromNbr = Math.min(stats.imported, ctx.region?.offer?.powerSpare || 0), toNbr = Math.min(stats.exported, ctx.region?.offer?.powerShort || 0);
+  const hourCost = ((stats.imported - fromNbr) * IMPORT_PRICE.power + fromNbr * 150 + stats.waterImported * IMPORT_PRICE.water + stats.sewageImported * IMPORT_PRICE.sewage) / 24;
+  const hourIncome = ((stats.exported - toNbr) * EXPORT_PRICE.power + toNbr * 150 + (stats.waterExported || 0) * EXPORT_PRICE.water) / 24;
   charge(state, 'imports', hourCost);
   earn(state, 'exports', hourIncome);
   // Utility fees paid by citizens and companies

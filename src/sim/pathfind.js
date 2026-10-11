@@ -46,7 +46,8 @@ function pop() {
 
 // passable(i) -> bool ; cost(from, to, dir) -> step cost (>0) or Infinity ; minCost: cheapest
 // possible step (keeps the heuristic admissible). Returns an array of cell indices or null.
-export function astar(start, goal, passable, cost, minCost = 1, maxNodes = NN) {
+// links: optional Map cell -> [[cell, cost]] of extra connections (tunnels, sim/tunnels.js)
+export function astar(start, goal, passable, cost, minCost = 1, maxNodes = NN, links = null) {
   if (start === goal) return [start];
   gen++;
   if (gen === 0xffffffff) { stamp.fill(0); closed.fill(0); gen = 1; }
@@ -78,6 +79,15 @@ export function astar(start, goal, passable, cost, minCost = 1, maxNodes = NN) {
         stamp[ni] = gen; g[ni] = ng; came[ni] = cur;
         const h = (Math.abs(nx - gx) + Math.abs(ny - gy)) * minCost;
         push(ng + h, ni);
+      }
+    }
+    const extra = links?.get(cur);
+    if (extra) for (const [ni, step] of extra) {
+      if (closed[ni] === gen || !passable(ni)) continue;
+      const ng = g[cur] + step;
+      if (stamp[ni] !== gen || ng < g[ni]) {
+        stamp[ni] = gen; g[ni] = ng; came[ni] = cur;
+        push(ng + (Math.abs((ni % N) - gx) + Math.abs(((ni / N) | 0) - gy)) * minCost, ni);
       }
     }
   }

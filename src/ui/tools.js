@@ -194,7 +194,9 @@ function changeLabel(t) {
     case 'road': return t.mode === 'replace' ? `${ROADS[t.type].name} (re-surfaced)` : t.mode === 'bridge' ? `${ROADS[t.type].name} bridge` : ROADS[t.type].name;
     case 'zone': return t.zone ? `${ZONES[t.zone].name} zoning` : 'Removed zoning';
     case 'bulldoze': return 'Bulldozing';
-    case 'plop': case 'landfill': return t.def?.name || 'Building';
+    case 'plop': case 'landfill': case 'area': return t.def?.name || 'Building';
+    case 'canal': return 'Canal';
+    case 'tunnel': return t.layer === 'rail' ? 'Railway tunnel' : 'Road tunnel';
     case 'bridge': return 'Bridge';
     case 'layer': return t.label || 'Line';
     case 'powerline': return 'Power line';

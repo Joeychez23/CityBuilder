@@ -16,9 +16,9 @@ const MAX_STEPS = 20;
 // Map layers a change can touch
 const LAYERS = ['height', 'water', 'road', 'roadDir', 'roadUpg', 'roadCond', 'roadNode', 'bridgeH', 'bridgeDir',
   'rail', 'railH', 'railDir', 'path', 'pathH', 'pathDir', 'subway', 'power', 'pipe',
-  'zone', 'plot', 'bld', 'district', 'tree', 'forestMax', 'surface'];
+  'zone', 'plot', 'bld', 'district', 'tree', 'forestMax', 'surface', 'canal'];
 // Lists a change can touch (compared as JSON)
-const LISTS = ['roadSegs', 'plots', 'powerSpans', 'stops', 'districts', 'rebuilds', 'ruins', 'connections'];
+const LISTS = ['roadSegs', 'plots', 'powerSpans', 'stops', 'districts', 'rebuilds', 'ruins', 'connections', 'tunnels', 'landmarkBridges'];
 // Which network each layer belongs to (to redraw and re-route it)
 const NETWORK = { road: 'road', roadDir: 'road', roadUpg: 'road', roadCond: 'road', roadNode: 'road', bridgeH: 'road', bridgeDir: 'road',
   rail: 'rail', railH: 'rail', railDir: 'rail', path: 'path', pathH: 'path', pathDir: 'path', subway: 'subway', power: 'power', pipe: 'pipe' };

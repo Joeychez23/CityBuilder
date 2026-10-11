@@ -17,7 +17,7 @@ export const perWeek = (perDay) => perDay * DAYS_PER_WEEK;
 // Ledger lines that were already paid when they happened (not settled again on Saturday)
 const PAID_AT_ONCE = new Set(['refunds']);
 // Ledger lines booked once a day (the rest trickle in every hour or step)
-const DAILY = new Set(['resTax', 'comTax', 'indTax', 'offTax', 'subsidy', 'transit', 'hotels', 'services', 'roads', 'loanInterest', 'policies']);
+const DAILY = new Set(['resTax', 'comTax', 'indTax', 'offTax', 'subsidy', 'transit', 'hotels', 'conventions', 'casino', 'film', 'factories', 'grants', 'themepark', 'promenade', 'regional', 'services', 'roads', 'loanInterest', 'policies', 'supplies', 'projects']);
 
 const ensure = (state) => {
   if (!state.today) state.today = newLedger();
@@ -47,6 +47,7 @@ export function interestRate(state, ctx) {
   let r = BASE_INTEREST + difficultyOf(state).interest;
   if (ctx.cityHall) r -= 1;
   if (ctx.centralBank) r -= 2;
+  r -= ctx.wonders?.interestCut || 0; // the capital's Parliament
   if (state.money < 0) r += 4;
   return clamp(r, 2.3, 20);
 }
@@ -57,6 +58,7 @@ export function loanLimit(state) {
 }
 
 export function takeLoan(state, amount) {
+  if (state.politics?.council) return 0; // an opposition council won't let you borrow
   const room = loanLimit(state) - state.loan;
   const a = Math.min(amount, room);
   if (a <= 0) return 0;

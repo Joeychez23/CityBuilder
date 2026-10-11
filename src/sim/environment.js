@@ -11,6 +11,9 @@ import { ROADS, UPG } from '../data/roads.js';
 import { isService, center } from './services.js';
 import { bus } from '../core/events.js';
 import { ZONE_LIST } from '../data/zones.js';
+import { cleanAir } from './landmarks.js';
+import { canalSide } from './projects.js';
+import { specIs } from './specialisations.js';
 
 const NN = N * N;
 // (a new industrial area starts out about half as smoggy as it ends up a month later)
@@ -111,7 +114,7 @@ export function pollutionHourly(state, ctx) {
         noise[i] += 0.2;
         if (b.def.key === 'spec_ore' || b.def.key === 'spec_oil') for (let y = b.y0; y <= b.y1; y++) for (let x = b.x0; x <= b.x1; x++) ind[idx(x, y)] += 0.5 / size * 1.6;
       }
-      if (cat === 'com') noise[i] += 0.15 * size * 0.3;
+      if (cat === 'com') noise[i] += 0.15 * size * 0.3 * (1 + 0.5 * specIs(ctx, b, 'fun')); // (nightlife)
     }
   }
   // Traffic: air & noise along busy roads
@@ -156,6 +159,8 @@ export function pollutionHourly(state, ctx) {
     ground[i] = state.water[i] ? 0 : clamp(ground[i] * (dirty ? DIRTY_KEEP : SOIL_KEEP) + settle - (state.tree[i] ? 0.0004 : 0), 0, 1.5);
     noise[i] = clamp(noise[i] - state.tree[i] * 0.03, 0, 1.5);
   }
+  // the Eco Dome and carbon capture plants (sim/landmarks.js)
+  cleanAir(state, ctx);
 
   // --- water: sewage enters at outlets, flows with the current, dilutes and decays
   for (const s of ctx.sewageOut || []) {
@@ -202,6 +207,9 @@ export function landValueDaily(state, ctx) {
       v += g('education1', i) * 0.05 + g('education2', i) * 0.04 + Math.min(1, g('telecom', i)) * 0.05 + g('post', i) * 0.03;
       v += (ctx.sigBoost?.[i] || 0) * 0.02 + (ctx.transitCov?.[i] || 0) * 0.08;
       v += nearWater(state, x, y) ? 0.08 : 0;
+      v += canalSide(state, i) && !state.canal[i] ? 0.14 : 0; // canal-side homes are worth a lot
+      const sp = state.district[i] && ctx.districtSpecs?.get(state.district[i]);
+      if (sp && (sp.key === 'finance' || sp.key === 'fun')) v += 0.05 * sp.strength;
       v += state.tree[i] ? 0.02 : 0;
       v += Math.max(0, 1 - Math.hypot(x - c, y - c) / 80) * 0.08;
       v -= state.air[i] * 0.35 + state.ground[i] * 0.3 + state.noise[i] * 0.2;

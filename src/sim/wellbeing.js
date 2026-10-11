@@ -10,6 +10,8 @@ import { dispatch } from './emergency.js';
 import { accessCell } from './traffic.js';
 import { startRenovation } from './construction.js';
 import { difficultyOf } from '../data/difficulty.js';
+import { heatFactor } from './hazards.js';
+import { specIs } from './specialisations.js';
 
 const districtOf = (state, b) => (b.district ? state.districts.find((d) => d.id === b.district) : null);
 
@@ -23,7 +25,7 @@ export const FACTOR_ICONS = {
   Internet: '📡', 'Education access': '🎓', 'City hall': '🏛️', Welfare: '🤝', 'Air quality': '🌫️', Crime: '🚨',
   'Garbage & deathcare': '🗑️', 'Service fees': '🧾', Landmarks: '⭐', 'District policies': '📜', Home: '🏠',
   Wealth: '💰', Sick: '🤒', 'In jail': '🚔', Studying: '📚', 'No parking at work': '🅿️', 'Stuck in traffic': '🚦',
-  'Citizens\' expectations': '🎚️', 'Air pollution': '🌫️', 'Ground pollution': '🟤', 'Polluted tap water': '☣️', 'Sewage backing up': '💩', 'Uncollected garbage': '🗑️', Parks: '🌳',
+  'Citizens\' expectations': '🎚️', Culture: '🎭', 'Casino nearby': '🎰', 'Works in another city': '🚄', Heatwave: '🌡️', Flooded: '🌊', 'University town': '🎓', 'Air pollution': '🌫️', 'Ground pollution': '🟤', 'Polluted tap water': '☣️', 'Sewage backing up': '💩', 'Uncollected garbage': '🗑️', Parks: '🌳',
 };
 
 function buildingFactors(state, ctx, b) {
@@ -43,6 +45,7 @@ function buildingFactors(state, ctx, b) {
     ['Polluted tap water', -(b.waterPolluted || 0) * 45],
     ['Sewage backing up', b.sewage < 0.7 ? -12 : 0],
     ['Uncollected garbage', (b.garbage || 0) > 4 ? -10 : 0],
+    ['Heatwave', heatFactor(ctx, cov('leisure'))],
   ];
   const feeOver = Math.max(0, state.fees.electricity / 0.2 - 1) + Math.max(0, state.fees.water / 0.3 - 1);
   // Once the town has grown a little, people expect basic services nearby
@@ -71,8 +74,12 @@ function buildingFactors(state, ctx, b) {
     ['Garbage & deathcare', ((b.garbage || 0) > 4 ? -8 : 0) + ((b.deadHours || 0) >= 12 ? -6 : 0)],
     ['Service fees', -feeOver * 6],
     ['Landmarks', ctx.sigBoost?.[i] || 0],
+    ['Culture', ctx.wonders?.culture || 0],
+    ['Casino nearby', -(ctx.vice?.[i] || 0) * 4],
     ['District policies', (dist?.policies?.gated ? 5 : 0) + (dist?.policies?.speedBumps ? 1 : 0) + (dist?.policies?.heavyBan ? 1 : 0)],
     ['Home', b.def.key === 'res_low' ? 4 : b.def.key === 'res_tower' ? -3 : b.def.key === 'res_high' || b.def.lowRent ? -2 : 0],
+    ['Flooded', b.flooded ? -20 : 0],
+    ['University town', 3 * specIs(ctx, b, 'campus')],
     ["Citizens' expectations", difficultyOf(state).mood], // the difficulty
   ];
   return { health, wb };
@@ -90,7 +97,8 @@ export function taxFeeling(rate) {
 function personalFactors(state, ctx, c, hh) {
   const out = [['Wealth', clamp(hh.wealth / 4000, -3, 4) * 1.5]];
   const working = c.age >= AGE.adult && c.age < AGE.senior;
-  if (working && !c.job && !c.school && !c.jail) out.push(['No job', -16 - Math.min(10, (c.jobless || 0) * 2)]);
+  if (working && !c.job && !c.school && !c.jail && !c.outsideJob) out.push(['No job', -16 - Math.min(10, (c.jobless || 0) * 2)]);
+  if (c.outsideJob) out.push(['Works in another city', 1]);
   if (working || c.job) out.push(['Taxes', taxFeeling(citizenTax(state, c))]);
   if (c.job || c.school) {
     // what getting to work or school costs: car owners feel parking and tolls, the others
@@ -152,7 +160,7 @@ export function wellbeingDaily(state, ctx) {
         if (!c) continue;
         const working = c.age >= AGE.adult && c.age < AGE.senior;
         if (working) adults++;
-        if (working && !c.job && !c.school && !c.jail) { unemployed++; c.jobless = (c.jobless || 0) + 1; } else c.jobless = 0;
+        if (working && !c.job && !c.school && !c.jail && !c.outsideJob) { unemployed++; c.jobless = (c.jobless || 0) + 1; } else c.jobless = 0;
         const pf = personalFactors(state, ctx, c, hh);
         let personal = 0;
         for (const [k, v] of pf) { personal += v; tally(k, v); personalSum.set(k, (personalSum.get(k) || 0) + v); }
@@ -181,7 +189,7 @@ export function wellbeingDaily(state, ctx) {
     // --- crime builds up where people are unwell and unemployed, police push it down
     const cov = (k) => ctx.coverage[k]?.[i] || 0;
     const dist = districtOf(state, b);
-    const crimeIn = (bn ? (unwell / bn) * 8 + (adults ? (unemployed / adults) * 5 : 0) : 0.5) + (1 - state.landValue[i]) * 1.5 + (state.policies.cityPromotion ? 0.6 : 0);
+    const crimeIn = (bn ? (unwell / bn) * 8 + (adults ? (unemployed / adults) * 5 : 0) : 0.5) + (1 - state.landValue[i]) * 1.5 + (state.policies.cityPromotion ? 0.6 : 0) + (ctx.vice?.[i] || 0) * 3;
     // without police nearby crime only fades slowly
     const crimeOut = cov('police') * 10 * (hasPerk(state, 'police_patrol') ? 1.2 : 1) + cov('cityhall') * 1 + (dist?.policies?.gated ? 2 : 0) + 1;
     b.crime = clamp((b.crime || 0) + crimeIn - crimeOut, 0, 100);
@@ -267,6 +275,9 @@ export function levelFactors(state, ctx, b) {
     out.push(['Happiness', ((b.happiness ?? 55) - 50) / 6]);
     out.push(['Land value', lv * 5]);
     out.push(['Wealth', clamp(avgWealth(state, b) / 5000, -1, 2)]);
+    // landlords under rent control put less into their buildings
+    const dist = b.district && state.districts.find((d) => d.id === b.district);
+    if (dist?.policies?.rentControl) out.push(['Rent control', -1]);
   } else {
     const staffing = b.jobs ? (b.workerCount ?? b.workers.length) / b.jobs : 1;
     out.push(['Profit', b.profit == null ? 0 : b.profit > 0 ? 2.5 : -1.5]);

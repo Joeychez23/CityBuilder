@@ -14,6 +14,9 @@ import { parkReach } from '../sim/parking.js';
 import { createSewageView } from '../world/sewageView.js';
 import { emergencyStep, patrolsHourly, ambulancesHourly, dispatch } from '../sim/emergency.js';
 import { crimeHourly } from '../sim/wellbeing.js';
+import { BOUGHT_LANDMARKS } from '../data/wonders.js';
+import { boughtBlocker, placeBought } from '../sim/landmarks.js';
+import '../ui/toolsArea.js';
 
 // Buildings produce garbage and mail every hour; collection happens in hourlyCollections.
 function produceWaste(state) {
@@ -39,7 +42,7 @@ function staffServices(state, ctx) {
     if (!isService(b) || !b.def.workers) continue;
     const open = Math.max(0, b.def.workers - (b.workers?.length || 0));
     const comp = b.comp ?? -1;
-    const commuters = comp >= 0 && ctx.net.roadOutside[comp] ? Math.ceil(open * 0.6) : 0;
+    const commuters = comp >= 0 && ctx.net.roadOutside[comp] ? Math.ceil(open * (0.6 + (ctx.hyperloop?.commuterBoost || 0) + (ctx.region?.commuterBoost || 0))) : 0;
     b.staff = (b.workers?.length || 0) + commuters;
     b.workerCount = b.staff;
   }
@@ -48,7 +51,8 @@ function staffServices(state, ctx) {
 // The numbers worth knowing about a service building, for its hover tip
 export function serviceTipRows(d) {
   const rows = [];
-  if (d.area) rows.push(['Cost', `${money(d.cost)} + ${money(d.perCell)} per cell`], ['Holds', `${d.storagePerCell} t per cell`]);
+  if (d.area && d.storagePerCell) rows.push(['Cost', `${money(d.cost)} + ${money(d.perCell)} per cell`], ['Holds', `${d.storagePerCell} t per cell`]);
+  else if (d.area) rows.push(['Cost', `${money(d.cost)} + ${money(d.perCell)} per cell`], ['Upkeep', `${money(perWeek(d.upkeep))} + ${money(perWeek(d.upkeepPerCell))} per cell /wk`]);
   else rows.push(['Cost', money(d.cost)], ['Upkeep', `${money(perWeek(d.upkeep || 0))}/wk`]);
   if (d.radius) rows.push(['Reach', `${d.radius * 8} m`]);
   if (d.power) rows.push(['Power', `${d.power} MW`]);
@@ -58,6 +62,16 @@ export function serviceTipRows(d) {
   if (d.patients) rows.push(['Patients', `${d.patients} a day`]);
   if (d.deathRate) rows.push(['Deceased', `${d.deathRate} a day`]);
   if (d.rooms) rows.push(['Rooms', `${d.rooms} · ${money(d.roomRate)} a night`]);
+  if (d.culture) rows.push(['Culture', `+${d.culture} well-being city-wide`]);
+  if (d.wellbeing && d.boostRadius) rows.push(['Nearby', `+${d.wellbeing} well-being within ${d.boostRadius * 8} m`]);
+  if (d.attract) rows.push(['Tourism', `+${d.attract} attractiveness`]);
+  if (d.longBuild) rows.push(['Takes', `about ${d.longBuild.days} days · ${money(perWeek(d.longBuild.perDay))}/wk while building`]);
+  if (d.grant) rows.push(['Grant', `${money(perWeek(d.grant))}/wk from the government`]);
+  if (d.delegates) rows.push(['Delegates', `up to ${d.delegates} a night, Mon–Thu`]);
+  if (d.factory) rows.push(['Makes', d.factory.makes === 'cars' ? `cars (${money(d.factory.price)} each)` : `a ship every ${d.factory.days} days (${money(d.factory.price)})`]);
+  if (d.ring) rows.push(['Ring', `${d.ring * 2} cells across, under your land`]);
+  if (d.ride) rows.push(['Riders', `${d.ride.capacity} a day`], ['Fun', '★'.repeat(d.ride.appeal)]);
+  if (d.powerUse) rows.push(['Uses', `${d.powerUse} MW`]);
   if (d.students) rows.push(['Students', d.students]);
   if (d.engines) rows.push(['Fire engines', d.engines]);
   if (d.cells || d.prison) rows.push(['Cells', d.cells || d.prison]);
@@ -75,7 +89,16 @@ const EXTRA_ITEMS = {
     { group: 'Network', name: 'Power line', color: '#ffd34f', meta: 'From a plant to a road · pylons span up to 8 cells', desc: 'Start on a power plant (or a road, a pylon or the outside line) and click your way to a road: the line feeds that road\'s network through a Power Connector. Roads carry power to every building beside them.', tool: { kind: 'powerline' }, isActive: (t) => t.kind === 'powerline' },
     { group: 'Network', name: 'Power Connector', color: '#4f7a52', meta: '₡1,500 · a transformer on a road', desc: 'Put it on a road next to a power line\'s pylon (or end a power line on a road): it feeds the line\'s power into that road and every building along it.', tool: { kind: 'upgrade', bit: 128, key: 'power' }, isActive: (t) => t.kind === 'upgrade' && t.bit === 128 },
   ],
-  water: [{ group: 'Network', name: 'Water pipe', color: '#3aa0ff', meta: '₡10/cell · roads carry pipes too', tool: { kind: 'layer', layer: 'pipe', label: 'Water pipe' }, isActive: (t) => t.layer === 'pipe' }],
+  water: [{ group: 'Network', name: 'Water pipe', color: '#3aa0ff', meta: '₡10/cell · roads carry pipes too', tool: { kind: 'layer', layer: 'pipe', label: 'Water pipe' }, isActive: (t) => t.layer === 'pipe' },
+    { group: 'Waterways', name: 'Canal', color: '#3aa0ff', meta: '₡900/cell · dig from the water', desc: 'Dig a straight canal, 2 or 3 cells wide, from a river, lake, the sea or another canal into your land. Homes along it are worth a lot (and the land beside it may be steep: buildings stand on quays). Water taxis can run on it.', tool: { kind: 'canal', width: 2 }, isActive: (t) => t.kind === 'canal', lockDef: { milestone: 9 } }],
+  // bought landmarks that run like grown buildings (data/wonders.js)
+  landmarks: BOUGHT_LANDMARKS.map((d) => ({
+    group: 'Big business', name: d.name, color: '#d4af37', meta: `${money(d.cost)} · ${d.hh ? `${d.hh} homes · ` : ''}${d.jobs} jobs`, desc: d.desc,
+    tipRows: [['Cost', money(d.cost)], ...(d.hh ? [['Homes', d.hh]] : []), ['Jobs', d.jobs], ['Tourism', `+${d.attract} attractiveness`]],
+    tool: { kind: 'plop', def: d, blocker: boughtBlocker, place_fn: placeBought, once: true },
+    isActive: (t) => t.kind === 'plop' && t.def === d,
+    lockDef: d,
+  })),
 };
 
 export const servicesFeature = {
@@ -110,13 +133,13 @@ export const servicesFeature = {
         key, icon: cat.icon, name: cat.name.split(' ')[0], order: cat.order,
         items: () => [...SERVICE_LIST.filter((s) => s.cat === key).map((s) => ({
           group: s.group || cat.name, name: s.name, color: cat.color,
-          meta: s.area ? `Draw an area · ${money(s.perCell)}/cell · ${s.storagePerCell} t/cell` : `${money(s.cost)} · ${money(perWeek(s.upkeep))}/wk${s.power ? ` · ${s.power} MW` : ''}${s.water ? ` · ${s.water.toLocaleString()} m³` : ''}${s.sewage ? ` · ${s.sewage.toLocaleString()} m³` : ''}${s.rooms ? ` · ${s.rooms} rooms` : ''}`,
+          meta: s.area && s.parts ? `Draw an area · ${money(s.cost)} + ${money(s.perCell)}/cell` : s.area ? `Draw an area · ${money(s.perCell)}/cell · ${s.storagePerCell} t/cell` : `${money(s.cost)} · ${money(perWeek(s.upkeep))}/wk${s.power ? ` · ${s.power} MW` : ''}${s.water ? ` · ${s.water.toLocaleString()} m³` : ''}${s.sewage ? ` · ${s.sewage.toLocaleString()} m³` : ''}${s.rooms ? ` · ${s.rooms} rooms` : ''}`,
           desc: s.desc,
           tipRows: serviceTipRows(s),
-          tool: s.area ? { kind: 'landfill', def: s } : { kind: 'plop', def: s },
-          isActive: (t) => (t.kind === 'plop' || t.kind === 'landfill') && t.def === s,
+          tool: s.parts && s.area ? { kind: 'area', def: s } : s.area ? { kind: 'landfill', def: s } : { kind: 'plop', def: s },
+          isActive: (t) => (t.kind === 'plop' || t.kind === 'landfill' || t.kind === 'area') && t.def === s,
           locked: () => app.lockReason(s),
-        })), ...(EXTRA_ITEMS[key] || [])],
+        })), ...(EXTRA_ITEMS[key] || []).map((it) => (it.lockDef ? { ...it, locked: () => app.lockReason(it.lockDef) } : it))],
       });
     }
     computeCoverage(state, app.ctx);

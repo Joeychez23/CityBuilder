@@ -13,7 +13,7 @@ export const SAVED_LAYERS = [
   'rail', 'subway', 'power', 'pipe', 'path', 'tree', 'surface',
   'fertile', 'ore', 'oil', 'groundwater', 'gwPollution', 'forestMax',
   'air', 'ground', 'noise', 'waterPoll', 'landValue', 'burnt',
-  'bridgeH', 'bridgeDir', 'railH', 'railDir', 'pathH', 'pathDir',
+  'bridgeH', 'bridgeDir', 'railH', 'railDir', 'pathH', 'pathDir', 'canal',
 ];
 
 export function createState(map, options = {}) {
@@ -58,13 +58,17 @@ export function createState(map, options = {}) {
     roadSnow: f32(),
     roadVol: f32(),         // smoothed traffic volume (vehicles / cell)
     accident: f32(),        // >0 = blocked by an accident for this many minutes
+    closed: u8(),           // road closed: 1 film shoot, 2 earthquake damage, 3 flooded (see sim/closures.js)
+    closures: [],
     rail: u8(),
     subway: u8(),
     power: u8(),            // power pylons (1 = pylon on this cell)
     powerSpans: [],         // overhead wires: [cellA, cellB] pairs between pylons
     roadSegs: [],           // roads at an angle: { a: [x, y], b: [x, y] } (see sim/roadsegs.js)
+    roadDay: new Uint16Array(NN), // the day each road cell was laid (for the time-lapse)
     roadNode: u8(),         // 1 = a junction you built on a road at an angle (see linked() in sim/bridges.js)
     pipe: u8(),             // standalone water pipes
+    canal: u8(),            // 1 = a canal you dug (sim/projects.js)
     path: u8(),             // pedestrian paths
     // Bridges: deck height (0 = on the ground) and axis (1 = east-west, 2 = north-south)
     bridgeH: f32(), bridgeDir: u8(),
@@ -131,6 +135,7 @@ export function createState(map, options = {}) {
     weather: { temp: 15, cloud: 0.3, rain: 0, snow: 0, wind: 0.5, fog: 0, storm: 0, kind: 'clear' },
     events: [],                // active disasters/incidents
     journal: [],               // event journal entries
+    decisions: [],             // requests waiting on the mayor's desk (sim/decisions.js)
     achievements: {},          // key -> day unlocked
     counters: { bulldozed: 0, treesPlanted: 0, treated: 0, tourists: 0, infoViews: [], photo: 0, followedLife: 0, signatures: 0 },
     unlockedSignatures: [],
@@ -143,8 +148,8 @@ export function createState(map, options = {}) {
 
 export function newLedger() {
   return {
-    income: { resTax: 0, comTax: 0, indTax: 0, offTax: 0, fees: 0, transit: 0, parking: 0, tolls: 0, hotels: 0, exports: 0, subsidy: 0, refunds: 0 },
-    expense: { services: 0, roads: 0, loanInterest: 0, imports: 0, policies: 0, transit: 0 },
+    income: { resTax: 0, comTax: 0, indTax: 0, offTax: 0, fees: 0, transit: 0, parking: 0, tolls: 0, hotels: 0, conventions: 0, casino: 0, film: 0, factories: 0, grants: 0, themepark: 0, promenade: 0, regional: 0, exports: 0, subsidy: 0, refunds: 0 },
+    expense: { services: 0, roads: 0, loanInterest: 0, imports: 0, supplies: 0, projects: 0, policies: 0, transit: 0 },
   };
 }
 

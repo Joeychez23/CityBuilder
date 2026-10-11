@@ -166,7 +166,7 @@ export const transportFeature = {
       key: 'transport', icon: cat.icon, name: 'Transport', order: cat.order,
       items: () => [
         ...TRANSPORT_LIST.map((d) => ({
-          group: 'Buildings', name: d.name, color: cat.color, desc: d.desc, tipRows: serviceTipRows(d),
+          group: d.group || 'Buildings', name: d.name, color: cat.color, desc: d.desc, tipRows: serviceTipRows(d),
           meta: `${money(d.cost)} · ${money(perWeek(d.upkeep))}/wk`,
           tool: { kind: 'plop', def: d }, isActive: (t) => t.kind === 'plop' && t.def === d,
           locked: () => app.lockReason(d),
@@ -181,6 +181,7 @@ export const transportFeature = {
         })),
         { group: 'Tracks', name: 'Railway', color: '#9b8b77', meta: '₡120/cell', tool: { kind: 'layer', layer: 'rail', label: 'Railway' }, isActive: (t) => t.layer === 'rail', locked: () => app.lockReason({ milestone: 5, devNode: 'transit_train' }) },
         { group: 'Tracks', name: 'Railway bridge', color: '#9b8b77', meta: '₡360/cell span · click start, then end', tool: { kind: 'bridge', kindKey: 'rail' }, isActive: (t) => t.kind === 'bridge' && t.kindKey === 'rail', locked: () => app.lockReason({ milestone: 5, devNode: 'transit_train' }) },
+        { group: 'Tracks', name: 'Railway tunnel', color: '#9b8b77', meta: '₡820+/cell · portal to portal', desc: 'Bore a railway tunnel between two stretches of track, straight under hills, water or town (up to 512 m). Trains take it on their way.', tool: { kind: 'tunnel', layer: 'rail' }, isActive: (t) => t.kind === 'tunnel' && t.layer === 'rail', locked: () => app.lockReason({ milestone: 11 }) },
         { group: 'Tracks', name: 'Subway tunnel', color: '#b06be0', meta: '₡300/cell · underground', tool: { kind: 'layer', layer: 'subway', label: 'Subway tunnel' }, isActive: (t) => t.layer === 'subway', locked: () => app.lockReason({ milestone: 8, devNode: 'transit_subway' }) },
       ],
     });

@@ -15,13 +15,14 @@ import { TRANSPORT_LIST, LINE_TYPES } from '../data/transport.js';
 import { ZONE_LIST } from '../data/zones.js';
 import { ROAD_LIST, UPGRADES } from '../data/roads.js';
 import { difficultyOf } from '../data/difficulty.js';
+import { BOUGHT_LANDMARKS } from '../data/wonders.js';
 
 const devNode = (key) => DEV_NODES.find((n) => n.key === key);
 
 // Everything that unlocks at a milestone, by the name it has in the build menus
 function unlockedAt(milestone) {
   const out = [];
-  for (const d of [...ZONE_LIST, ...ROAD_LIST, ...UPGRADES, ...SERVICE_LIST, ...TRANSPORT_LIST]) if ((d.milestone || 0) === milestone) out.push(d.name);
+  for (const d of [...ZONE_LIST, ...ROAD_LIST, ...UPGRADES, ...SERVICE_LIST, ...TRANSPORT_LIST, ...BOUGHT_LANDMARKS]) if ((d.milestone || 0) === milestone) out.push(d.name);
   for (const d of Object.values(LINE_TYPES)) if ((d.milestone || 0) === milestone) out.push(`${d.name} line`);
   if (milestone === 5) out.push('Railway', 'Railway bridge');
   if (milestone === 8) out.push('Subway tunnel');
@@ -196,9 +197,12 @@ export const progressionFeature = {
         if (gain > 0) { P.xp += gain; reachMilestones(app); }
       },
     });
-    // Research center: a development point every week
-    registerSystem({ name: 'research', every: 'week', run: (state) => {
-      if ([...state.buildings.values()].some((b) => b.def.research && !b.cons)) { P.devPoints++; app.panels.renderRail(); }
+    // Research center: a development point every week (the particle collider: two more,
+    // while it runs)
+    registerSystem({ name: 'research', every: 'week', run: (state, ctx) => {
+      let pts = [...state.buildings.values()].some((b) => b.def.research === true && !b.cons) ? 1 : 0;
+      pts += ctx.wonders?.research || 0;
+      if (pts) { P.devPoints += pts; app.panels.renderRail(); }
     } });
     registerCategory({ key: 'tiles', icon: '🧩', name: 'Map Tiles', order: 95, toolKind: 'tile', direct: (a) => a.tools.set({ kind: 'tile' }) });
   },

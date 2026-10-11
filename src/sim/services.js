@@ -7,6 +7,7 @@ import { bus } from '../core/events.js';
 import { hasPerk } from '../data/progression.js';
 import { charge } from './economy.js';
 import { startConstruction } from './construction.js';
+import { landmarkBlocker } from './landmarks.js';
 
 export const COVERAGE_KEYS = ['health', 'fire', 'police', 'leisure', 'post', 'telecom', 'welfare', 'cityhall', 'shelter',
   'garbage', 'death', 'education1', 'education2', 'forestWatch', 'roadMaint', 'heli'];
@@ -45,7 +46,8 @@ export function serviceEfficiency(state, b) {
   const staffing = def.workers ? clamp((b.staff ?? def.workers) / def.workers, 0.25, 1) : 1;
   const power = def.power ? 1 : 0.4 + 0.6 * (b.power ?? 1); // generators don't need power themselves
   const access = b.roadAccess === false ? 0 : 1;
-  return budget * staffing * power * access * (b.onFire ? 0.2 : 1);
+  // (a strike: the service barely runs, sim/society.js)
+  return budget * staffing * power * access * (b.onFire ? 0.2 : 1) * (state.strike?.cat === def.cat ? 0.15 : 1);
 }
 
 // ------------------------------------------------------------------ placement
@@ -62,8 +64,8 @@ export function serviceBlocker(state, ctx, def, x0, y0, x1, y1) {
   if (def.needsShip && !state.connectionsAvailable.ship) return 'This map has no sea lane';
   if (def.needsWater && !touchesWater(state, x0, y0, x1, y1)) return 'Must be placed next to water';
   if (def.needsRail && !touchesLayer(state, state.rail, x0, y0, x1, y1)) return 'Must be next to railway tracks';
-  if (!touchesGroundRoad(state, x0, y0, x1, y1)) return 'Needs a road next to it';
-  return null;
+  if (!def.inPark && !touchesGroundRoad(state, x0, y0, x1, y1)) return 'Needs a road next to it'; // (rides stand in the park grounds)
+  return landmarkBlocker(state, def, x0, y0, x1, y1);
 }
 
 // Is there a ground-level road along a side of this rectangle? (bridge decks don't give
@@ -191,7 +193,8 @@ export function computeCoverage(state, ctx) {
     b.efficiency = eff;
     if (eff <= 0) continue;
     const grid = ctx.coverage[key];
-    const r = def.radius * Math.sqrt(clamp(eff, 0.5, 1.3)) * (key === 'telecom' && hasPerk(state, 'comms_fiber') ? 1.25 : 1);
+    // (a park or beach you drew reaches as far as its size allows: b.radius)
+    const r = (b.radius || def.radius) * Math.sqrt(clamp(eff, 0.5, 1.3)) * (key === 'telecom' && hasPerk(state, 'comms_fiber') ? 1.25 : 1);
     const [cx, cy] = center(b);
     const strength = (key === 'leisure' ? def.leisure * (hasPerk(state, 'parks_care') ? 1.15 : 1) : key === 'health' ? def.health * (hasPerk(state, 'health_research') ? 1.15 : 1) : 1);
     const heli = def.heli ? ctx.coverage.heli : null;

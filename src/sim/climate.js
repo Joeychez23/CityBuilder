@@ -20,7 +20,9 @@ export function weatherHourly(state, ctx) {
   const h = hourOf(state);
   // Temperature: seasonal mean + daily swing + a slowly wandering anomaly
   ctx.tempAnomaly = clamp((ctx.tempAnomaly || 0) + (rng.next() - 0.5) * 0.8, -5, 5);
-  const target = monthlyMean(cl, monthFloat(state) - 0.5) + 4 * Math.sin(((h - 9) / 24) * Math.PI * 2) + ctx.tempAnomaly - w.cloud * 2;
+  // (a heatwave, and the warming the city's smog has brought over the years: sim/hazards.js)
+  const target = monthlyMean(cl, monthFloat(state) - 0.5) + 4 * Math.sin(((h - 9) / 24) * Math.PI * 2) + ctx.tempAnomaly - w.cloud * 2
+    + (ctx.heatwave?.boost || 0) + (state.options.climateChange === false ? 0 : state.climateChange?.warming || 0);
   w.temp += (target - w.temp) * 0.35;
 
   // Clouds wander; precipitation needs clouds
@@ -33,8 +35,10 @@ export function weatherHourly(state, ctx) {
   w.snow = cold && cl.snow !== false ? precip : 0;
   if (cold && cl.snow === false) w.rain = precip * 0.5;
   // Thunderstorms: warm and very cloudy; hail: cool storms
-  w.storm = w.cloud > 0.85 && w.rain > 0.5 && w.temp > 14 ? clamp(w.storm + 0.4, 0, 1) : Math.max(0, w.storm - 0.35);
-  w.hail = w.cloud > 0.8 && w.temp > 0 && w.temp < 12 && w.rain > 0.4 && rng.chance(0.03) ? 1 : 0;
+  // (the Weather Control Tower breaks storms up before they build, and stops most hail)
+  const tamed = ctx.wonders?.weatherControl;
+  w.storm = w.cloud > 0.85 && w.rain > 0.5 && w.temp > 14 ? clamp(w.storm + (tamed ? 0.15 : 0.4), 0, tamed ? 0.5 : 1) : Math.max(0, w.storm - 0.35);
+  w.hail = w.cloud > 0.8 && w.temp > 0 && w.temp < 12 && w.rain > 0.4 && rng.chance(tamed ? 0.008 : 0.03) ? 1 : 0;
   // Fog on cool, calm, damp mornings
   const morning = h > 4 && h < 10;
   w.fog = morning && w.wind < 0.35 && w.temp < 14 && w.cloud > 0.35 && (month >= 8 || month <= 3) ? clamp(w.fog + 0.25, 0, 1) : Math.max(0, w.fog - 0.2);

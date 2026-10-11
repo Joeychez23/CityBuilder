@@ -92,6 +92,8 @@ registerTool('plop', {
       ${d.radius ? `<div class="row"><span class="k">Range</span><span>${d.radius * 8} m</span></div>` : ''}
       ${d.rooms ? `<div class="row"><span class="k">Rooms</span><span>${d.rooms} · ${money(d.roomRate)} a night</span></div>` : ''}
       ${d.deathRate ? `<div class="row"><span class="k">Handles</span><span>${d.deathRate} deceased a day</span></div>` : ''}
+      ${d.longBuild ? `<div class="row"><span class="k">Takes</span><span>about ${d.longBuild.days} days · ${money(perWeek(d.longBuild.perDay))}/wk while building</span></div>` : ''}
+      ${d.ring ? `<div class="row"><span class="k">Ring</span><span>${d.ring * 2} cells across, under your land</span></div>` : ''}
       ${d.parking ? `<div class="row"><span class="k">Holds</span><span>${d.parking} cars · drivers walk up to ${parkReach(d) * 8} m</span></div>` : ''}
       <div class="section-title">Facing</div>
       <div class="rot-row"><button class="btn" data-r="-1" title="Turn left (Shift+R)">⟲</button><span>Entrance faces <b>${SIDES[t.place?.rot ?? t.rot ?? 1]}</b></span><button class="btn" data-r="1" title="Turn right (R)">⟳</button></div>`;
@@ -117,7 +119,7 @@ registerTool('plop', {
     const cx = Math.min(N - 1, Math.max(0, Math.floor((x0 + x1 + 1) / 2))), cy = Math.min(N - 1, Math.max(0, Math.floor((y0 + y1 + 1) / 2)));
     app.buildings.showGhost(t.def, place.rect, place.rot, !reason && afford, cellHeight(state, cx, cy));
     if (before !== place.rot) app.tools.renderOptions();
-    const ring = t.def.radius || (t.def.parking && parkReach(t.def));
+    const ring = t.def.radius || t.def.boostRadius || t.def.ring || (t.def.parking && parkReach(t.def));
     if (ring) app.preview.setRing((x0 + x1 + 1) / 2, (y0 + y1 + 1) / 2, ring, '#ffffff');
     const sew = sewagePreview(state, ctx, t.def, x0, y0, x1, y1);
     if (sew) {

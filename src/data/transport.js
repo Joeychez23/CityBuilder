@@ -1,11 +1,13 @@
 // Transport buildings: depots, stations, cargo terminals, the airport, road maintenance.
 // Bus & tram stops are not buildings; they're markers on road cells (state.stops).
 import { registerDefs } from './registry.js';
+import { PIER } from './projects.js';
 
 const box = (x, z, w, d, h, color, y = 0, pool = 'body') => ({ pool, x, z, w, d, h, y, color });
 const plain = (x, z, w, d, h, color, y = 0) => box(x, z, w, d, h, color, y, 'plain');
 const cyl = (x, z, r, h, color, y = 0) => ({ pool: 'cyl', x, z, w: r * 2, d: r * 2, h, y, color });
 const roof = (x, z, w, d, h, color, y) => ({ pool: 'roof', x, z, w, d, h, y, color });
+const shell = (x, z, w, d, h, color, y = 0) => ({ pool: 'dome', x, z, w, d, h, y, color });
 // A multi-storey car park `cells` wide: a deck every 0.55 up to `levels` parking levels
 // (the stalls are laid out to match in world/peopleView.js STALLS)
 function garageShape(cells, levels) {
@@ -52,6 +54,13 @@ const T = [
     pollution: { noise: 1.6 }, desc: 'Flights to the world: lots of tourists and some air cargo. Very loud.',
     shape: [plain(0, -0.8, 7.8, 1, 0.08, '#4c4f55'), box(-2, 1.3, 3, 1.4, 1, '#d4d8dd'), cyl(2.5, 1.5, 0.25, 2.4, '#e9ecef'), box(2.5, 1.5, 0.8, 0.8, 0.4, '#5f8fbf', 2.4)] },
 ];
+
+T.push(PIER); // water taxis (data/projects.js)
+T.push(
+  { id: 'hyperloop', name: 'Hyperloop Station', cost: 2500000, upkeep: 12000, w: 4, d: 2, unique: true, hyperloop: true, seats: 500, workers: 60, milestone: 20, powerUse: 20,
+    desc: 'Pods at 1,000 km/h to the neighbouring cities, through a tube on pylons out to the edge of the map. Skilled commuters come in to fill your open jobs, up to 500 of your residents take jobs elsewhere instead of looking for work here, and more visitors arrive. Uses 20 MW.',
+    shape: [plain(0, 0, 3.95, 1.95, 0.05, '#bdb8ae'), box(0, 0.25, 3.6, 1.2, 0.8, '#e9eef3'), shell(0, 0.25, 3.4, 1.1, 0.5, '#7fd3ff', 0.8), cyl(1.4, -0.7, 0.35, 1.3, '#dfe4ea')] },
+);
 
 export const TRANSPORT = {};
 for (const t of T) {
