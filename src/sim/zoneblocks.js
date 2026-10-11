@@ -22,6 +22,7 @@ import { bez, bezTan, tAtS } from './roadgeom.js';
 import { roadWidth } from './lanes.js';
 import { cellSlope } from './mapgen.js';
 import { maxSlopeAt } from './projects.js';
+import { roadBox } from './extent.js';
 
 export const DEPTH = ZONE_DEPTH;
 const ZC = '0123456789abcdefghijklmnopqrstuvwxyz';
@@ -53,10 +54,14 @@ export function zoneLayout(state, { stale = false } = {}) {
   return L;
 }
 
-// Where every road's surface is, on a fine grid (for leaving out zone cells that overlap one)
+// Where every road's surface is, on a fine grid over the part of the map with roads (for
+// leaving out zone cells that overlap one): onRoad(x, z)
 function roadMask(state, X) {
-  const M = N * FINE;
-  const mask = new Uint8Array(M * M);
+  const box = roadBox(state);
+  if (!box) return () => false;
+  const ox = box[0] * FINE, oz = box[1] * FINE;
+  const W = (box[2] - box[0] + 1) * FINE, H = (box[3] - box[1] + 1) * FINE;
+  const mask = new Uint8Array(W * H);
   const p = [0, 0];
   for (const s of X.seg.values()) {
     const g = X.geo.get(s.id);
@@ -70,13 +75,16 @@ function roadMask(state, X) {
       const ix = Math.floor(fx), iz = Math.floor(fz);
       for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
         const x = ix + dx, z = iz + dz;
-        if (x < 0 || z < 0 || x >= M || z >= M) continue;
-        if ((x + 0.5 - fx) ** 2 + (z + 0.5 - fz) ** 2 <= (r * FINE) ** 2) mask[z * M + x] = 1;
+        if (x < ox || z < oz || x >= ox + W || z >= oz + H) continue;
+        if ((x + 0.5 - fx) ** 2 + (z + 0.5 - fz) ** 2 <= (r * FINE) ** 2) mask[(z - oz) * W + x - ox] = 1;
       }
     }
     // (a road's end is round)
   }
-  return mask;
+  return (x, z) => {
+    const fx = Math.floor(x * FINE) - ox, fz = Math.floor(z * FINE) - oz;
+    return fx >= 0 && fz >= 0 && fx < W && fz < H && mask[fz * W + fx] === 1;
+  };
 }
 
 // The columns of one side of a road: where each starts at the kerb, and which way is along
@@ -154,9 +162,7 @@ function rebuild(state) {
     return best;
   };
 
-  const mask = roadMask(state, X);
-  const M = N * FINE;
-  const onRoad = (x, z) => { const fx = Math.floor(x * FINE), fz = Math.floor(z * FINE); return fx >= 0 && fz >= 0 && fx < M && fz < M && mask[fz * M + fx] === 1; };
+  const onRoad = roadMask(state, X);
   const segs = [...X.seg.values()].filter((s) => X.geo.has(s.id) && zonableSeg(s)).sort((a, b) => a.id - b.id);
   const frames = [], reshaped = new Set();
   const f = { x: 0, z: 0, nx: 0, nz: 0, tx: 0, tz: 0 };
@@ -176,19 +182,19 @@ function rebuild(state) {
       }
     }
   }
-  // what's in the way, cell by cell of the grid (worked out once: 1 in the way, 2 too steep)
-  const block = new Uint8Array(N * N);
-  for (let gz = 0; gz < N; gz++) {
-    for (let gx = 0; gx < N; gx++) {
-      const i = gz * N + gx;
-      let v = 0;
-      if (!owned(state, gx, gz) || state.water[i] || state.power[i] || state.path[i] || (state.rail[i] && !state.railH[i])) v = 1;
-      else if (state.bld[i]) { const b = state.buildings.get(state.bld[i]); if (b && b.kind !== 'zone') v = 1; }
-      if (!v && cellSlope(state, gx, gz) > maxSlopeAt(state, gx, gz)) v = 2;
-      block[i] = v;
-    }
-  }
-  const blocked = (gx, gz) => gx < 0 || gz < 0 || gx >= N || gz >= N || block[gz * N + gx] === 1;
+  // what's in the way, cell by cell of the grid (0 nothing, 1 in the way, 2 too steep; worked
+  // out the first time it's asked, as only the cells beside roads ever are)
+  const block = new Uint8Array(N * N).fill(255);
+  const blockAt = (gx, gz) => {
+    const i = gz * N + gx;
+    if (block[i] !== 255) return block[i];
+    let v = 0;
+    if (!owned(state, gx, gz) || state.water[i] || state.power[i] || state.path[i] || (state.rail[i] && !state.railH[i])) v = 1;
+    else if (state.bld[i]) { const b = state.buildings.get(state.bld[i]); if (b && b.kind !== 'zone') v = 1; }
+    if (!v && cellSlope(state, gx, gz) > maxSlopeAt(state, gx, gz)) v = 2;
+    return (block[i] = v);
+  };
+  const blocked = (gx, gz) => gx < 0 || gz < 0 || gx >= N || gz >= N || blockAt(gx, gz) === 1;
   // row by row (the first rows of every road first), each road in the order it was built
   // (the cells by the grid cell under their middle: head[grid cell] -> the last one, next[k] ->
   // the one before it)
@@ -216,7 +222,7 @@ function rebuild(state) {
         // (the cell behind it in its own strip has to be there: a strip doesn't jump a gap)
         if (r > 0 && S.idx[c * DEPTH + r - 1] < 0) continue;
         const gx = Math.floor(f.x), gz = Math.floor(f.z);
-        if (block[gz * N + gx] || near(f.x, f.z, f.nx, f.nz)) continue;
+        if (blockAt(gx, gz) || near(f.x, f.z, f.nx, f.nz)) continue;
         // (on a road: tested at points across the cell, those on the side toward its own road
         // a little in from the edge, as the road mask is only so fine)
         let bad = false;

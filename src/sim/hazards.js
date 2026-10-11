@@ -4,7 +4,7 @@
 //  - on coastal maps, storm surges push the sea up over low ground for a few hours
 //  - heatwaves in summer: hotter days (more power for cooling, people fall ill, dry land)
 //  - decades of air pollution slowly warm the climate, and on coastal maps the sea rises
-import { N, idx, inBounds, DIRS, clamp, forRadius } from '../core/grid.js';
+import { N, TILE, TILES, idx, inBounds, DIRS, clamp, forRadius } from '../core/grid.js';
 import { rng } from '../core/rng.js';
 import { isOwned } from './build.js';
 import { cellHeight, recomputeWater } from './mapgen.js';
@@ -28,9 +28,12 @@ export function earthquakeHourly(state, ctx) {
   if (!state.options.disasters || state.time.day < 10 || state.citizens.size < 500) return;
   if (!rng.chance(0.00045 * difficultyShare(state))) return;
   const mag = 4.5 + Math.pow(rng.next(), 2.2) * 2.7;
-  // the epicentre: somewhere on (or near) your land
-  let x = 0, y = 0;
-  for (let k = 0; k < 40; k++) { x = rng.int(0, N - 1); y = rng.int(0, N - 1); if (isOwned(state, x, y)) break; }
+  // the epicentre: somewhere on your land
+  const owned = [];
+  for (let t = 0; t < state.tiles.length; t++) if (state.tiles[t]) owned.push(t);
+  if (!owned.length) return;
+  const t = owned[Math.floor(rng.next() * owned.length)];
+  const x = (t % TILES) * TILE + rng.int(0, TILE - 1), y = ((t / TILES) | 0) * TILE + rng.int(0, TILE - 1);
   earthquake(state, ctx, x, y, mag);
 }
 const difficultyShare = (state) => (state.options.difficulty === 'easy' ? 0.5 : state.options.difficulty === 'hard' ? 1.5 : state.options.difficulty === 'expert' ? 2 : 1);

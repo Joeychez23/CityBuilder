@@ -11,6 +11,7 @@ import { charge } from './economy.js';
 import { dispatch } from './emergency.js';
 import { rememberRuin } from './construction.js';
 import { difficultyOf } from '../data/difficulty.js';
+import { playArea, cellIn } from './extent.js';
 
 // How often natural disasters strike: the difficulty, and the Weather Control Tower
 export const disasterOdds = (state, ctx) => difficultyOf(state).disasters * (ctx.wonders?.weatherControl ? 0.33 : 1);
@@ -86,7 +87,7 @@ export function firesHourly(state, ctx) {
     const odds = disasterOdds(state, ctx);
     if (w.storm > 0.4 && rng.chance(0.25 * odds)) lightning(state, ctx);
     if ((ctx.dryness || 0) > 0.75 && rng.chance(((ctx.dryness - 0.75) * 0.25) * odds)) {
-      const i = Math.floor(rng.next() * N * N);
+      const i = cellIn(playArea(state), () => rng.next());
       if (state.tree[i] >= 2) igniteCell(state, ctx, i, 'dry weather');
     }
   }
@@ -129,7 +130,7 @@ export function igniteCell(state, ctx, i, cause = 'fire') {
 }
 
 function lightning(state, ctx) {
-  const i = Math.floor(rng.next() * N * N);
+  const i = cellIn(playArea(state), () => rng.next());
   bus.emit('lightning', { cell: i });
   const b = state.bld[i] && state.buildings.get(state.bld[i]);
   if (b && rng.chance(0.4)) igniteBuilding(state, b, 'lightning strike');
@@ -168,14 +169,16 @@ export function hailHourly(state, ctx) {
   charge(state, 'services', repairs);
 }
 
-// Tornado: a funnel crosses the map destroying what it touches
+// Tornado: a funnel crosses the land around your city (see playArea) destroying what it
+// touches
 export function startTornado(state, ctx) {
+  const [x0, y0, x1, y1] = playArea(state);
   const side = Math.floor(rng.next() * 4);
-  const p = rng.next() * N;
-  const start = [[0, p], [p, 0], [N, p], [p, N]][side];
+  const px = x0 + rng.next() * (x1 + 1 - x0), py = y0 + rng.next() * (y1 + 1 - y0);
+  const start = [[x0, py], [px, y0], [x1 + 1, py], [px, y1 + 1]][side];
   const dir = [[1, 0], [0, 1], [-1, 0], [0, -1]][side];
   const ang = Math.atan2(dir[1], dir[0]) + (rng.next() - 0.5) * 0.8;
-  ctx.tornado = { x: start[0], y: start[1], vx: Math.cos(ang), vy: Math.sin(ang), life: N * 1.4, warned: hasWarning(state) };
+  ctx.tornado = { x: start[0], y: start[1], vx: Math.cos(ang), vy: Math.sin(ang), life: Math.max(x1 - x0, y1 - y0) * 1.4, warned: hasWarning(state) };
   state.counters.tornado = true;
   journal(state, 'tornado', 'A tornado touched down');
   bus.emit('notify', { kind: 'bad', icon: '🌪️', title: 'Tornado!', cell: Math.floor(ctx.tornado.y) * N + Math.floor(ctx.tornado.x), msg: ctx.tornado.warned ? 'The early warning system sent citizens to shelters.' : 'A tornado is tearing through the area!' });

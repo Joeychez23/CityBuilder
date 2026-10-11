@@ -5,7 +5,7 @@ import { moveInHourly, matchJobsHourly, citizensDaily, householdFinances, remove
 import { wellbeingDaily } from '../sim/wellbeing.js';
 import { companiesDaily, tourismDaily, assignProduct } from '../sim/companies.js';
 import { computeDemand } from '../sim/demand.js';
-import { pollutionHourly, landValueDaily, natureDaily } from '../sim/environment.js';
+import { pollutionHourly, landValueHourly, natureHourly } from '../sim/environment.js';
 import { dailyCosts, rollDay, closeWeek } from '../sim/economy.js';
 import { removeBuilding } from '../sim/build.js';
 import { bus } from '../core/events.js';
@@ -29,8 +29,8 @@ export const cityFeature = {
     registerSystem({ name: 'companies', every: 'day', run: companiesDaily });
     registerSystem({ name: 'tourism', every: 'day', run: tourismDaily });
     registerSystem({ name: 'wellbeing', every: 'day', run: wellbeingDaily });
-    registerSystem({ name: 'landvalue', every: 'day', run: landValueDaily });
-    registerSystem({ name: 'nature', every: 'day', run: (s) => { if (natureDaily(s)) bus.emit('trees:changed'); } });
+    registerSystem({ name: 'landvalue', every: 'hour', run: landValueHourly });
+    registerSystem({ name: 'nature', every: 'hour', run: (s) => { if (natureHourly(s)) bus.emit('trees:changed'); } });
     registerSystem({ name: 'economy', every: 'day', run: dailyCosts });
     registerSystem({ name: 'roll-day', every: 'dayEnd', run: rollDay });
     registerSystem({ name: 'close-week', every: 'week', run: closeWeek });

@@ -237,7 +237,9 @@ export function buildBridge(state, plan, { free = false } = {}) {
     else if (!state.water[i]) endsToGrade.push([x, y]);
   });
   if (endsToGrade.length) gradeCells(state, net, endsToGrade);
-  bus.emit('terrain:changed', { x0: 0, y0: 0, x1: N - 1, y1: N - 1 });
+  // (the ground and decks to redraw: around the bridge)
+  const xs = plan.cells.map(([x]) => x), ys = plan.cells.map(([, y]) => y);
+  bus.emit('terrain:changed', { x0: Math.max(0, Math.min(...xs) - 2), y0: Math.max(0, Math.min(...ys) - 2), x1: Math.min(N - 1, Math.max(...xs) + 2), y1: Math.min(N - 1, Math.max(...ys) + 2) });
   bus.emit('network:changed', { layer: plan.layer });
   bus.emit('xp', { amount: Math.max(3, n), reason: 'bridge' });
   return true;

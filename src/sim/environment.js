@@ -14,6 +14,7 @@ import { ZONE_LIST } from '../data/zones.js';
 import { cleanAir } from './landmarks.js';
 import { canalSide } from './projects.js';
 import { specIs } from './specialisations.js';
+import { union, grow, roadBox, buildingBox } from './extent.js';
 
 const NN = N * N;
 // (a new industrial area starts out about half as smoggy as it ends up a month later)
@@ -28,13 +29,14 @@ const DIRTY = new Uint8Array(256);
 for (const z of ZONE_LIST) if (z.cat === 'ind' || z.key === 'spec_ore' || z.key === 'spec_oil') DIRTY[z.id] = 1;
 const tmp = new Float32Array(NN);
 
-// The box around everything non-zero in a layer, grown by `pad` cells (diffusion only has
-// to look there: on a big map most of the land is clean and quiet)
-function activeBox(layer, pad) {
+// The box around everything non-zero in a layer (looking only inside `within`, if given),
+// grown by `pad` cells: diffusion only has to look there
+function activeBox(layer, pad, within = null) {
   let x0 = N, y0 = N, x1 = -1, y1 = -1;
-  for (let y = 0; y < N; y++) {
+  const [wx0, wy0, wx1, wy1] = within || [0, 0, N - 1, N - 1];
+  for (let y = wy0; y <= wy1; y++) {
     const row = y * N;
-    for (let x = 0; x < N; x++) {
+    for (let x = wx0; x <= wx1; x++) {
       if (layer[row + x] > 1e-5) {
         if (x < x0) x0 = x;
         if (x > x1) x1 = x;
@@ -45,6 +47,23 @@ function activeBox(layer, pad) {
   }
   if (x1 < 0) return null;
   return [Math.max(0, x0 - pad), Math.max(0, y0 - pad), Math.min(N - 1, x1 + pad), Math.min(N - 1, y1 + pad)];
+}
+
+// The part of the map the hour's pollution can be in: around everything that makes it
+// (buildings, roads, sewage outlets), and wherever it lingered after the last hour, a couple
+// of cells further (it spreads a cell or so an hour). Outside it every pollution layer is
+// zero, so the hourly passes skip it: on a big map most of the land is clean and quiet.
+const REACH = 14; // how far a source's noise carries within the hour (factory noise: 10 passes)
+function pollutionBox(state, ctx) {
+  let box = union(roadBox(state), buildingBox(state));
+  for (const o of ctx.sewageOut || []) { const [x, y] = o.at || [o.x, o.y]; box = union(box, [x, y, x, y]); }
+  box = grow(box, REACH);
+  // where pollution was left after the last hour (the first time: look everywhere)
+  if (ctx.pollLeft === undefined) {
+    ctx.pollLeft = null;
+    for (const layer of [state.air, state.ground, state.waterPoll, state.gwPollution]) ctx.pollLeft = union(ctx.pollLeft, activeBox(layer, 0));
+  }
+  return union(box, grow(ctx.pollLeft, 2));
 }
 
 // Blur a layer in place (diffusion), optionally drifting it along a vector (wind / current).
@@ -80,6 +99,11 @@ function diffuse(layer, keep, drift = [0, 0], mask = null, box = activeBox(layer
 export function pollutionHourly(state, ctx) {
   const air = state.air, ground = state.ground, noise = state.noise, wp = state.waterPoll;
   const w = state.weather;
+  const box = pollutionBox(state, ctx);
+  if (!box) { noise.fill(0); return; }
+  const [X0, Y0, X1, Y1] = box;
+  // (every cell of the box, row by row)
+  const each = (fn) => { for (let y = Y0; y <= Y1; y++) for (let i = y * N + X0, e = y * N + X1; i <= e; i++) fn(i); };
   const filters = state.policies.pollutionManagement ? 0.7 : 1;
   const highSpeed = state.policies.highSpeedHighways;
 
@@ -118,9 +142,9 @@ export function pollutionHourly(state, ctx) {
     }
   }
   // Traffic: air & noise along busy roads
-  for (let i = 0; i < NN; i++) {
+  each((i) => {
     const t = state.road[i];
-    if (!t) continue;
+    if (!t) return;
     const vol = state.roadVol[i];
     const dist = state.district[i] && state.districts.find((d) => d.id === state.district[i]);
     const combustionBan = dist?.policies?.combustionBan ? 0.4 : 1;
@@ -131,25 +155,28 @@ export function pollutionHourly(state, ctx) {
     if (dist?.policies?.speedBumps) n *= 0.75;
     noise[i] += n;
     air[i] += vol * 0.0015 * combustionBan * heavyBan * (ctx.electricVehicles ? 0.5 : 1);
-  }
+  });
   // contaminated ground gives off fumes and dust
-  for (let i = 0; i < NN; i++) if (ground[i] > 0.005) air[i] += ground[i] * FUMES;
+  each((i) => { if (ground[i] > 0.005) air[i] += ground[i] * FUMES; });
   // --- spread: air drifts with the wind; noise spreads a little and never accumulates;
   // ground pollution seeps slowly into the land around it
   const windDir = ctx.windDir || [1, 0];
-  diffuse(air, 4, [windDir[0] * w.wind * 0.6, windDir[1] * w.wind * 0.6]);
-  diffuse(noise, 2);
-  diffuse(noise, 3);
-  diffuse(ground, SEEP);
+  diffuse(air, 4, [windDir[0] * w.wind * 0.6, windDir[1] * w.wind * 0.6], null, activeBox(air, 1, box));
+  diffuse(noise, 2, [0, 0], null, activeBox(noise, 1, box));
+  diffuse(noise, 3, [0, 0], null, activeBox(noise, 1, box));
+  diffuse(ground, SEEP, [0, 0], null, activeBox(ground, 1, box));
   // factory noise carries further (a few blocks)
-  const indBox = activeBox(ind, 10);
+  const indBox = activeBox(ind, 10, box);
   for (let k = 0; k < 10; k++) diffuse(ind, 1, [0, 0], null, indBox);
-  for (let i = 0; i < NN; i++) {
+  each((i) => {
     ind[i] = clamp(Math.sqrt(ind[i]) * 2.4 - 0.04 - state.tree[i] * 0.05, 0, 1.5);
     noise[i] += ind[i] * 0.5;
-  }
+  });
+  // (where pollution is left after this hour, for the next hour's box)
+  let lx0 = N, ly0 = N, lx1 = -1, ly1 = -1;
+  const left = (i) => { const x = i % N, y = (i / N) | 0; if (x < lx0) lx0 = x; if (x > lx1) lx1 = x; if (y < ly0) ly0 = y; if (y > ly1) ly1 = y; };
   const zone = state.zone;
-  for (let i = 0; i < NN; i++) {
+  each((i) => {
     // trees soak up some pollution; rain washes the air; what's left hanging over a place
     // settles into its ground
     const tree = state.tree[i] * 0.004;
@@ -158,7 +185,8 @@ export function pollutionHourly(state, ctx) {
     const settle = Math.max(0, air[i] - SETTLE_FROM) * SETTLE * (dirty ? DIRTY_SETTLE : 1);
     ground[i] = state.water[i] ? 0 : clamp(ground[i] * (dirty ? DIRTY_KEEP : SOIL_KEEP) + settle - (state.tree[i] ? 0.0004 : 0), 0, 1.5);
     noise[i] = clamp(noise[i] - state.tree[i] * 0.03, 0, 1.5);
-  }
+    if (air[i] > 1e-5 || ground[i] > 1e-5) left(i);
+  });
   // the Eco Dome and carbon capture plants (sim/landmarks.js)
   cleanAir(state, ctx);
 
@@ -175,30 +203,43 @@ export function pollutionHourly(state, ctx) {
     if (best >= 0) wp[best] += s.amount / 2500;
   }
   // ground pollution next to water leaks into it
-  for (let i = 0; i < NN; i++) if (!state.water[i] && ground[i] > 0.2) {
+  each((i) => {
+    if (state.water[i] || ground[i] <= 0.2) return;
     const x = i % N, y = (i / N) | 0;
     for (const [dx, dy] of DIRS) { const nx = x + dx, ny = y + dy; if (inBounds(nx, ny) && state.water[idx(nx, ny)]) wp[idx(nx, ny)] += ground[i] * 0.004; }
-  }
-  diffuse(wp, 2, state.flow, state.water);
-  for (let i = 0; i < NN; i++) wp[i] = state.water[i] ? clamp(wp[i] * 0.985, 0, 1.5) : 0;
+  });
+  diffuse(wp, 2, state.flow, state.water, activeBox(wp, 1, box));
+  each((i) => {
+    wp[i] = state.water[i] ? clamp(wp[i] * 0.985, 0, 1.5) : 0;
+    if (wp[i] > 1e-5) left(i);
+  });
 
   // --- groundwater: refills slowly; ground pollution seeps in, then slowly cleans
-  for (let i = 0; i < NN; i++) {
-    if (state.groundwater[i] <= 0 && !ctx.gwOrigin?.[i]) continue;
-    if (!ctx.gwOrigin) ctx.gwOrigin = new Float32Array(NN);
-    if (!ctx.gwOrigin[i]) ctx.gwOrigin[i] = Math.max(state.groundwater[i], 0.01);
-    state.groundwater[i] = Math.min(ctx.gwOrigin[i], state.groundwater[i] + 0.0006);
+  if (!ctx.gwOrigin) ctx.gwOrigin = new Float32Array(NN);
+  const origin = ctx.gwOrigin;
+  each((i) => {
+    if (state.groundwater[i] <= 0 && !origin[i]) return;
+    if (!origin[i]) origin[i] = Math.max(state.groundwater[i], 0.01);
+    state.groundwater[i] = Math.min(origin[i], state.groundwater[i] + 0.0006);
     state.gwPollution[i] = clamp(state.gwPollution[i] * 0.997 + ground[i] * 0.003, 0, 1);
-  }
+    if (state.gwPollution[i] > 1e-5 || state.groundwater[i] < origin[i]) left(i);
+  });
+  ctx.pollLeft = lx1 >= 0 ? [lx0, ly0, lx1, ly1] : null;
 }
 
-// Land value: roads + services + parks + water views + centrality, minus pollution & crime
-export function landValueDaily(state, ctx) {
+// Land value: roads + services + parks + water views + centrality, minus pollution & crime.
+// Each cell is worked out once a day: a 24th of the map's rows every hour, so the work is
+// spread over the day.
+export function landValueHourly(state, ctx) {
+  const h = Math.floor(state.time.minutes / 60) % 24;
+  landValueRows(state, ctx, Math.floor((h * N) / 24), Math.floor(((h + 1) * N) / 24) - 1);
+}
+export function landValueRows(state, ctx, y0 = 0, y1 = N - 1) {
   const lv = state.landValue;
   const cov = ctx.coverage;
   const g = (k, i) => (cov[k] ? cov[k][i] : 0);
   const c = N / 2;
-  for (let y = 0; y < N; y++) {
+  for (let y = y0; y <= y1; y++) {
     for (let x = 0; x < N; x++) {
       const i = idx(x, y);
       if (state.water[i]) { lv[i] = 0; continue; }
@@ -240,10 +281,15 @@ function nearWater(state, x, y) {
   return nearWaterMask[idx(x, y)] === 1;
 }
 
-// Forests regrow and spread, ground pollution kills trees and fertile land, fertile land recovers
-export function natureDaily(state) {
+// Forests regrow and spread, ground pollution kills trees and fertile land, fertile land
+// recovers. Each cell once a day: a 24th of the map's rows every hour. True if trees changed.
+export function natureHourly(state) {
+  const h = Math.floor(state.time.minutes / 60) % 24;
+  return natureRows(state, Math.floor((h * N) / 24), Math.floor(((h + 1) * N) / 24) - 1);
+}
+export function natureRows(state, y0 = 0, y1 = N - 1) {
   let changed = false;
-  for (let i = 0; i < NN; i++) {
+  for (let i = y0 * N; i < (y1 + 1) * N; i++) {
     if (state.ground[i] > 0.45 && state.tree[i] && Math.random() < 0.08) { state.tree[i]--; changed = true; }
     if (state.ground[i] > 0.3) state.fertile[i] = Math.max(0, state.fertile[i] - 0.01);
     if (state.burnt[i] > 0) state.burnt[i] = Math.max(0, state.burnt[i] - 0.03);

@@ -1,5 +1,5 @@
-// Forests and street trees as two InstancedMeshes (trunks + canopies). Rebuilt when the
-// tree layer changes; recoloured for the seasons.
+// Forests and street trees as InstancedMeshes (trunks, conifers and leafy canopies). Rebuilt
+// when the tree layer changes; recoloured for the seasons.
 import * as THREE from 'three';
 import { N, idx } from '../core/grid.js';
 import { UPG } from '../data/roads.js';
@@ -19,6 +19,12 @@ const SEASON_LEAF = {
   winter: ['#dfe7ea', '#cfd8d9', '#9aa69f'],
 };
 
+// The map is split into square chunks, each with its own meshes: chunks out of view aren't
+// drawn, and when something changes only the chunks whose trees (or the ground under them)
+// changed are rebuilt.
+const CH = 128;
+const CN = Math.ceil(N / CH);
+
 export function createTreesView(view, state) {
   // Low-poly on purpose: a big map has a couple of hundred thousand trees
   const trunkGeo = new THREE.CylinderGeometry(0.03, 0.05, 1, 4, 1, true).translate(0, 0.5, 0);
@@ -27,33 +33,61 @@ export function createTreesView(view, state) {
   const mat = () => new THREE.MeshStandardMaterial({ roughness: 0.9, flatShading: true });
   const mats = { trunk: mat(), cone: mat(), blob: mat() };
   mats.trunk.color.set('#6b4f36');
-  let cap = 0, trunks, cones, blobs, visible = true;
-  // The meshes are sized to the forest: they're rebuilt bigger when trees spread
-  function allocate(n) {
-    for (const im of [trunks, cones, blobs]) if (im) { view.scene.remove(im); im.dispose(); }
-    cap = n;
-    trunks = new THREE.InstancedMesh(trunkGeo, mats.trunk, cap);
-    cones = new THREE.InstancedMesh(coneGeo, mats.cone, cap);
-    blobs = new THREE.InstancedMesh(blobGeo, mats.blob, cap);
-    for (const im of [trunks, cones, blobs]) {
-      im.castShadow = im !== trunks; // trunks are too thin to cast a shadow worth drawing
+  let visible = true, castNear = true;
+  const chunks = [];
+  for (let cz = 0; cz < CN; cz++) {
+    for (let cx = 0; cx < CN; cx++) {
+      const x0 = cx * CH, y0 = cz * CH, x1 = Math.min(N, x0 + CH) - 1, y1 = Math.min(N, y0 + CH) - 1;
+      chunks.push({ x0, y0, x1, y1, cap: 0, sig: -1, meshes: null });
+    }
+  }
+  // A chunk's meshes are sized to its forest: they're made again, bigger, when trees spread
+  function allocate(ch, n) {
+    if (ch.meshes) for (const im of ch.meshes) { view.scene.remove(im); im.dispose(); }
+    ch.cap = n;
+    const sphere = new THREE.Sphere(new THREE.Vector3((ch.x0 + ch.x1 + 1) / 2, 0, (ch.y0 + ch.y1 + 1) / 2), CH * 0.75 + 30);
+    ch.meshes = [[trunkGeo, mats.trunk], [coneGeo, mats.cone], [blobGeo, mats.blob]].map(([g, mt], k) => {
+      const im = new THREE.InstancedMesh(g, mt, n);
+      im.castShadow = k > 0 && castNear; // trunks are too thin to cast a shadow worth drawing
       im.receiveShadow = true;
-      im.frustumCulled = false;
+      im.boundingSphere = sphere; // (the chunk: it's culled when out of view)
       im.count = 0;
       im.visible = visible;
       im.setColorAt(0, new THREE.Color('#ffffff')); // allocate per-instance colours up front
       view.scene.add(im);
-    }
+      return im;
+    });
   }
-  allocate(20000);
 
   const tv = { dirty: true, season: 'summer', lastBuild: 0 };
+  let force = true; // rebuild every chunk (the season changed)
   const c = new THREE.Color();
+  const roadTreesAt = (i) => state.road[i] && (state.roadUpg[i] & UPG.TREES) && !state.water[i] && !state.bridgeH[i]; // no trees on bridges
 
-  tv.rebuild = () => {
+  // What a chunk's trees look like, as a number: the forest's cells, and the ground and
+  // roads under them
+  function signature(ch) {
+    let h = 2166136261;
+    const mix = (v) => { h = Math.imul(h ^ v, 16777619); };
+    for (let y = ch.y0; y <= ch.y1; y++) {
+      for (let x = ch.x0; x <= ch.x1; x++) {
+        const i = idx(x, y);
+        const n = state.tree[i], rt = roadTreesAt(i);
+        if (!n && !rt) continue;
+        if (state.water[i] && !rt) continue;
+        mix(i); mix(rt ? 4 + state.roadSeg[i] * 8 : n); mix(Math.round(cellHeight(state, x, y) * 64));
+      }
+    }
+    return h >>> 0;
+  }
+
+  function buildChunk(ch) {
     let need = 0;
-    for (let i = 0; i < N * N; i++) need += state.tree[i] * 2 + (state.road[i] && state.roadUpg[i] & UPG.TREES ? 2 : 0);
-    if (need > cap) allocate(Math.ceil(need * 1.25));
+    for (let y = ch.y0; y <= ch.y1; y++) for (let x = ch.x0; x <= ch.x1; x++) { const i = idx(x, y); need += state.tree[i] * 2 + (roadTreesAt(i) ? 2 : 0); }
+    if (!need && !ch.meshes) return;
+    if (need > ch.cap) allocate(ch, Math.ceil(need * 1.25) + 64);
+    const [trunks, cones, blobs] = ch.meshes;
+    const cap = ch.cap;
     let nt = 0, nc = 0, nb = 0;
     const leaf = SEASON_LEAF[tv.season];
     const snowy = tv.season === 'winter';
@@ -73,11 +107,12 @@ export function createTreesView(view, state) {
         blobs.setColorAt(nb++, c.set(r.pick(leaf)));
       }
     };
-    for (let y = 0; y < N; y++) {
-      for (let x = 0; x < N; x++) {
+    const conRatio = state.climate === 'polar' || state.climate === 'continental' ? 0.7 : state.climate === 'hot' ? 0.2 : 0.4;
+    for (let y = ch.y0; y <= ch.y1; y++) {
+      for (let x = ch.x0; x <= ch.x1; x++) {
         const i = idx(x, y);
         const n = state.tree[i];
-        const roadTrees = state.road[i] && (state.roadUpg[i] & UPG.TREES) && !state.water[i] && !state.bridgeH[i]; // no trees on bridges
+        const roadTrees = roadTreesAt(i);
         if (!n && !roadTrees) continue;
         if (state.water[i] && !roadTrees) continue;
         const r = makeRng(i * 2654435761);
@@ -86,23 +121,33 @@ export function createTreesView(view, state) {
           for (const [tx, tz] of roadsideSpots(state, i, 0.5)) place(tx, tz, h, 0.45, false, r);
           continue;
         }
-        const conRatio = state.climate === 'polar' || state.climate === 'continental' ? 0.7 : state.climate === 'hot' ? 0.2 : 0.4;
         for (let k = 0; k < n * 2; k++) {
           place(x + r.range(0.12, 0.88), y + r.range(0.12, 0.88), h - 0.05, r.range(0.55, 1.0), r.chance(conRatio), r);
         }
       }
     }
     trunks.count = nt; cones.count = nc; blobs.count = nb;
-    for (const im of [trunks, cones, blobs]) {
+    for (const im of ch.meshes) {
       im.instanceMatrix.needsUpdate = true;
       if (im.instanceColor) im.instanceColor.needsUpdate = true;
     }
+  }
+
+  // Rebuild the chunks whose trees changed (all of them when the season turns)
+  tv.rebuild = () => {
+    for (const ch of chunks) {
+      const sig = signature(ch);
+      if (!force && sig === ch.sig) continue;
+      ch.sig = sig;
+      buildChunk(ch);
+    }
+    force = false;
     tv.dirty = false;
   };
 
-  tv.setVisible = (v) => { visible = v; for (const im of [trunks, cones, blobs]) im.visible = v; };
+  tv.setVisible = (v) => { visible = v; for (const ch of chunks) if (ch.meshes) for (const im of ch.meshes) im.visible = v; };
   tv.setSeason = (season) => {
-    if (season !== tv.season) { tv.season = season; tv.dirty = true; }
+    if (season !== tv.season) { tv.season = season; tv.dirty = true; force = true; }
   };
 
   tv.update = (now) => {
@@ -111,7 +156,10 @@ export function createTreesView(view, state) {
     // Tree shadows are too small to see from high up, and they're the costliest thing to
     // draw into the shadow map, so they're only cast while zoomed in
     const near = view.camera.position.distanceTo(view.controls.target) < 230;
-    if (cones.castShadow !== near) cones.castShadow = blobs.castShadow = near;
+    if (castNear !== near) {
+      castNear = near;
+      for (const ch of chunks) if (ch.meshes) ch.meshes[1].castShadow = ch.meshes[2].castShadow = near;
+    }
   };
   return tv;
 }

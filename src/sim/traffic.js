@@ -21,6 +21,7 @@ import { waterTaxiOption } from './projects.js';
 import { graph, findRoute, routeCost, routeCells, pointAtCell, segOfEdge, reverseRoute } from './roadgraph.js';
 import { rn } from './roadnet.js';
 import { chainCells } from './roadraster.js';
+import { grow, roadBox } from './extent.js';
 
 const NN = N * N;
 
@@ -418,10 +419,14 @@ export function roadsHourly(state, ctx) {
   const jf = ctx.jamField || (ctx.jamField = new Float32Array(NN));
   jf.fill(0);
   for (const i of roadCells(state, ctx)) jf[i] = clamp((congestion(state, i) - 0.85) / 1.3, 0, 1);
-  const tmp = new Float32Array(NN);
+  // (it spreads no further than a few cells from the roads)
+  const box = grow(roadBox(state), 4);
+  if (!box) return;
+  const x0 = Math.max(1, box[0]), y0 = Math.max(1, box[1]), x1 = Math.min(N - 2, box[2]), y1 = Math.min(N - 2, box[3]);
+  const tmp = ctx.jamTmp || (ctx.jamTmp = new Float32Array(NN));
   for (let pass = 0; pass < 3; pass++) {
-    tmp.set(jf);
-    for (let y = 1; y < N - 1; y++) for (let x = 1; x < N - 1; x++) {
+    for (let y = y0 - 1; y <= y1 + 1; y++) tmp.set(jf.subarray(y * N + x0 - 1, y * N + x1 + 2), y * N + x0 - 1);
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
       const i = y * N + x;
       const m = Math.max(tmp[i - 1], tmp[i + 1], tmp[i - N], tmp[i + N]) * 0.85;
       if (m > jf[i]) jf[i] = m;

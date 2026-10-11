@@ -4,7 +4,7 @@ import { createState, ROAD_RASTER } from '../core/state.js';
 import { MAPS } from '../data/maps.js';
 import { defFor } from '../data/registry.js';
 import { N, TILE, TILES, DIRS, inBounds } from '../core/grid.js';
-import { generateMap, embedLayer, recomputeWater } from './mapgen.js';
+import { generateMap, embedLayer, recomputeWater, extendHighway } from './mapgen.js';
 
 export const SAVE_KEY = 'gridlock-city-save';
 export const MAPS_KEY = 'gridlock-custom-maps';
@@ -74,7 +74,7 @@ export function deserialize(text) {
     else if (v && v.$map) state[k] = new Map(v.$map);
     else state[k] = v;
   }
-  if (resized) recomputeWater(state);
+  if (resized) { recomputeWater(state); extendHighway(state); }
   // buildings of a type the game no longer has (e.g. the hydro dam and the airport parts) are
   // taken down, so the rest of the city still loads
   for (const b of [...state.buildings.values()]) {
@@ -92,10 +92,11 @@ export function deserialize(text) {
   return state;
 }
 
-// Cities from the smaller, older map size are moved into the middle of a freshly generated
-// map of the current size: everything shifts by the same number of whole tiles, the land
-// around them is new, and the outside highway, railway and power line are extended out to
-// the new map edge. Decoded layers are left in data as { $arr }.
+// Cities from a smaller map (the map used to be 17 × 17 tiles) are moved into the middle of
+// a freshly generated map of the current size: everything shifts by the same number of whole
+// tiles, the land around them is new, and the outside highway, railway and power line are
+// carried on out to the new map edge (the highway once the city is loaded: see
+// extendHighway in sim/mapgen.js). Decoded layers are left in data as { $arr }.
 function resizeSave(data, map, oldN) {
   const O = (N - oldN) / 2;
   if (O < 0 || O % TILE) throw new Error(`This city is ${oldN} cells across and can't be placed on a ${N}-cell map`);
@@ -104,6 +105,7 @@ function resizeSave(data, map, oldN) {
   generateMap(fresh, map);
   fresh.power.fill(0); // the city's own outside power line is kept and extended instead
   const shift = (i) => ((((i / oldN) | 0) + O) * N + (i % oldN) + O);
+  const cell = (i) => (i == null || i < 0 ? i : shift(i));
   for (const [k, v] of Object.entries(data)) {
     if (!v || !v.$ta) continue;
     const old = fromB64(v.d, TYPES[v.$ta]);
@@ -120,20 +122,38 @@ function resizeSave(data, map, oldN) {
     } else out = old;
     data[k] = { $arr: out };
   }
-  // Buildings, stops, lines and other cell references move with the city
+  // Whatever stands somewhere on the map moves with the city: its box, its middle, its cells,
+  // the cell at its front and where it drains to
+  const move = (o) => {
+    if (!o) return;
+    if (o.x0 != null) { o.x0 += O; o.x1 += O; o.y0 += O; o.y1 += O; }
+    if (o.cx != null) { o.cx += O; o.cz += O; }
+    if (o.cells) o.cells = o.cells.map(cell);
+    if (o.front != null) o.front = cell(o.front);
+    if (o.discharge) o.discharge = [o.discharge[0] + O, o.discharge[1] + O];
+  };
   for (const [, b] of data.buildings?.$map || []) {
-    b.x0 += O; b.x1 += O; b.y0 += O; b.y1 += O;
-    if (b.discharge) b.discharge = [b.discharge[0] + O, b.discharge[1] + O];
+    move(b);
     delete b.access; delete b.accessStamp; delete b.comp; delete b.compStamp;
   }
-  data.stops = Object.fromEntries(Object.entries(data.stops || {}).map(([c, s]) => [shift(+c), s]));
-  for (const l of data.lines || []) { l.stops = l.stops.map(shift); l.path = null; l.stopIndex = null; l.valid = false; }
-  for (const r of data.ruins || []) { r.x0 += O; r.x1 += O; r.y0 += O; r.y1 += O; }
-  for (const pl of data.plots || []) { pl.x0 += O; pl.x1 += O; pl.y0 += O; pl.y1 += O; }
-  for (const rb of data.rebuilds || []) { rb.x0 += O; rb.x1 += O; rb.y0 += O; rb.y1 += O; }
+  for (const list of [data.ruins, data.rebuilds, data.plots]) for (const o of list || []) move(o);
+  for (const n of data.roads.nodes) { n.x += O; n.z += O; }
+  for (const sg of data.roads.segs) sg.k = sg.k.map((v) => v + O);
+  data.stops = Object.fromEntries(Object.entries(data.stops || {}).map(([c, st]) => [shift(+c), st]));
+  for (const l of data.lines || []) { l.stops = l.stops.map(shift); l.path = null; l.stopIndex = null; l.parts = null; l.valid = false; }
+  for (const t of data.tunnels || []) { t.a = shift(t.a); t.b = shift(t.b); }
+  for (const lb of data.landmarkBridges || []) move(lb);
+  for (const c of data.closures || []) move(c);
+  // requests and petitions that point at a street
+  for (const d of [...(data.decisions || []), ...(data.politics?.petitions || [])]) {
+    if (d.cell != null) d.cell = cell(d.cell);
+    if (d.data?.cell != null) d.data.cell = cell(d.data.cell);
+  }
   data.events = [];
-  // Outside connections: the new map's highway, railway, sea lane and air route, plus the
-  // city's own power line carried on to the new map edge
+  if (data.stats) delete data.stats.worstJam;
+  // Outside connections: the new map's railway, sea lane and air route; the highway's (its
+  // road is carried on when the city is loaded); the city's own power line carried on to the
+  // new map edge (around the new railway and highway)
   const power = data.power.$arr;
   const spans = (data.powerSpans || []).map(([a, b]) => [shift(a), shift(b)]);
   const conns = fresh.connections.filter((c) => c.type !== 'power');
@@ -147,8 +167,7 @@ function resizeSave(data, map, oldN) {
       while (step < 6 && inBounds(x + dx, y + dy)) { x += dx; y += dy; step++; }
       if (!step) break;
       let px = x, py = y;
-      const road = data.road.$arr, rail = data.rail.$arr;
-      for (let k = 0; k < 3 && (road[py * N + px] || rail[py * N + px]); k++) { if (dx) py++; else px++; }
+      for (let k = 0; k < 3 && (fresh.road[py * N + px] || fresh.rail[py * N + px]); k++) { if (dx) py++; else px++; }
       const i = py * N + px;
       power[i] = 1;
       spans.push([prev, i]);

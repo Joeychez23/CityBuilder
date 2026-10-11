@@ -6,6 +6,7 @@ import { makeRng } from '../core/rng.js';
 import { gradeCells } from './grade.js';
 import { bridgeWaterRuns, bridgeConnection, bridgeLayers } from './bridges.js';
 import { planRoad, buildRoad, emptyRoads, commitRoads, rn } from './roadnet.js';
+import { forgetBoxes } from './extent.js';
 
 const smooth = (e0, e1, x) => {
   const t = clamp((x - e0) / (e1 - e0), 0, 1);
@@ -194,6 +195,7 @@ export function generateMap(state, map) {
   // (anything left on the water that couldn't be planned still gets a deck)
   bridgeWaterRuns(state, 'rail');
   commitRoads(state, { silent: true });
+  forgetBoxes();
 }
 
 // How much of each style's relief is kept (1 = all of it). Maps are mostly flat to build on;
@@ -323,6 +325,22 @@ function buildHighway(state) {
     if (edge) edge.out = 1;
   }
   if (!state.connections.some((c) => c.type === 'road')) state.connections.push({ type: 'road', x: 0, y, dir: 2, name: 'West Highway' });
+}
+
+// A city moved onto a bigger map (see sim/save.js) keeps its own highway: it's carried on from
+// where the old map's edge was out to the new one, along the line the new map's land was
+// shaped for, and its new end is the outside connection
+export function extendHighway(state) {
+  commitRoads(state, { silent: true });
+  const end = [...rn(state).node.values()].find((n) => n.out && n.x > 0.1);
+  if (!end) return;
+  const on = [...rn(state).seg.values()].find((s) => s.a === end.id || s.b === end.id);
+  const plan = planRoad(state, { a: { x: 0.02, z: end.z }, b: { x: end.x, z: end.z }, type: on?.type || 6, anywhere: true, waterEnds: true });
+  if (!plan.ok) { console.warn('The highway could not be carried on to the new map edge:', plan.reason, plan.bad); return; }
+  const res = buildRoad(state, plan, { free: true, silent: true });
+  const X = rn(state);
+  for (const id of res.segs) { const sg = X.seg.get(id); if (sg) sg.locked = 1; }
+  for (const n of X.node.values()) n.out = n.x < 0.1 ? 1 : 0;
 }
 
 function generateResources(state, map, noise, rnd) {
@@ -486,4 +504,5 @@ export function applyCustomMap(state, custom) {
   bridgeConnections(state);
   bridgeWaterRuns(state, 'rail');
   commitRoads(state, { silent: true });
+  forgetBoxes();
 }

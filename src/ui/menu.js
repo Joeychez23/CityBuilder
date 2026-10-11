@@ -1,8 +1,9 @@
 // Start screen: pick a map (with a generated preview), name the city, choose options.
 import { MAPS, CLIMATES } from '../data/maps.js';
 import { createState } from '../core/state.js';
-import { generateMap, cellHeight, applyCustomMap, START_TILE_MIN } from '../sim/mapgen.js';
-import { N, idx, TILE } from '../core/grid.js';
+import { generateMap, applyCustomMap, START_TILE_MIN } from '../sim/mapgen.js';
+import { N, TILE } from '../core/grid.js';
+import { previewPixels } from './previewPixels.js';
 import { MAPS_KEY } from '../sim/save.js';
 import { accountStatus, renderAuthForm, renderCityList, esc } from './accountUI.js';
 import { setToken } from '../net/api.js';
@@ -17,33 +18,42 @@ export function customMaps() {
   } catch { return []; }
 }
 
-function drawPreview(canvas, map) {
+// Map previews are made in a worker, one map after another (on the page itself if workers
+// can't be used)
+let worker = null, jobs = 0;
+const waiting = new Map();
+function previewWorker() {
+  if (worker === null) {
+    try {
+      worker = new Worker(new URL('./previewWorker.js', import.meta.url), { type: 'module' });
+      worker.onmessage = ({ data }) => { waiting.get(data.id)?.(data.pixels); waiting.delete(data.id); };
+      worker.onerror = () => { worker = false; for (const [, done] of waiting) done(null); waiting.clear(); };
+    } catch { worker = false; }
+  }
+  return worker;
+}
+const S = 136;
+function pixelsFor(map) {
+  const w = previewWorker();
+  if (w) {
+    const id = ++jobs;
+    return new Promise((done) => { waiting.set(id, done); w.postMessage({ id, map, S }); })
+      .then((px) => px || pixelsHere(map));
+  }
+  return new Promise((done) => setTimeout(() => done(pixelsHere(map)), 60 * jobs++));
+}
+function pixelsHere(map) {
   const st = createState(map);
   generateMap(st, map);
   if (map.custom) applyCustomMap(st, map.custom);
-  const S = 136;
+  return previewPixels(st, S);
+}
+
+async function drawPreview(canvas, map) {
+  const pixels = await pixelsFor(map);
   canvas.width = S; canvas.height = S;
   const g = canvas.getContext('2d');
-  const img = g.createImageData(S, S);
-  for (let y = 0; y < S; y++) {
-    for (let x = 0; x < S; x++) {
-      const cx = Math.floor((x / S) * N), cy = Math.floor((y / S) * N);
-      const i = idx(cx, cy);
-      const h = cellHeight(st, cx, cy) - st.seaLevel;
-      let r, gg, b;
-      if (st.water[i]) { r = 40; gg = 110 + h * 10; b = 170 + h * 8; }
-      else if (st.power[i]) { r = 255; gg = 211; b = 0; }
-      else if (st.road[i] || st.rail[i]) { r = 60; gg = 60; b = 66; }
-      else {
-        const t = Math.min(1, h / 18);
-        r = 100 + t * 130; gg = 150 + t * 80 + (st.tree[i] ? -30 : 0); b = 80 + t * 150;
-        if (st.tree[i]) { r -= 40; b -= 20; }
-      }
-      const o = (y * S + x) * 4;
-      img.data[o] = r; img.data[o + 1] = gg; img.data[o + 2] = b; img.data[o + 3] = 255;
-    }
-  }
-  g.putImageData(img, 0, 0);
+  g.putImageData(new ImageData(pixels, S, S), 0, 0);
   // starting area outline (the 3 × 3 tiles in the middle)
   const a = (START_TILE_MIN * TILE / N) * S, w = (3 * TILE / N) * S;
   g.strokeStyle = '#ffd300';
@@ -127,8 +137,8 @@ export function showMenu({ onNew, onContinue, onLoadFile, onLoadCloud, hasSave }
       card.classList.add('on');
     };
     grid.appendChild(card);
-    // Generate previews lazily (one at a time) so the menu appears instantly
-    setTimeout(() => drawPreview(card.querySelector('canvas'), map), 40 + allMaps.indexOf(map) * 60);
+    // (previews are made one at a time, after the menu appears)
+    drawPreview(card.querySelector('canvas'), map);
   }
   el.querySelector('#m-new').onclick = () => {
     el.classList.add('hidden');

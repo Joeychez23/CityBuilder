@@ -1,6 +1,6 @@
 // Milestones (20 levels of city growth) and the development tree.
 // XP comes from population, happiness and building things. Each milestone pays money,
-// development points and expansion permits (for map tiles: the map has 17 × 17 of them),
+// development points and expansion permits (for map tiles: the map has 33 × 33 of them),
 // and raises the loan limit.
 export const MILESTONES = [
   { name: 'Founding', xp: 0, money: 0, dev: 0, permits: 0, loan: 100000 },
