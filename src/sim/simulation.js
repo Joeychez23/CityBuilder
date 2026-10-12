@@ -44,6 +44,8 @@ export function monthFloat(state) {
 }
 // Days left in this budget week, counting today (Saturday = 1)
 export const daysLeftInWeek = (state) => 7 - dateOf(state.time.day).weekday;
+// Which budget week a day is in (they run Sunday to Saturday)
+export const budgetWeekOf = (day) => Math.floor((Math.floor(day) + EPOCH_WEEKDAY) / 7);
 export const hourOf = (state) => state.time.minutes / 60;
 // Night: 20:00 to 06:00
 export const NIGHT_FROM = 20, NIGHT_TO = 6;
