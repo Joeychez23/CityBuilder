@@ -6,7 +6,9 @@ import { computeZonable } from './build.js';
 
 export const STEP_MINUTES = 10;
 // Game minutes per real second at each speed (0 = paused). One day = 12 min at 1×.
+// The fastest (3) is only for skipping the night: in the morning it drops back to normal.
 export const SPEEDS = [0, 2, 40, 96];
+export const FASTEST = 3;
 
 // ------------------------------------------------------------------ calendar
 // time.day counts days since Thursday 1 January 2026. Budgets settle weekly, when
@@ -42,7 +44,12 @@ export function monthFloat(state) {
 }
 // Days left in this budget week, counting today (Saturday = 1)
 export const daysLeftInWeek = (state) => 7 - dateOf(state.time.day).weekday;
+// Which budget week a day is in (they run Sunday to Saturday)
+export const budgetWeekOf = (day) => Math.floor((Math.floor(day) + EPOCH_WEEKDAY) / 7);
 export const hourOf = (state) => state.time.minutes / 60;
+// Night: 20:00 to 06:00
+export const NIGHT_FROM = 20, NIGHT_TO = 6;
+export const isNight = (state) => { const h = hourOf(state); return h >= NIGHT_FROM || h < NIGHT_TO; };
 export function seasonOf(state) {
   const m = monthOf(state);
   return m < 2 || m === 11 ? 'winter' : m < 5 ? 'spring' : m < 8 ? 'summer' : 'autumn';
@@ -118,11 +125,15 @@ export function createSimulation(state, ctx) {
       refreshNetworks();
       const t = state.time;
       if (t.paused || !t.speed) return;
+      // (the fastest speed only skips the night: come the morning it's back to normal)
+      const morning = () => { t.speed = 1; acc = 0; bus.emit('speed:morning'); };
+      if (t.speed === FASTEST && !isNight(state)) morning();
       acc += Math.min(dtReal, 0.25) * SPEEDS[t.speed];
       let guard = 0;
       while (acc >= STEP_MINUTES && guard++ < 12) {
         acc -= STEP_MINUTES;
         step();
+        if (t.speed === FASTEST && !isNight(state)) { morning(); break; }
       }
     },
   };

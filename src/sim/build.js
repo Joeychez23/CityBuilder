@@ -384,8 +384,8 @@ export function bulldozePreview(state, x, y, layers = ['building', 'road', 'rail
     if (layer === 'building' || !state[layer]?.[i]) continue;
     if (layer === 'road') {
       const s = segAtCell(state, i);
-      if (!s || s.locked) continue;
-      return { what: 'road', refund: Math.round(segValue(state, s.id) * REFUND_RATE), seg: s.id };
+      if (!s) continue;
+      return { what: 'road', refund: s.locked ? 0 : Math.round(segValue(state, s.id) * REFUND_RATE), seg: s.id, outside: !!s.locked };
     }
     return { what: layer, refund: Math.round(networkValue(state, layer, i) * REFUND_RATE) };
   }
@@ -413,7 +413,9 @@ export function bulldozeCell(state, x, y, layers = ['building', 'road', 'rail', 
     if (!state[layer]?.[i]) continue;
     if (layer === 'road') {
       const s = segAtCell(state, i);
-      if (!s || s.locked) return null; // (the outside connection stays)
+      // (the highway out to the edge can go too: the city loses its link to the outside
+      // until a road reaches that edge again)
+      if (!s) return null;
       const r = removeSeg(state, s.id);
       return r ? { removed: 'road', refund: r.refund } : null;
     }

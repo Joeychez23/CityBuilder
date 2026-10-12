@@ -6,7 +6,7 @@ import { SERVICE_CATS } from '../data/services.js';
 import { RESOURCES } from '../data/resources.js';
 import { EDU_NAMES } from '../data/zones.js';
 import { takeLoan, repayLoan, loanLimit, interestRate, projection, perWeek } from '../sim/economy.js';
-import { WEEKDAYS, formatDate } from '../sim/simulation.js';
+import { WEEKDAYS, formatDate, budgetWeekOf } from '../sim/simulation.js';
 import { AGE } from '../sim/citizens.js';
 import '../ui/inspector.js';
 import { COUNCIL_TAX_CAP } from '../sim/politics.js';
@@ -17,13 +17,32 @@ const LABELS = {
   services: 'Service upkeep', roads: 'Road upkeep', loanInterest: 'Loan interest', imports: 'Imported utilities & services', supplies: 'Factory supplies', projects: 'Grand projects (building)', policies: 'Policies', transitCost: 'Transit',
 };
 
-function slider(body, label, min, max, step, value, fmt, onChange) {
+// (opts: locked, a slider that can't be moved for now; onCommit(value), when it's let go)
+function slider(body, label, min, max, step, value, fmt, onChange, opts = {}) {
   const wrap = document.createElement('label');
   wrap.className = 'row';
-  wrap.innerHTML = `<span class="k">${label}</span><span style="display:flex;gap:6px;align-items:center"><input type="range" min="${min}" max="${max}" step="${step}" value="${value}" style="width:120px"><b class="num" style="width:48px;text-align:right">${fmt(value)}</b></span>`;
+  wrap.innerHTML = `<span class="k">${opts.locked ? '🔒 ' : ''}${label}</span><span style="display:flex;gap:6px;align-items:center"><input type="range" min="${min}" max="${max}" step="${step}" value="${value}" style="width:120px"${opts.locked ? ' disabled' : ''}><b class="num" style="width:48px;text-align:right">${fmt(value)}</b></span>`;
   const input = wrap.querySelector('input');
   input.oninput = () => { wrap.querySelector('b').textContent = fmt(+input.value); onChange(+input.value); };
+  if (opts.onCommit) input.onchange = () => opts.onCommit(+input.value, input);
+  if (opts.locked) wrap.title = opts.locked;
   body.appendChild(wrap);
+}
+
+// Each tax can be changed once a week: let go of its slider at a new rate and it stays there
+// until the week's budget is paid on Saturday night (s.taxSet: the week each was last set)
+function taxSlider(s, el, key, label, min, max, get, set, fmt, rerender) {
+  const was = get();
+  const locked = (s.taxSet?.[key] ?? -1) === budgetWeekOf(s.time.day);
+  slider(el, label, min, max, 1, was, fmt, set, {
+    locked: locked && 'Changed this week: it can be changed again from Sunday',
+    onCommit: (v, input) => {
+      if (v === was) return;
+      (s.taxSet ||= {})[key] = budgetWeekOf(s.time.day);
+      input.blur(); // (the panel doesn't redraw under a control in use)
+      rerender();
+    },
+  });
 }
 
 registerPanel({
@@ -58,12 +77,14 @@ registerPanel({
       lineChart(c1, [{ values: w.map((x) => x.money), color: '#2f55ff' }]);
       lineChart(c2, [{ values: w.map((x) => x.income), color: '#5fd38a' }, { values: w.map((x) => x.expense), color: '#ff6b5a' }]);
     } else if (tab === 'taxes') {
-      el.innerHTML = `<div class="muted">10% is neutral. Higher taxes earn more but lower demand and well-being; negative rates subsidise.</div>${s.politics?.council ? `<div class="warn" style="font-size:11px;margin-top:4px">The opposition council won't let taxes go above ${COUNCIL_TAX_CAP}% until the next election.</div>` : ''}<div class="section-title">By zone</div>`;
+      const set = ['res', 'com', 'ind', 'off', ...EDU_NAMES.map((n, k) => `edu${k}`)].some((k) => (s.taxSet?.[k] ?? -1) === budgetWeekOf(s.time.day));
+      el.innerHTML = `<div class="muted">10% is neutral. Higher taxes earn more but lower demand and well-being; negative rates subsidise.</div>
+        <div class="muted" style="font-size:11px;margin-top:4px">Each tax can be changed once a week: let go of a slider and that rate stays until the budget is paid on Saturday night.${set ? ' 🔒 Taxes changed this week unlock on Sunday.' : ''}</div>${s.politics?.council ? `<div class="warn" style="font-size:11px;margin-top:4px">The opposition council won't let taxes go above ${COUNCIL_TAX_CAP}% until the next election.</div>` : ''}<div class="section-title">By zone</div>`;
       for (const [k, name] of [['res', 'Residential'], ['com', 'Commercial'], ['ind', 'Industrial'], ['off', 'Office']]) {
-        slider(el, name, -10, s.politics?.council ? COUNCIL_TAX_CAP : 30, 1, s.taxes[k], (v) => `${v}%`, (v) => { s.taxes[k] = v; });
+        taxSlider(s, el, k, name, -10, s.politics?.council ? COUNCIL_TAX_CAP : 30, () => s.taxes[k], (v) => { s.taxes[k] = v; }, (v) => `${v}%`, rerender);
       }
       el.insertAdjacentHTML('beforeend', '<div class="section-title">Residential adjustment by education</div>');
-      EDU_NAMES.forEach((n, k) => slider(el, n, -5, 5, 1, s.taxes.resEdu[k], (v) => `${v > 0 ? '+' : ''}${v}%`, (v) => { s.taxes.resEdu[k] = v; }));
+      EDU_NAMES.forEach((n, k) => taxSlider(s, el, `edu${k}`, n, -5, 5, () => s.taxes.resEdu[k], (v) => { s.taxes.resEdu[k] = v; }, (v) => `${v > 0 ? '+' : ''}${v}%`, rerender));
     } else if (tab === 'services') {
       el.innerHTML = '<div class="muted">Budget changes efficiency, coverage and upkeep (50–150%).</div><div class="section-title">Service budgets</div>';
       for (const [k, c] of Object.entries(SERVICE_CATS)) {

@@ -24,6 +24,14 @@ const IMPORT_MARKUP = 1.1;   // raw materials and goods bought from outside cost
 const SHOP_BUY = 0.55;       // shops buy their stock at this share of the price (imports: SHOP_IMPORT)
 const SHOP_IMPORT = 0.65;
 
+// How far along the production chain a product is: raw materials 0, goods made from them 1,
+// goods made from those (electronics, from metals and plastics) 2...
+const STAGE = {};
+const stageOf = (p) => {
+  if (STAGE[p] == null) STAGE[p] = Math.max(-1, ...Object.keys(RESOURCES[p]?.inputs || {}).map(stageOf)) + 1;
+  return STAGE[p];
+};
+
 export function ensureMarket(state) {
   const m = state.market;
   for (const k of Object.keys(RESOURCES)) {
@@ -105,9 +113,13 @@ export function companiesDaily(state, ctx) {
     if (b.product === 'retail') retailCapacity += b.workerCount * PER_WORKER.retail * eff;
   }
 
-  // --- production
-  for (const b of companies) {
-    b.revenue = 0; b.costs = 0;
+  // --- production, along the chain: farms, forestry, mines and oil wells first, then the
+  // factories that use what they turn out (the simple goods before electronics), so the city's
+  // own companies get its raw materials and goods that same day before anything is imported,
+  // and only what they don't need is exported
+  const chain = companies.filter((b) => b.product !== 'retail').sort((a, b) => stageOf(a.product) - stageOf(b.product));
+  for (const b of companies) { b.revenue = 0; b.costs = 0; }
+  for (const b of chain) {
     const p = b.product;
     if (b.def.cat === 'spec') {
       const res = resourceUnder(state, b);

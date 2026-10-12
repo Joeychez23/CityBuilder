@@ -107,6 +107,7 @@ b, strong { font-weight: 600; }
 .speed-btns button { background: var(--ink-3); border: 0; padding: 1px 6px; font-size: 9px; color: var(--paper); line-height: 14px; }
 .speed-btns button:hover { background: var(--ink-4); }
 .speed-btns button.on { background: var(--yellow); color: var(--ink); }
+.speed-btns button.locked { opacity: 0.35; }
 .demand { display: flex; gap: 3px; align-items: flex-end; height: 28px; }
 .demand .bar { width: 7px; height: 18px; background: var(--ink-3); position: relative; overflow: hidden; }
 .demand .bar i { position: absolute; left: 0; right: 0; bottom: 0; }
@@ -208,7 +209,7 @@ b, strong { font-weight: 600; }
 /* The tool's window sits where the other windows go (top right): one window at a time */
 #tool-options {
   position: absolute; top: calc(var(--hud-h, 64px) + 6px); right: 12px; display: none; background: var(--ink); z-index: 7;
-  max-height: calc(100vh / var(--z, 1) - var(--hud-h, 64px) - var(--toolbar-h, 70px) - var(--submenu-h, 0px) - 18px); overflow-y: auto;
+  max-height: calc(100vh / var(--z, 1) - var(--hud-h, 64px) - var(--toolbar-h, 70px) - var(--submenu-h, 0px) - var(--touch-btns-h, 0px) - 18px); overflow-y: auto;
   padding: 11px 12px; width: 262px; border-top: 4px solid var(--yellow); box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45); scrollbar-width: thin;
 }
 #tool-options.open { display: block; }
@@ -467,11 +468,16 @@ body.photo #photo-bar { display: flex; }
 body.touch #ui { -webkit-user-select: none; user-select: none; }
 body.touch button, body.touch select, body.touch input { touch-action: manipulation; }
 /* With a tool in hand on a touch screen: a button to stop what it's doing (Esc / right click) */
-#touch-cancel { position: absolute; right: 8px; bottom: calc(var(--toolbar-h, 70px) + var(--submenu-h, 0px) + 8px); display: none; z-index: 6;
-  border: 0; background: var(--ink); color: var(--paper); padding: 10px 14px; box-shadow: 0 8px 22px rgba(0, 0, 0, 0.4);
+/* Cancel, and beside it Hide HUD (so more of the map shows while building) */
+#touch-btns { position: absolute; right: 8px; bottom: calc(var(--toolbar-h, 70px) + var(--submenu-h, 0px) + 8px); display: flex; gap: 4px; z-index: 6; }
+#touch-btns button { display: none; border: 0; background: var(--ink); color: var(--paper); padding: 10px 14px; box-shadow: 0 8px 22px rgba(0, 0, 0, 0.4);
   font-family: var(--font-sans); font-stretch: 112%; font-weight: 700; text-transform: uppercase; font-size: 11px; }
-#touch-cancel b { color: var(--yellow); margin-right: 5px; }
-body.touch #touch-cancel.open { display: block; }
+#touch-btns button b { color: var(--yellow); margin-right: 5px; }
+body.touch #touch-btns button.open { display: block; }
+/* the tool's window stops above them */
+body.touch #ui { --touch-btns-h: 42px; }
+body.touch.hud-off #hud, body.touch.hud-off #left-rail, body.touch.hud-off #panels, body.touch.hud-off #toasts,
+body.touch.hud-off #layers, body.touch.hud-off #legend, body.touch.hud-off #res-legend { display: none; }
 body.touch .speed-btns button { padding: 4px 9px; }
 body.touch #left-rail button { height: 40px; }
 
@@ -500,7 +506,7 @@ body.touch #left-rail button { height: 40px; }
 
   /* windows fill the width beside the rail */
   #panels { left: 44px; right: 4px; width: auto; gap: 8px; }
-  #tool-options { left: 44px; right: 4px; width: auto; max-height: min(40vh, calc(100vh / var(--z, 1) - var(--hud-h, 64px) - var(--toolbar-h, 70px) - var(--submenu-h, 0px) - 18px)); }
+  #tool-options { left: 44px; right: 4px; width: auto; max-height: min(40vh, calc(100vh / var(--z, 1) - var(--hud-h, 64px) - var(--toolbar-h, 70px) - var(--submenu-h, 0px) - var(--touch-btns-h, 0px) - 18px)); }
   #toasts { left: 44px; right: 4px; width: auto; }
   #layers { left: 44px; right: auto; max-width: calc(100vw / var(--z, 1) - 48px); overflow-x: auto; scrollbar-width: none; }
   #layers .layers-title { display: none; }

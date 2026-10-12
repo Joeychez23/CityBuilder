@@ -507,7 +507,7 @@ registerTool('bulldoze', {
     const what = e.building ? (e.building.name || e.building.def.name) : ({ road: ROADS[s.road[i]]?.name || 'road', rail: 'railway', power: 'power line', pipe: 'water pipe', path: 'footpath', subway: 'subway' })[e.what] || e.what;
     const b = e.building;
     const cells = b ? buildingCells(b) : [[x, y]];
-    return { cells, text: `Remove ${b ? '' : 'this piece of '}${what}`, refund: e.refund };
+    return { cells, text: `Remove ${b ? '' : 'this piece of '}${what}`, refund: e.refund, warn: e.outside ? 'It links the city to the outside: cut it and no one can drive in or out' : '' };
   },
   // Remove the thing at (x, y) (once per cell in a stroke). Returns the refund.
   removeAt(app, t, x, y) {
@@ -542,7 +542,7 @@ registerTool('bulldoze', {
     // highlight exactly what a click takes away
     const tg = this.target(app, t, p.cx, p.cy);
     app.preview.setCells(tg ? tg.cells.map(([x, y]) => [x, y, '#ff4a3a']) : [[p.cx, p.cy, '#ff6b5a']]);
-    app.tools.showTip(tg ? `${tg.text}${tg.refund ? ` · <span class="good">+${money(tg.refund)}</span> back` : ''}${tg.cost ? ` · ${money(tg.cost)}` : ''}` : '<span class="muted">Nothing to remove here</span>');
+    app.tools.showTip(tg ? `${tg.text}${tg.refund ? ` · <span class="good">+${money(tg.refund)}</span> back` : ''}${tg.cost ? ` · ${money(tg.cost)}` : ''}${tg.warn ? `<br><span class="bad">${tg.warn}</span>` : ''}` : '<span class="muted">Nothing to remove here</span>');
   },
   down(app, t) { t.stroke = new Set(); t.got = 0; t.removed = 0; t.last = null; },
   drag(app, t, a, b) {
