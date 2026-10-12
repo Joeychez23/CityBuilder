@@ -47,10 +47,7 @@ export function createToolbar(app) {
   // One row of cards instead of all of them (you choose; it's remembered)
   let compact = false;
   try { compact = localStorage.getItem('gc.menuCompact') === '1'; } catch { /* storage blocked */ }
-  const setCompact = (v) => { compact = v; shrunk = false; try { localStorage.setItem('gc.menuCompact', v ? '1' : '0'); } catch { /* storage blocked */ } };
-  // On a phone the menu shrinks to one row by itself once you pick a tool, so the map shows
-  let shrunk = false;
-  const phone = () => window.innerWidth <= 760 || window.innerHeight <= 500;
+  const setCompact = (v) => { compact = v; try { localStorage.setItem('gc.menuCompact', v ? '1' : '0'); } catch { /* storage blocked */ } };
   const syncHeight = () => ui.style.setProperty('--submenu-h', sub.classList.contains('open') ? `${sub.getBoundingClientRect().height / (app.uiScale || 1)}px` : '0px');
 
   function renderBar() {
@@ -75,7 +72,6 @@ export function createToolbar(app) {
         }
         const reopen = openKey === c.key && !sub.classList.contains('open');
         openKey = openKey === c.key && !reopen ? null : c.key;
-        shrunk = false;
         renderBar();
         renderSub();
       };
@@ -96,14 +92,14 @@ export function createToolbar(app) {
     if (!c) { sub.classList.remove('open'); syncHeight(); return; }
     sub.innerHTML = '';
     const items = c.items(app);
-    const small = compact || shrunk;
+    const small = compact;
     sub.classList.toggle('compact', small);
     const head = document.createElement('div');
     head.className = 'sub-head';
     head.innerHTML = `<span class="p-num">${String(categories.indexOf(c) + 1).padStart(2, '0')}</span><b>${c.name}</b><span class="connector"></span>
       <button class="sub-size" data-tip="${small ? 'Show every card' : 'Shrink the menu to one row of cards'}">${small ? 'All ▴' : 'Less ▾'}</button><button class="sub-x" title="Close (Esc)">✕</button>`;
     head.querySelector('.sub-x').onclick = closeSub;
-    head.querySelector('.sub-size').onclick = () => { if (shrunk) shrunk = false; else setCompact(!compact); renderSub(); };
+    head.querySelector('.sub-size').onclick = () => { setCompact(!compact); renderSub(); };
     sub.appendChild(head);
     let group = null;
     for (const item of items) {
@@ -127,10 +123,7 @@ export function createToolbar(app) {
         if (item.onPick) { item.onPick(app); return; }
         // the active card toggles its tool off; any other card switches to its tool
         if (item.isActive?.(app.tools.current)) app.tools.set({ kind: 'select' });
-        else {
-          app.tools.set(item.tool);
-          if (phone() && !compact && !shrunk) { shrunk = true; renderSub(); return; }
-        }
+        else app.tools.set(item.tool);
         markActive();
       };
       sub.appendChild(card);
@@ -148,7 +141,7 @@ export function createToolbar(app) {
     sub.querySelectorAll('.card').forEach((el, n) => el.classList.toggle('on', !!items[n]?.isActive?.(app.tools.current)));
   }
 
-  function closeSub() { openKey = null; shrunk = false; sub.classList.remove('open'); syncHeight(); renderBar(); }
+  function closeSub() { openKey = null; sub.classList.remove('open'); syncHeight(); renderBar(); }
 
   bus.on('escape', closeSub);
   bus.on('unlocks:changed', () => { renderBar(); if (openKey) renderSub(); });
