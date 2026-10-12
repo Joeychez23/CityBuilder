@@ -14,24 +14,21 @@ import { union, roadBox, layerBox } from '../sim/extent.js';
 
 const m = new THREE.Matrix4();
 const col = new THREE.Color();
-const _q = new THREE.Quaternion();
-const _e = new THREE.Euler();
-const _p = new THREE.Vector3();
-const _s = new THREE.Vector3();
-const _up = new THREE.Vector3();
 const unitDisc = new THREE.CylinderGeometry(0.5, 0.5, 1, 24).translate(0, 0.5, 0);
 
-// A slab whose top surface runs from A to B: width across, thickness below the surface.
+// A slab whose top surface runs from A to B: width across, thickness below the surface. It's
+// sheared rather than tilted, so its ends stand upright: pieces meeting at a point line up
+// there however differently they slope (tilted ones would leave a step at every bend).
 function slabMatrix(ax, ay, az, bx, by, bz, width, thick, out = m) {
   const dx = bx - ax, dy = by - ay, dz = bz - az;
   const plan = Math.hypot(dx, dz) || 1e-6;
-  const len = Math.hypot(plan, dy);
-  _e.set(0, Math.atan2(-dz, dx), Math.atan2(dy, plan), 'YZX');
-  _q.setFromEuler(_e);
-  _up.set(0, 1, 0).applyQuaternion(_q);
-  _p.set((ax + bx) / 2 - _up.x * thick, (ay + by) / 2 - _up.y * thick, (az + bz) / 2 - _up.z * thick);
-  _s.set(len, thick, width);
-  return out.compose(_p, _q, _s);
+  // (the unit box's x runs from A to B, its y straight up, its z level across)
+  return out.set(
+    dx, 0, (-dz / plan) * width, (ax + bx) / 2,
+    dy, thick, 0, (ay + by) / 2 - thick,
+    dz, 0, (dx / plan) * width, (az + bz) / 2,
+    0, 0, 0, 1,
+  );
 }
 
 // What a bridge looks like, by what it carries (road bridges by the road's class)
@@ -155,8 +152,11 @@ export function createNetworksView(view, state) {
       }
       if (!(mask & (1 << d))) continue;
       pools.girder.add(slabMatrix(cx, h - 0.17, cz, cx + dx * 0.51, he - 0.17, cz + dz * 0.51, width * st.girderW, st.girder), st.girderC);
+      // (railings stand a hair inside the deck's edge: flush with a track bed as wide as the
+      // deck, their faces would flicker against its sides)
+      const inset = width / 2 - st.rail.w / 2 - 0.005;
       for (const side of [-1, 1]) {
-        const ox = -dz * side * (width / 2 - st.rail.w / 2), oz = dx * side * (width / 2 - st.rail.w / 2);
+        const ox = -dz * side * inset, oz = dx * side * inset;
         pools.railing.add(slabMatrix(cx + ox, h + st.rail.h, cz + oz, cx + dx * 0.51 + ox, he + st.rail.h, cz + dz * 0.51 + oz, st.rail.w, st.rail.h), st.rail.c);
       }
     }

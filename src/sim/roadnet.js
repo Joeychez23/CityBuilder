@@ -253,8 +253,11 @@ export function profileOf(state, sid) {
     g.profV = hver;
     return g.prof;
   }
+  // (a bridge meets the roads at its ends there, as when it was planned: it doesn't climb
+  // over them)
+  const ends = new Set([sid, ...X.at.get(s.a), ...X.at.get(s.b)]);
   g.prof = s.tn ? tunnelProfile(state, g.c, g.tab, hA, hB)
-    : s.br ? bridgeProfile(state, g.c, g.tab, hA, hB, new Set([sid]), X) : groundProfile(state, g.c, g.tab, hA, hB);
+    : s.br ? bridgeProfile(state, g.c, g.tab, hA, hB, ends, X) : groundProfile(state, g.c, g.tab, hA, hB);
   g.profV = hver;
   return g.prof;
 }

@@ -1,6 +1,6 @@
 // Service buildings: placement rules, efficiency (budget × staffing × power), coverage
 // grids that other systems read, and the hourly garbage / mail / deathcare collection.
-import { N, idx, inBounds, forRadius, clamp } from '../core/grid.js';
+import { N, idx, inBounds, forRadius, clamp, DIRS } from '../core/grid.js';
 import { createBuilding, footprintFree, footprintBlocker, isOwned, spend, clearZoneCell, changeHooks } from './build.js';
 import { buildingRoadComp } from './networks.js';
 import { bus } from '../core/events.js';
@@ -65,8 +65,27 @@ export function serviceBlocker(state, ctx, def, x0, y0, x1, y1, rot = 0, cells =
   if (def.needsShip && !state.connectionsAvailable.ship) return 'This map has no sea lane';
   if (def.needsWater && !touchesWater(state, x0, y0, x1, y1)) return 'Must be placed next to water';
   if (def.needsRail && !touchesLayer(state, state.rail, x0, y0, x1, y1)) return 'Must be next to railway tracks';
-  if (!def.inPark && !touchesGroundRoad(state, x0, y0, x1, y1)) return 'Needs a road next to it'; // (rides stand in the park grounds)
   return landmarkBlocker(state, def, x0, y0, x1, y1);
+}
+
+// A building can go up away from the roads, but nothing reaches it (it shows "No road
+// access") until a road runs along one side. The placing tools warn about that instead of
+// refusing. Returns the warning, or null.
+export const NO_ROAD = 'No road beside it yet: nothing can reach it until one runs along a side';
+export function roadWarning(state, def, x0, y0, x1, y1, cells = null) {
+  if (def.inPark) return null; // (rides are reached through the park's gate)
+  if (!cells) return touchesGroundRoad(state, x0, y0, x1, y1) ? null : NO_ROAD;
+  // (turned to face a road at an angle: the cells beside the ones under it)
+  const own = new Set(cells);
+  for (const i of cells) {
+    const x = i % N, y = (i / N) | 0;
+    for (const [dx, dy] of DIRS) {
+      if (!inBounds(x + dx, y + dy)) continue;
+      const j = idx(x + dx, y + dy);
+      if (!own.has(j) && state.road[j] && !state.bridgeH[j]) return null;
+    }
+  }
+  return NO_ROAD;
 }
 
 // Is there a ground-level road along a side of this rectangle? (bridge decks don't give

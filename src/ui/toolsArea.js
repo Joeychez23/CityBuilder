@@ -28,7 +28,7 @@ registerTool('area', {
     app.preview.setCells(cells);
     const s = t.def.scale(plan.cells);
     const afford = app.state.options.unlimitedMoney || app.state.money >= plan.cost;
-    app.tools.showTip(`${plan.w} × ${plan.h} cells · reaches ${s.radius * 8} m · +${s.attract} attractiveness · <span class="${afford ? '' : 'bad'}">${money(plan.cost)}</span>${plan.reason ? `<br><span class="bad">${plan.reason}</span>` : ''}`);
+    app.tools.showTip(`${plan.w} × ${plan.h} cells · reaches ${s.radius * 8} m · +${s.attract} attractiveness · <span class="${afford ? '' : 'bad'}">${money(plan.cost)}</span>${plan.reason ? `<br><span class="bad">${plan.reason}</span>` : plan.warn ? `<br><span class="warn">🚧 ${plan.warn}</span>` : ''}`);
   },
   up(app, t, a, b) {
     const res = placeArea(app.state, app.ctx, t.def, rectOf(a, b));

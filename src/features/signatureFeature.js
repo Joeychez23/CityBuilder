@@ -4,7 +4,7 @@ import { SIGNATURES } from '../data/signatures.js';
 import { registerCategory } from '../ui/toolbar.js';
 import { registerSystem } from '../sim/simulation.js';
 import { createBuilding, footprintBlocker } from '../sim/build.js';
-import { touchesGroundRoad, center } from '../sim/services.js';
+import { center } from '../sim/services.js';
 import { updateCapacity } from '../sim/growth.js';
 import { startConstruction } from '../sim/construction.js';
 import { N, idx, forRadius } from '../core/grid.js';
@@ -42,9 +42,7 @@ function signatureBlocker(state, ctx, def, x0, y0, x1, y1) {
   if (!state.unlockedSignatures.includes(def.id) && !state.options.unlockAll) return `Locked: ${def.req}`;
   if (builtSignature(state, def)) return 'Already built (one per city)';
   const blocked = footprintBlocker(state, x0, y0, x1, y1);
-  if (blocked) return blocked;
-  if (!touchesGroundRoad(state, x0, y0, x1, y1)) return 'Needs a road next to it';
-  return null;
+  return blocked || null;
 }
 
 function placeSignature(state, ctx, def, x0, y0, x1, y1, rot) {

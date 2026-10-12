@@ -5,7 +5,7 @@
 // switch "Face the road" back on.
 import { registerTool, money, segButtons } from './tools.js';
 import { N, idx, inBounds, DIRS } from '../core/grid.js';
-import { placeService, serviceBlocker, isService } from '../sim/services.js';
+import { placeService, serviceBlocker, isService, roadWarning } from '../sim/services.js';
 import { footprintFree } from '../sim/build.js';
 import { nearestSeg, rn } from '../sim/roadnet.js';
 import { bezTan } from '../sim/roadgeom.js';
@@ -138,7 +138,7 @@ registerTool('plop', {
       <div class="section-title">Facing</div>
       <div class="rot-row"><button class="btn" data-r="-1" title="Turn left (Shift+R)">⟲</button><span>Entrance faces <b>${SIDES[t.place?.rot ?? t.rot ?? 1]}</b></span><button class="btn" data-r="1" title="Turn right (R)">⟳</button></div>`;
     segButtons(el, null, [[true, 'Face the road'], [false, 'Keep my turn']], auto, (v) => { t.auto = v; rerender(); });
-    el.insertAdjacentHTML('beforeend', `<p class="muted">${auto ? 'It snaps against the nearest road and turns its entrance (the yellow arrow) to face it.' : 'It stays turned the way you set it. Its entrance (the yellow arrow) needs a road.'} R / Shift+R turn it.</p>`);
+    el.insertAdjacentHTML('beforeend', `<p class="muted">${auto ? 'It snaps against the nearest road and turns its entrance (the yellow arrow) to face it. Away from roads it goes where you point.' : 'It stays turned the way you set it. Its entrance is the yellow arrow.'} It can go up without a road, but it only works once a road runs along a side. R / Shift+R turn it.</p>`);
     el.querySelectorAll('[data-r]').forEach((b) => (b.onclick = () => this.turn(app, t, +b.dataset.r)));
   },
   enter(app, t) { t.auto = t.auto ?? true; },
@@ -156,6 +156,7 @@ registerTool('plop', {
     t.place = place;
     const [x0, y0, x1, y1] = place.rect;
     const reason = (t.blocker || serviceBlocker)(state, ctx, t.def, x0, y0, x1, y1, place.rot, place.turned?.cells);
+    const noRoad = !reason && roadWarning(state, t.def, x0, y0, x1, y1, place.turned?.cells);
     const afford = state.options.unlimitedMoney || state.money >= t.def.cost;
     const cx = Math.min(N - 1, Math.max(0, Math.floor(place.turned?.cx ?? (x0 + x1 + 1) / 2))), cy = Math.min(N - 1, Math.max(0, Math.floor(place.turned?.cz ?? (y0 + y1 + 1) / 2)));
     app.buildings.showGhost(t.def, place.rect, place.rot, !reason && afford, cellHeight(state, cx, cy), place.turned);
@@ -169,7 +170,7 @@ registerTool('plop', {
       if (sew.intake != null) cells.push([sew.intake % N, (sew.intake / N) | 0, sew.bad ? '#ff4b3a' : '#3aa0ff', state.seaLevel - 0.04]);
       app.preview.setCells(cells);
     }
-    app.tools.showTip(`<b>${t.def.name}</b> · ${money(t.def.cost)}${reason ? `<br><span class="bad">${reason}</span>` : !afford ? '<br><span class="bad">Not enough money</span>' : ''}${sew?.text ? `<br><span class="${sew.bad ? 'bad' : 'muted'}">${sew.text}</span>` : ''}`);
+    app.tools.showTip(`<b>${t.def.name}</b> · ${money(t.def.cost)}${reason ? `<br><span class="bad">${reason}</span>` : !afford ? '<br><span class="bad">Not enough money</span>' : ''}${noRoad ? `<br><span class="warn">🚧 ${noRoad}</span>` : ''}${sew?.text ? `<br><span class="${sew.bad ? 'bad' : 'muted'}">${sew.text}</span>` : ''}`);
   },
   up(app, t, a, b) {
     if (!t.place) return;

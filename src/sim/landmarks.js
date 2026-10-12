@@ -4,7 +4,7 @@
 // once a day the factories make things, the casinos and studio pay up, the capital gets
 // its grant, and the cathedral's builders are paid.
 import { N, idx, forRadius, inBounds } from '../core/grid.js';
-import { isService, center, serviceEfficiency, touchesGroundRoad } from './services.js';
+import { isService, center, serviceEfficiency } from './services.js';
 import { createBuilding, footprintBlocker, spend, isOwned } from './build.js';
 import { updateCapacity } from './growth.js';
 import { startConstruction } from './construction.js';
@@ -301,9 +301,7 @@ export function landmarkAttract(state, ctx, b) {
 export function boughtBlocker(state, ctx, def, x0, y0, x1, y1) {
   if ([...state.buildings.values()].some((b) => b.def === def)) return 'Only one per city';
   const blocked = footprintBlocker(state, x0, y0, x1, y1);
-  if (blocked) return blocked;
-  if (!touchesGroundRoad(state, x0, y0, x1, y1)) return 'Needs a road next to it';
-  return null;
+  return blocked || null;
 }
 
 export function placeBought(state, ctx, def, x0, y0, x1, y1, rot) {

@@ -1,7 +1,7 @@
 // Projects you lay out on the map (data/projects.js): areas you draw (Central Park, beaches,
 // the boardwalk), the theme park and its rides, and canals and the water taxis on them.
 import { N, idx, inBounds, DIRS, clamp, hidx } from '../core/grid.js';
-import { isService, center, serviceEfficiency, touchesGroundRoad, areaCost } from './services.js';
+import { isService, center, serviceEfficiency, touchesGroundRoad, areaCost, NO_ROAD } from './services.js';
 import { createBuilding, footprintBlocker, spend, isOwned, removeBuilding, clearZoneCell, MAX_BUILD_SLOPE } from './build.js';
 import { cellHeight, cellSlope, recomputeWater } from './mapgen.js';
 import { labelComponents } from './networks.js';
@@ -77,8 +77,8 @@ export function planArea(state, def, rect) {
     let wet = 0;
     for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (nearWaterCell(state, x, y, A.strip ? 2 : 1)) wet++;
     if (wet < Math.max(1, cells * (A.strip ? 0.6 : 0.25))) { plan.reason = A.strip ? 'Draw it along the water\'s edge' : 'A beach has to touch the water'; return plan; }
-    if (!roadNear(state, rect, 3)) { plan.reason = 'Needs a road within 3 cells'; return plan; }
-  } else if (!touchesGroundRoad(state, x0, y0, x1, y1)) plan.reason = 'Needs a road along one side';
+    if (!roadNear(state, rect, 3)) plan.warn = 'No road within 3 cells yet: nobody can reach it until one does';
+  } else if (!touchesGroundRoad(state, x0, y0, x1, y1)) plan.warn = NO_ROAD;
   return plan;
 }
 
