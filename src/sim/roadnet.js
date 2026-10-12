@@ -10,7 +10,8 @@
 //   seg:  { id, a, b, type, k: [c1x, c1z, c2x, c2z], br, upg, cond, day, toll, power, locked }
 //     k: the curve's two control points (the ends are its nodes); br: a raised road (a bridge,
 //     its deck in one arch from end to end); upg: upgrades (UPG bits); toll / power: where a
-//     toll booth or power connector stands along it (0..1); locked: the outside connection
+//     toll booth or power connector stands along it (0..1); locked: the outside connection's
+//     highway (it can be bulldozed, but not upgraded or changed)
 //     A one-way road runs from a to b.
 //
 // Ground roads follow the land: their height along the way is the terrain under them,
@@ -722,8 +723,9 @@ export const segValue = (state, sid) => {
 export function removeSeg(state, sid, { pay = true, silent = false } = {}) {
   const X = rn(state);
   const s = X.seg.get(sid);
-  if (!s || s.locked) return null;
-  const r = pay ? refund(state, segValue(state, sid) * REFUND_RATE) : 0;
+  if (!s) return null;
+  // (the outside highway came with the map, so it pays nothing back)
+  const r = pay && !s.locked ? refund(state, segValue(state, sid) * REFUND_RATE) : 0;
   const R = state.roads;
   // (wires that came down to its power connector come down with it)
   const cc = s.power != null ? connectorCell(state, s) : -1;
