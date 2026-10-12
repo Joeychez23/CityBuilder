@@ -100,7 +100,7 @@ export function createTerrainView(view, state) {
   // Water: a flat sheet at sea level, tinted by water pollution through one texel per cell
   // (centred on the cell, so a polluted cell is polluted right up to the shore). Out at sea it
   // reaches far past the map's edge, the colour of the water at the edge.
-  const wgeo = new THREE.PlaneGeometry(ocean ? N * 13 : N, ocean ? N * 13 : N);
+  const wgeo = new THREE.PlaneGeometry(ocean ? N * 16 : N, ocean ? N * 16 : N);
   wgeo.rotateX(-Math.PI / 2);
   wgeo.translate(N / 2, 0, N / 2);
   const wuv = wgeo.attributes.uv;
@@ -122,7 +122,7 @@ export function createTerrainView(view, state) {
   let floor = 0;
   for (let k = 0; k <= N; k++) floor += state.height[hidx(k, 0)] + state.height[hidx(k, N)] + state.height[hidx(0, k)] + state.height[hidx(N, k)];
   const outside = new THREE.Mesh(
-    new THREE.RingGeometry(N * 0.5, N * 6, 4, 1, Math.PI / 4),
+    new THREE.RingGeometry(N * 0.5, N * 8, 4, 1, Math.PI / 4),
     new THREE.MeshStandardMaterial({ color: ocean ? PAL.mud : '#56664a', roughness: 1 }),
   );
   outside.rotation.x = -Math.PI / 2;
