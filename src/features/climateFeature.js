@@ -28,7 +28,7 @@ registerPanel({
       <div class="muted" style="font-size:11px">Cold and heat raise power use for heating & cooling. Clouds cut solar output; wind drives turbines. Rain cleans the air; snow needs road maintenance.</div>`;
     const C = s.climateChange, ctx = app.ctx;
     if (ctx.heatwave) html += row('Heatwave', `${ctx.heatwave.days} more day${ctx.heatwave.days === 1 ? '' : 's'} · +${ctx.heatwave.boost} °C`, 'bad');
-    if (ctx.surge) html += row('Storm surge', `the sea is ${Math.round(ctx.surge.rise * 8)} m up · ${ctx.surge.cells.length} cells flooded`, 'bad');
+    if (ctx.surge) html += row('Storm surge', `the sea is ${Math.round(ctx.surge.rise * 8)} m up · ${ctx.surge.cells.length} cells of your land flooded`, 'bad');
     const broken = (s.closures || []).filter((c) => c.why === 'quake').reduce((a, c) => a + c.cells.length, 0);
     if (broken) html += row('Earthquake damage', `${broken} road and pipe cells still broken`, 'warn');
     html += '<div class="section-title">Long-term climate</div>';

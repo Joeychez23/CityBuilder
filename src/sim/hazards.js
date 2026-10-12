@@ -1,13 +1,14 @@
 // Bigger natural hazards for big cities, and the long-term climate:
 //  - earthquakes break roads and the pipes under them (closed until road crews mend them),
 //    shake down weak buildings and start fires
-//  - on coastal maps, storm surges push the sea up over low ground for a few hours
+//  - on coastal maps, storm surges push the water up over low ground near the sea, rivers and
+//    lakes for a few hours, and leave silt behind that makes the land more fertile
 //  - heatwaves in summer: hotter days (more power for cooling, people fall ill, dry land)
 //  - decades of air pollution slowly warm the climate, and on coastal maps the sea rises
 import { N, TILE, TILES, idx, inBounds, DIRS, clamp, forRadius } from '../core/grid.js';
 import { rng } from '../core/rng.js';
 import { isOwned } from './build.js';
-import { cellHeight, recomputeWater } from './mapgen.js';
+import { cellHeight, cellSlope, recomputeWater } from './mapgen.js';
 import { destroyBuilding, igniteBuilding, disasterOdds } from './disasters.js';
 import { refreshClosed } from './closures.js';
 import { charge } from './economy.js';
@@ -118,31 +119,45 @@ export function surgeHourly(state, ctx) {
   if (w.storm > 0.5 && rng.chance(0.03 * disasterOdds(state, ctx))) startSurge(state, ctx, 0.6 + Math.pow(rng.next(), 2) * 1.2 + (state.climateChange?.seaRise || 0) * 0.5);
 }
 
-// Your land the sea can reach (from the open sea at the map edge) that lies lower than the
-// surge. The water finds its way over any low ground, yours or not.
+// Where the water goes. It comes up out of the sea, rivers and lakes (every water cell is a
+// source) and spreads over the low ground next to them, but it's highest at the water's edge
+// and falls away inland, to nothing `reach` cells in: only land near the water floods, however
+// low the ground further off lies. Returns { cells: your flooded land (the damage), wet: every
+// flooded cell, depth: how deep the water stood on each }.
+const surgeReach = (rise) => Math.round(12 + rise * 20);
 function surgeCells(state, rise) {
-  const sea = state.seaLevel, H = sea + rise;
-  const seen = new Uint8Array(N * N), out = [];
-  const queue = [];
-  for (let k = 0; k < N; k++) for (const [x, y] of [[k, 0], [k, N - 1], [0, k], [N - 1, k]]) { const i = idx(x, y); if (state.water[i] && !seen[i]) { seen[i] = 1; queue.push(i); } }
-  for (let q = 0; q < queue.length; q++) {
-    const i = queue[q], x = i % N, y = (i / N) | 0;
+  const sea = state.seaLevel, reach = surgeReach(rise), NN = N * N;
+  const seen = new Uint8Array(NN), dist = new Uint16Array(NN), queue = new Int32Array(NN);
+  const out = [], wet = [], depth = [];
+  let n = 0;
+  for (let i = 0; i < NN; i++) if (state.water[i]) { seen[i] = 1; queue[n++] = i; }
+  for (let q = 0; q < n; q++) {
+    const i = queue[q], x = i % N, y = (i / N) | 0, d = dist[i] + 1;
+    if (d > reach) continue;
+    const level = sea + rise * (1 - d / reach);
     for (const [dx, dy] of DIRS) {
       const nx = x + dx, ny = y + dy;
       if (!inBounds(nx, ny)) continue;
       const j = idx(nx, ny);
       if (seen[j]) continue;
+      // (first reached by the shortest way, where the water stands highest: if it doesn't
+      // cover the cell then, it never will)
       seen[j] = 1;
-      if (state.water[j]) { queue.push(j); continue; }
-      if (cellHeight(state, nx, ny) < H) { queue.push(j); if (isOwned(state, nx, ny) && out.length < 8000) out.push(j); }
+      const h = cellHeight(state, nx, ny);
+      if (h >= level) continue;
+      dist[j] = d;
+      queue[n++] = j;
+      wet.push(j);
+      depth.push(level - h);
+      if (isOwned(state, nx, ny)) out.push(j);
     }
   }
-  return out;
+  return { cells: out, wet, depth };
 }
 
 export function startSurge(state, ctx, rise) {
-  const cells = surgeCells(state, rise);
-  ctx.surge = { rise, hours: 6 + rng.int(0, 10), cells, level: state.seaLevel + rise };
+  const { cells, wet, depth } = surgeCells(state, rise);
+  ctx.surge = { rise, hours: 6 + rng.int(0, 10), cells, wet, depth, level: state.seaLevel + rise };
   state.counters.flood = true;
   const warned = hasWarning(state);
   const hit = new Set();
@@ -177,9 +192,26 @@ function endSurge(state, ctx) {
   state.closures = (state.closures || []).filter((c) => c.why !== 'flood');
   refreshClosed(state);
   charge(state, 'services', repairs);
+  const silted = siltFlooded(state, s);
   journal(state, 'flood', 'The flood water went down');
   bus.emit('surge', null);
-  bus.emit('notify', { kind: 'info', icon: '🌊', title: 'The water went down', msg: `Clean-up and repairs: ₡${Math.round(repairs).toLocaleString()}. ${s?.cells.length ? 'Low ground by the sea will flood again in the next big storm.' : ''}` });
+  bus.emit('notify', { kind: 'info', icon: '🌊', title: 'The water went down', msg: `Clean-up and repairs: ₡${Math.round(repairs).toLocaleString()}. ${silted ? `It left silt over ${silted} cells of flat land: better farmland there (press V to see it). ` : ''}${s?.cells.length ? 'Low ground by the water will flood again in the next big storm.' : ''}` });
+}
+
+// The silt flood water leaves behind: flat land it covered comes out more fertile, the more
+// the deeper it stood (+0.05 to +0.2, up to fully fertile). Returns how many cells it improved.
+function siltFlooded(state, s) {
+  if (!s?.wet?.length) return 0;
+  let n = 0, x0 = N, y0 = N, x1 = -1, y1 = -1;
+  for (let k = 0; k < s.wet.length; k++) {
+    const i = s.wet[k], x = i % N, y = (i / N) | 0;
+    if (state.water[i] || state.fertile[i] >= 1 || cellSlope(state, x, y) > 0.6) continue;
+    state.fertile[i] = Math.min(1, state.fertile[i] + Math.min(0.2, 0.05 + s.depth[k] * 0.1));
+    n++;
+    if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+  }
+  if (n) bus.emit('terrain:changed', { x0, y0, x1, y1 });
+  return n;
 }
 
 // ----------------------------------------------------------------- heatwaves
