@@ -21,7 +21,7 @@ import { createZonesView } from './world/zonesView.js';
 import { createPreview } from './world/preview.js';
 import { createPowerView } from './world/powerView.js';
 import { migratePowerLines } from './sim/power.js';
-import { createSimulation, createContext, registerSystem, hourOf, seasonOf } from './sim/simulation.js';
+import { createSimulation, createContext, registerSystem, hourOf, seasonOf, isNight, FASTEST, NIGHT_FROM, NIGHT_TO } from './sim/simulation.js';
 import { growthStep } from './sim/growth.js';
 import { createTools } from './ui/tools.js';
 import './ui/toolsRoad.js';
@@ -90,8 +90,11 @@ function startGame(state, isNew) {
   };
   app.setSpeed = (s) => {
     if (s === 0) state.time.paused = !state.time.paused;
+    // the fastest speed skips the night only
+    else if (s === FASTEST && !isNight(state)) app.toast(`The fastest speed skips the night: it's there from ${NIGHT_FROM}:00 to 0${NIGHT_TO}:00.`, 'info');
     else { state.time.speed = s; state.time.paused = false; }
   };
+  bus.on('speed:morning', () => app.toast('Morning: back to normal speed.', 'info', '☀️ Night skipped'));
   // Replaced by the progression feature; until then only milestone numbers are checked.
   app.lockReason = (def) => (state.options.unlockAll || !def.milestone || def.milestone <= state.progression.milestone ? null : `Milestone ${def.milestone}`);
 

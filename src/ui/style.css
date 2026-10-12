@@ -107,6 +107,7 @@ b, strong { font-weight: 600; }
 .speed-btns button { background: var(--ink-3); border: 0; padding: 1px 6px; font-size: 9px; color: var(--paper); line-height: 14px; }
 .speed-btns button:hover { background: var(--ink-4); }
 .speed-btns button.on { background: var(--yellow); color: var(--ink); }
+.speed-btns button.locked { opacity: 0.35; }
 .demand { display: flex; gap: 3px; align-items: flex-end; height: 28px; }
 .demand .bar { width: 7px; height: 18px; background: var(--ink-3); position: relative; overflow: hidden; }
 .demand .bar i { position: absolute; left: 0; right: 0; bottom: 0; }

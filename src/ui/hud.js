@@ -1,7 +1,7 @@
 // Top bar, laid out like a signage strip: city mark and name, funds with this week's
 // projection, population, the happiness meter, power, the date (day of the month and the
 // weekday the budget settles on), weather, demand, milestone and the notification bell.
-import { WEEKDAYS, MONTHS, dateOf, seasonOf, hourOf } from '../sim/simulation.js';
+import { WEEKDAYS, MONTHS, dateOf, seasonOf, hourOf, isNight, FASTEST } from '../sim/simulation.js';
 import { projection } from '../sim/economy.js';
 import { money } from './tools.js';
 import { tipHtml } from './hovertips.js';
@@ -43,12 +43,12 @@ export function createHud(app) {
     notices: ['Notifications', 'Problems that need fixing (red ones first) and the news.'],
   };
   el.querySelectorAll('[data-open]').forEach((n) => { const t = TIPS[n.dataset.open]; if (t) { n.dataset.tip = tipHtml(t[0], t[1]); n.removeAttribute('title'); } });
-  el.querySelector('.hud-date').dataset.tip = tipHtml('Date & time', 'The day of the month; budgets are paid every Saturday night. The buttons pause and set the speed (Space pauses, 1–3 set the speed).');
+  el.querySelector('.hud-date').dataset.tip = tipHtml('Date & time', 'The day of the month; budgets are paid every Saturday night. The buttons pause and set the speed (Space pauses, 1–3 set the speed). The fastest only skips the night (20:00 to 06:00): in the morning it goes back to normal speed.');
 
   const $ = (id) => el.querySelector(`#${id}`);
   const speedEl = $('h-speed');
   const speeds = [['❚❚', 0], ['▶', 1], ['▶▶', 2], ['▶▶▶', 3]];
-  speedEl.innerHTML = speeds.map(([t, v]) => `<button data-s="${v}" data-tip="${['Pause (Space)', 'Normal speed (1)', 'Fast (2)', 'Fastest (3)'][v]}">${t}</button>`).join('');
+  speedEl.innerHTML = speeds.map(([t, v]) => `<button data-s="${v}" data-tip="${['Pause (Space)', 'Normal speed (1)', 'Fast (2)', 'Fastest (3): skips the night, 20:00 to 06:00, then back to normal speed'][v]}">${t}</button>`).join('');
   speedEl.querySelectorAll('button').forEach((b) => (b.onclick = (e) => { e.stopPropagation(); app.setSpeed(+b.dataset.s); }));
   $('h-happy-bar').innerHTML = '<i></i>'.repeat(10);
 
@@ -109,7 +109,11 @@ export function createHud(app) {
     $('h-date').textContent = `${pad(day.dom)} ${MONTHS[day.month]} ${day.year}`;
     const mins = s.time.minutes;
     $('h-time').textContent = `${pad(Math.floor(mins / 60))}:${pad(Math.floor(mins % 60))}`;
-    speedEl.querySelectorAll('button').forEach((b) => b.classList.toggle('on', +b.dataset.s === (s.time.paused ? 0 : s.time.speed)));
+    const night = isNight(s);
+    speedEl.querySelectorAll('button').forEach((b) => {
+      b.classList.toggle('on', +b.dataset.s === (s.time.paused ? 0 : s.time.speed));
+      if (+b.dataset.s === FASTEST) b.classList.toggle('locked', !night); // (night only)
+    });
     const w = s.weather;
     const dark = hourOf(s) < 6 || hourOf(s) >= 20;
     const icon = dark && (w.kind === 'clear' || w.kind === 'cloudy') ? (w.kind === 'clear' ? '🌙' : '☁️') : WEATHER_ICON[w.kind] || '☀️';
