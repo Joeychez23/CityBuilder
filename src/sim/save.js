@@ -1,10 +1,11 @@
 // Save / load: typed-array layers become base64 strings, Maps become arrays, and building
 // definitions are re-linked by id on load.
 import { createState, ROAD_RASTER } from '../core/state.js';
-import { MAPS } from '../data/maps.js';
+import { MAPS, mapById } from '../data/maps.js';
 import { defFor } from '../data/registry.js';
 import { N, TILE, TILES, DIRS, inBounds } from '../core/grid.js';
 import { generateMap, embedLayer, recomputeWater, extendHighway } from './mapgen.js';
+import { packLayer, isLayer, fromLayer, fromB64 } from './layers.js';
 
 export const SAVE_KEY = 'gridlock-city-save';
 export const MAPS_KEY = 'gridlock-custom-maps';
@@ -30,24 +31,11 @@ export async function isLegacySave(text) {
   } catch { return false; }
 }
 
-function toB64(arr) {
-  const bytes = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
-  let s = '';
-  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-  return btoa(s);
-}
-function fromB64(str, Type) {
-  const bin = atob(str);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return new Type(bytes.buffer);
-}
-
 export function serialize(state) {
   const out = {};
   for (const [k, v] of Object.entries(state)) {
     if (NOT_SAVED.has(k)) continue;
-    if (ArrayBuffer.isView(v)) out[k] = { $ta: v.constructor.name, d: toB64(v) };
+    if (ArrayBuffer.isView(v)) out[k] = packLayer(k, v);
     else if (v instanceof Map) {
       out[k] = {
         $map: [...v.entries()].map(([id, e]) => [id, k === 'buildings' ? Object.fromEntries(Object.entries(e).filter(([kk]) => !TRANSIENT_BUILDING_KEYS.has(kk))) : e]),
@@ -59,17 +47,15 @@ export function serialize(state) {
   return JSON.stringify(out);
 }
 
-const TYPES = { Float32Array, Uint8Array, Int32Array, Uint16Array };
-
 export function deserialize(text) {
   const data = JSON.parse(text);
   if (isLegacyData(data)) throw new LegacyCityError();
-  const map = MAPS.find((m) => m.id === data.mapId) || MAPS[0];
+  const map = mapById(data.mapId) || MAPS[0];
   const side = data.gridN || (data.zone?.$ta ? Math.round(Math.sqrt(fromB64(data.zone.d, Uint8Array).length)) : N);
   const resized = side !== N && resizeSave(data, map, side);
   const state = createState(map, data.options);
   for (const [k, v] of Object.entries(data)) {
-    if (v && v.$ta) state[k] = fromB64(v.d, TYPES[v.$ta]);
+    if (isLayer(v)) state[k] = fromLayer(v);
     else if (v && v.$arr) state[k] = v.$arr;
     else if (v && v.$map) state[k] = new Map(v.$map);
     else state[k] = v;
@@ -107,8 +93,8 @@ function resizeSave(data, map, oldN) {
   const shift = (i) => ((((i / oldN) | 0) + O) * N + (i % oldN) + O);
   const cell = (i) => (i == null || i < 0 ? i : shift(i));
   for (const [k, v] of Object.entries(data)) {
-    if (!v || !v.$ta) continue;
-    const old = fromB64(v.d, TYPES[v.$ta]);
+    if (!isLayer(v)) continue;
+    const old = fromLayer(v);
     let out;
     if (k === 'tiles') {
       out = new Uint8Array(TILES * TILES).fill(data.options?.allTiles ? 1 : 0);

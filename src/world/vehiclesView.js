@@ -14,7 +14,7 @@
 // outside railway to your stations and freight trains to your cargo terminals, one at a time
 // on the main line. The occasional plane and ship visit. One InstancedMesh draws them all.
 import * as THREE from 'three';
-import { clamp, inBounds, idx } from '../core/grid.js';
+import { N, clamp, inBounds, idx } from '../core/grid.js';
 import { ROADS, UPG } from '../data/roads.js';
 import { LINE_TYPES } from '../data/transport.js';
 import { getDeck, deckBetween } from '../sim/deck.js';
@@ -766,8 +766,10 @@ export function createVehiclesView(view, state, ctx) {
       shipT += dt * speedMul * 0.05;
       const fr = clamp(shipT, 0, 1);
       const tx = (harbor.x0 + harbor.x1) / 2, tz = (harbor.y0 + harbor.y1) / 2;
-      ship.position.set(lane.x + (tx - lane.x) * fr, state.seaLevel - 0.1, lane.y + (tz - lane.y) * fr);
-      ship.rotation.y = Math.atan2(-(tz - lane.y), tx - lane.x);
+      // (it comes in from the open sea at the map edge nearest the harbour)
+      const [sx, sz] = [[0, tz], [N, tz], [tx, 0], [tx, N]].reduce((a, b) => (Math.hypot(b[0] - tx, b[1] - tz) < Math.hypot(a[0] - tx, a[1] - tz) ? b : a));
+      ship.position.set(sx + (tx - sx) * fr, state.seaLevel - 0.1, sz + (tz - sz) * fr);
+      ship.rotation.y = Math.atan2(-(tz - sz), tx - sx);
       ship.visible = true;
       if (shipT > 1.2) { shipT = -1; ship.visible = false; }
     }

@@ -1,8 +1,8 @@
 // The world is a square grid of cells. One cell = 8 m (the size of a zoning cell),
 // and one cell = 1 world unit in three.js.
-export const N = 528;              // cells per side (33 × 33 map tiles, about 4.2 km)
+export const N = 1040;             // cells per side (65 × 65 map tiles, about 8.3 km)
 export const TILE = 16;            // cells per map tile (side)
-export const TILES = N / TILE;     // map tiles per side (33)
+export const TILES = N / TILE;     // map tiles per side (65)
 export const CELL_M = 8;           // metres per cell, for display only
 export const HN = N + 1;           // heightmap is sampled at cell corners
 

@@ -21,9 +21,13 @@ const SEASON_LEAF = {
 
 // The map is split into square chunks, each with its own meshes: chunks out of view aren't
 // drawn, and when something changes only the chunks whose trees (or the ground under them)
-// changed are rebuilt.
+// changed are rebuilt. Far from the camera a chunk draws only some of its trees (each
+// chunk's trees are in a random order, so the first so many are spread all over it) and no
+// trunks: a tree there is a pixel or two across.
 const CH = 128;
 const CN = Math.ceil(N / CH);
+const FULL = 260; // trees closer than this are all drawn
+const SPARSE = 0.15; // the share of them drawn far away
 
 export function createTreesView(view, state) {
   // Low-poly on purpose: a big map has a couple of hundred thousand trees
@@ -38,7 +42,7 @@ export function createTreesView(view, state) {
   for (let cz = 0; cz < CN; cz++) {
     for (let cx = 0; cx < CN; cx++) {
       const x0 = cx * CH, y0 = cz * CH, x1 = Math.min(N, x0 + CH) - 1, y1 = Math.min(N, y0 + CH) - 1;
-      chunks.push({ x0, y0, x1, y1, cap: 0, sig: -1, meshes: null });
+      chunks.push({ x0, y0, x1, y1, cap: 0, sig: -1, meshes: null, full: [0, 0, 0], share: 1 });
     }
   }
   // A chunk's meshes are sized to its forest: they're made again, bigger, when trees spread
@@ -126,10 +130,23 @@ export function createTreesView(view, state) {
         }
       }
     }
-    trunks.count = nt; cones.count = nc; blobs.count = nb;
+    shuffle(cones, nc, makeRng(ch.x0 * 31 + ch.y0));
+    shuffle(blobs, nb, makeRng(ch.x0 * 17 + ch.y0 * 3));
+    ch.full = [nt, nc, nb];
+    ch.share = -1; // (counts set by the next update)
     for (const im of ch.meshes) {
       im.instanceMatrix.needsUpdate = true;
       if (im.instanceColor) im.instanceColor.needsUpdate = true;
+    }
+  }
+
+  // The first n trees of a mesh put in a random order
+  function shuffle(im, n, r) {
+    const M = im.instanceMatrix.array, C = im.instanceColor?.array;
+    for (let i = n - 1; i > 0; i--) {
+      const j = Math.floor(r.next() * (i + 1));
+      for (let k = 0; k < 16; k++) { const t = M[i * 16 + k]; M[i * 16 + k] = M[j * 16 + k]; M[j * 16 + k] = t; }
+      if (C) for (let k = 0; k < 3; k++) { const t = C[i * 3 + k]; C[i * 3 + k] = C[j * 3 + k]; C[j * 3 + k] = t; }
     }
   }
 
@@ -153,6 +170,19 @@ export function createTreesView(view, state) {
   tv.update = (now) => {
     // Throttle rebuilds: forests regrow cell by cell, no need to redraw every frame
     if (tv.dirty && now - tv.lastBuild > 400) { tv.rebuild(); tv.lastBuild = now; }
+    // how many of each chunk's trees to draw, by how far away it is
+    const cam = view.camera.position;
+    for (const ch of chunks) {
+      if (!ch.meshes) continue;
+      const d = Math.hypot(cam.x - (ch.x0 + ch.x1 + 1) / 2, cam.y, cam.z - (ch.y0 + ch.y1 + 1) / 2) - CH * 0.5;
+      const share = d < FULL ? 1 : Math.max(SPARSE, Math.round((FULL / d) ** 1.3 * 20) / 20);
+      if (share === ch.share) continue;
+      ch.share = share;
+      const [trunks, cones, blobs] = ch.meshes;
+      trunks.count = share === 1 ? ch.full[0] : 0;
+      cones.count = Math.ceil(ch.full[1] * share);
+      blobs.count = Math.ceil(ch.full[2] * share);
+    }
     // Tree shadows are too small to see from high up, and they're the costliest thing to
     // draw into the shadow map, so they're only cast while zoomed in
     const near = view.camera.position.distanceTo(view.controls.target) < 230;

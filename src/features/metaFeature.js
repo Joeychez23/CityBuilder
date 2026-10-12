@@ -2,7 +2,8 @@
 // citizen life-path viewer.
 import { registerPanel, row } from '../ui/panels.js';
 import { registerSystem, formatDate } from '../sim/simulation.js';
-import { pack, SAVE_KEY } from '../sim/save.js';
+import { pack } from '../sim/save.js';
+import { putSave } from '../sim/store.js';
 import { saveToRegion } from '../sim/region.js';
 import { EDU_NAMES, ZONES } from '../data/zones.js';
 import { ageGroup, AGE } from '../sim/citizens.js';
@@ -23,7 +24,7 @@ async function saveLocal(app, quiet) {
   if (app.state.region) saveToRegion(app.state).catch(() => {});
   try {
     const text = await pack(app.state);
-    localStorage.setItem(SAVE_KEY, text);
+    await putSave(text);
     if (!quiet) app.toast(`Saved (${Math.round(text.length / 1024)} KB)`, 'good');
     return true;
   } catch (e) {

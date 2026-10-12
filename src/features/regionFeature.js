@@ -5,7 +5,8 @@ import { registerSystem, formatDate } from '../sim/simulation.js';
 import { getRegion, putRegion, putCity, saveToRegion, neighbourOffer, regionalTradeDaily, snapshot } from '../sim/region.js';
 import { createState } from '../core/state.js';
 import { generateMap } from '../sim/mapgen.js';
-import { pack, SAVE_KEY } from '../sim/save.js';
+import { pack } from '../sim/save.js';
+import { putSave } from '../sim/store.js';
 import { MAPS, CLIMATES } from '../data/maps.js';
 import { money } from '../ui/tools.js';
 import { clamp } from '../core/grid.js';
@@ -18,7 +19,7 @@ async function goTo(app, cityId) {
   const s = app.state;
   app.toast('Saving this city…', 'info');
   await saveToRegion(s);
-  try { localStorage.setItem(SAVE_KEY, await pack(s)); } catch { /* storage full: the region copy is enough */ }
+  await putSave(await pack(s)).catch(() => {}); // (storage full: the region copy is enough)
   sessionStorage.setItem(REGION_LOAD, cityId);
   location.href = location.pathname;
 }

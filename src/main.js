@@ -36,10 +36,9 @@ import { createPanels } from './ui/panels.js';
 import { initHoverTips } from './ui/hovertips.js';
 import { initTouch } from './ui/touch.js';
 import { showMenu } from './ui/menu.js';
-import { MAPS } from './data/maps.js';
+import { mapById } from './data/maps.js';
 import { features } from './features.js';
-import { SAVE_KEY } from './sim/save.js';
-import { PENDING_LOAD, PENDING_CLOUD } from './features/accountFeature.js';
+import { getSave, handedOver, takeHandOver } from './sim/store.js';
 
 const canvas = document.getElementById('scene');
 const view = createScene(canvas);
@@ -204,8 +203,6 @@ function newGame(map, options) {
   startGame(state, true);
 }
 
-const hasSave = (() => { try { return !!localStorage.getItem(SAVE_KEY); } catch { return false; } })();
-
 async function loadFrom(text, cloudId = null) {
   const { unpack, LegacyCityError } = await import('./sim/save.js');
   try {
@@ -226,11 +223,11 @@ async function loadFrom(text, cloudId = null) {
   }
 }
 
-// ?map=<id> skips the menu (useful while developing)
+// ?map=<id> skips the menu (useful while developing; the maps from before the islands work too)
 const params = new URLSearchParams(location.search);
-const quick = MAPS.find((m) => m.id === params.get('map'));
-// A city picked from your account arrives through sessionStorage (see accountFeature); a
-// neighbour city you're going to, by its id in the region's store (features/regionFeature.js)
+const quick = mapById(params.get('map'));
+// A city picked from your account is handed over to the page (sim/store.js); a neighbour city
+// you're going to arrives by its id in the region's store (features/regionFeature.js)
 let pending = null;
 try {
   const regionCity = sessionStorage.getItem('gridlock-region-load');
@@ -244,16 +241,11 @@ try {
     });
   }
 } catch { /* storage blocked */ }
-if (!pending) try {
-  pending = sessionStorage.getItem(PENDING_LOAD);
-  if (pending) {
-    const cloudId = sessionStorage.getItem(PENDING_CLOUD);
-    sessionStorage.removeItem(PENDING_LOAD);
-    sessionStorage.removeItem(PENDING_CLOUD);
-    document.getElementById('menu').classList.add('hidden');
-    loadFrom(pending, cloudId);
-  }
-} catch { /* storage blocked: fall through to the menu */ }
+if (!pending && handedOver()) {
+  pending = 'account';
+  document.getElementById('menu').classList.add('hidden');
+  takeHandOver().then(({ text, cloudId }) => (text ? loadFrom(text, cloudId) : location.reload()));
+}
 if (pending) {
   // loading a city from your account
 } else if (quick) {
@@ -264,10 +256,10 @@ if (pending) {
 } else {
   // the city saved in this browser may be from before the road network update: it's kept
   // (see sim/legacy.js) and can't be continued
-  import('./sim/legacy.js').then((m) => m.checkSavedCity()).catch(() => false).then((legacy) => showMenu({
-    hasSave: hasSave && !legacy,
+  Promise.all([import('./sim/legacy.js').then((m) => m.checkSavedCity()).catch(() => false), getSave().catch(() => null)]).then(([legacy, saved]) => showMenu({
+    hasSave: !!saved && !legacy,
     onNew: newGame,
-    onContinue: () => loadFrom(localStorage.getItem(SAVE_KEY)),
+    onContinue: async () => loadFrom(await getSave()),
     onLoadFile: loadFrom,
     onLoadCloud: (city) => loadFrom(city.data, city.id),
   }));

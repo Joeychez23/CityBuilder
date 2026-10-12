@@ -5,9 +5,7 @@ import { registerSystem } from '../sim/simulation.js';
 import { pack } from '../sim/save.js';
 import { api, setToken } from '../net/api.js';
 import { renderAuthForm, renderCityList, accountStatus, esc } from '../ui/accountUI.js';
-
-export const PENDING_LOAD = 'gridlock-pending-load';
-export const PENDING_CLOUD = 'gridlock-pending-cloud';
+import { handOver } from '../sim/store.js';
 
 export async function saveToAccount(app) {
   const s = app.state;
@@ -30,13 +28,10 @@ export async function saveToAccount(app) {
   return 'created';
 }
 
-// Loading restarts the page with the save handed over through sessionStorage, so the old
-// city's renderer and simulation are torn down cleanly.
-export function openCloudCity(city) {
-  try {
-    sessionStorage.setItem(PENDING_LOAD, city.data);
-    sessionStorage.setItem(PENDING_CLOUD, city.id);
-  } catch {
+// Loading restarts the page with the save handed over (sim/store.js), so the old city's
+// renderer and simulation are torn down cleanly.
+export async function openCloudCity(city) {
+  if (!(await handOver(city.data, city.id))) {
     alert('This browser blocked the hand-off storage, so the city could not be opened.');
     return;
   }

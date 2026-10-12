@@ -5,7 +5,8 @@ import { registerPanel } from '../ui/panels.js';
 import { registerCategory } from '../ui/toolbar.js';
 import { registerDefs, defFor } from '../data/registry.js';
 import { SERVICE_CATS } from '../data/services.js';
-import { MAPS_KEY, serialize } from '../sim/save.js';
+import { serialize } from '../sim/save.js';
+import { addCustomMap } from '../sim/store.js';
 import { money } from '../ui/tools.js';
 import { bus } from '../core/events.js';
 
@@ -82,14 +83,11 @@ registerPanel({
       const data = JSON.parse(serialize(s));
       const keep = ['height', 'fertile', 'ore', 'oil', 'groundwater', 'forestMax', 'tree', 'water'];
       const map = { id: `custom_${Date.now()}`, name, base: s.mapId, climate: s.climate, theme: s.theme, layers: Object.fromEntries(keep.map((k) => [k, data[k]])) };
-      try {
-        const list = JSON.parse(localStorage.getItem(MAPS_KEY) || '[]');
-        list.push(map);
-        localStorage.setItem(MAPS_KEY, JSON.stringify(list.slice(-6)));
+      addCustomMap(map).then(() => {
         s.counters.mapsCreated = (s.counters.mapsCreated || 0) + 1;
         app.toast(`"${name}" is now on the start screen.`, 'good', 'Map saved');
         app.checkAchievements?.();
-      } catch { app.toast('Could not save the map (browser storage full?)', 'bad'); }
+      }, () => app.toast('Could not save the map (browser storage full?)', 'bad'));
     };
     body.querySelector('[data-a="asset"]').onclick = () => {
       const spec = { id: `custom_${Date.now()}` };

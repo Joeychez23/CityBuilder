@@ -1,5 +1,5 @@
 // Development helper: a bigger town (roads, zones, power, water, garbage, parking) grown for
-// a week, for testing traffic and performance. Load with ?map=prairie&rich&unlock&alltiles&stress
+// a week, for testing traffic and performance. Load with ?map=grand&rich&unlock&alltiles&stress
 import { setZone } from '../sim/build.js';
 import { planRoad, buildRoad } from '../sim/roadnet.js';
 

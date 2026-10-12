@@ -1,25 +1,24 @@
 // Start screen: pick a map (with a generated preview), name the city, choose options.
-import { MAPS, CLIMATES } from '../data/maps.js';
+import { MAPS, CLIMATES, mapById } from '../data/maps.js';
 import { createState } from '../core/state.js';
-import { generateMap, applyCustomMap, START_TILE_MIN } from '../sim/mapgen.js';
+import { generateMap, applyCustomMap, previewMap, START_TILE_MIN } from '../sim/mapgen.js';
 import { N, TILE } from '../core/grid.js';
 import { previewPixels } from './previewPixels.js';
-import { MAPS_KEY } from '../sim/save.js';
+import { customMapList } from '../sim/store.js';
 import { accountStatus, renderAuthForm, renderCityList, esc } from './accountUI.js';
 import { setToken } from '../net/api.js';
 import { DIFFICULTIES, DIFFICULTY_KEYS, difficultyRows } from '../data/difficulty.js';
 
-export function customMaps() {
-  try {
-    return JSON.parse(localStorage.getItem(MAPS_KEY) || '[]').map((m) => {
-      const base = MAPS.find((b) => b.id === m.base) || MAPS[0];
-      return { ...base, id: m.id, name: m.name, custom: m, desc: `Custom map based on ${base.name}.` };
-    });
-  } catch { return []; }
+// The maps made in the map editor
+export async function customMaps() {
+  return (await customMapList().catch(() => [])).map((m) => {
+    const base = mapById(m.base) || MAPS[0];
+    return { ...base, id: m.id, name: m.name, custom: m, desc: `Custom map based on ${base.name}.` };
+  });
 }
 
-// Map previews are made in a worker, one map after another (on the page itself if workers
-// can't be used)
+// A preview is sampled straight from the map's shape; a map from the map editor has to be
+// made whole, in a worker, one after another (on the page itself if workers can't be used)
 let worker = null, jobs = 0;
 const waiting = new Map();
 function previewWorker() {
@@ -34,6 +33,7 @@ function previewWorker() {
 }
 const S = 136;
 function pixelsFor(map) {
+  if (!map.custom) return new Promise((done) => setTimeout(() => done(previewMap(map, S)), 0));
   const w = previewWorker();
   if (w) {
     const id = ++jobs;
@@ -73,7 +73,7 @@ export function showMenu({ onNew, onContinue, onLoadFile, onLoadCloud, hasSave }
         <p class="motto">Zone it, power it,<br><em>keep it moving</em></p>
       </div>
 
-      <div class="board-head"><span class="n">01</span><h2>Choose a map</h2><span class="connector"></span><span class="spec t-spec">${MAPS.length} regions</span></div>
+      <div class="board-head"><span class="n">01</span><h2>Choose a map</h2><span class="connector"></span><span class="spec t-spec">${MAPS.length} islands</span></div>
       <div class="map-grid" id="maps"></div>
 
       <div class="board-head"><span class="n">02</span><h2>Found your city</h2><span class="connector"></span><span class="spec t-spec">Options</span></div>
@@ -122,14 +122,14 @@ export function showMenu({ onNew, onContinue, onLoadFile, onLoadCloud, hasSave }
   }));
   diffInfo();
   const grid = el.querySelector('#maps');
-  const allMaps = [...MAPS, ...customMaps()];
-  for (const map of allMaps) {
+  let count = 0;
+  const addCard = (map) => {
     const card = document.createElement('button');
     card.className = 'map-card';
     if (map === chosen) card.classList.add('on');
     const cl = CLIMATES[map.climate];
     const conn = Object.entries(map.connections).filter(([, v]) => v).map(([k]) => ({ road: '🛣️', rail: '🚆', ship: '🚢', air: '✈️' })[k]).join(' ');
-    const no = String(allMaps.indexOf(map) + 1).padStart(2, '0');
+    const no = String(++count).padStart(2, '0');
     card.innerHTML = `<canvas></canvas><div class="mc-head"><b>${map.name}</b><span class="t-spec">${no}</span></div><div class="t-spec">${cl.name} · ${cl.minT}…${cl.maxT}°C · ${conn}</div><div class="desc">${map.desc}</div>`;
     card.onclick = () => {
       chosen = map;
@@ -139,7 +139,9 @@ export function showMenu({ onNew, onContinue, onLoadFile, onLoadCloud, hasSave }
     grid.appendChild(card);
     // (previews are made one at a time, after the menu appears)
     drawPreview(card.querySelector('canvas'), map);
-  }
+  };
+  MAPS.forEach(addCard);
+  customMaps().then((list) => list.forEach(addCard));
   el.querySelector('#m-new').onclick = () => {
     el.classList.add('hidden');
     onNew(chosen, {

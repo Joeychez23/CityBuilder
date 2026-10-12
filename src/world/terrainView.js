@@ -2,6 +2,7 @@
 // meshes that share the terrain's shape and show districts, info-view heatmaps and resources.
 import * as THREE from 'three';
 import { N, hidx, idx, clamp } from '../core/grid.js';
+import { CLIMATES } from '../data/maps.js';
 
 const C = (hex) => new THREE.Color(hex);
 const PAL = {
@@ -90,9 +91,16 @@ export function createTerrainView(view, state) {
   }), 3);
   res.visible = false;
 
+  // An island map (the sea all along its edge) is out in the open ocean, which runs on past
+  // the map's edge to the horizon; an older map is a slab of land
+  let wet = 0;
+  for (let k = 0; k < N; k++) wet += state.water[idx(k, 0)] + state.water[idx(k, N - 1)] + state.water[idx(0, k)] + state.water[idx(N - 1, k)];
+  const ocean = wet > N * 4 * 0.7;
+
   // Water: a flat sheet at sea level, tinted by water pollution through one texel per cell
-  // (centred on the cell, so a polluted cell is polluted right up to the shore)
-  const wgeo = new THREE.PlaneGeometry(N, N);
+  // (centred on the cell, so a polluted cell is polluted right up to the shore). Out at sea it
+  // reaches far past the map's edge, the colour of the water at the edge.
+  const wgeo = new THREE.PlaneGeometry(ocean ? N * 13 : N, ocean ? N * 13 : N);
   wgeo.rotateX(-Math.PI / 2);
   wgeo.translate(N / 2, 0, N / 2);
   const wuv = wgeo.attributes.uv;
@@ -109,13 +117,16 @@ export function createTerrainView(view, state) {
   water.receiveShadow = true;
   view.scene.add(water);
 
-  // The world outside the playable map: a muted plane so the map reads as a slab of land.
+  // The world outside the playable map: a muted plane so the map reads as a slab of land, or
+  // the floor of the open sea under the water, as deep as at the map's edge
+  let floor = 0;
+  for (let k = 0; k <= N; k++) floor += state.height[hidx(k, 0)] + state.height[hidx(k, N)] + state.height[hidx(0, k)] + state.height[hidx(N, k)];
   const outside = new THREE.Mesh(
     new THREE.RingGeometry(N * 0.5, N * 6, 4, 1, Math.PI / 4),
-    new THREE.MeshStandardMaterial({ color: '#56664a', roughness: 1 }),
+    new THREE.MeshStandardMaterial({ color: ocean ? PAL.mud : '#56664a', roughness: 1 }),
   );
   outside.rotation.x = -Math.PI / 2;
-  outside.position.set(N / 2, state.seaLevel - 2, N / 2);
+  outside.position.set(N / 2, ocean ? Math.min(floor / (4 * (N + 1)), state.seaLevel - 1) : state.seaLevel - 2, N / 2);
   outside.scale.set(Math.SQRT2, Math.SQRT2, 1);
   view.scene.add(outside);
 
@@ -169,6 +180,8 @@ export function createTerrainView(view, state) {
     let grass = mix(P.grass, P.grassDry, clamp(look.dry * 0.9 + (look.season === 'autumn' ? 0.25 : 0), 0, 1));
     if (look.season === 'spring') grass = mix(grass, P.lush, 0.4);
     const snowAll = look.snowCover * 0.9;
+    // (in a climate without snow the peaks are bare rock)
+    const peaks = CLIMATES[state.climate]?.snow === false ? 0 : 1;
     const [mudR, mudG, mudB] = P.mud, [sandR, sandG, sandB] = P.sand, [fR, fG, fB] = P.fertile, [rR, rG, rB] = P.rock;
     const [sR, sG, sB] = P.snow, [pR, pG, pB] = P.polluted, [bR, bG, bB] = P.burnt;
     for (const [c, ax, ay, bx, by] of parts(x0, y0, x1, y1)) {
@@ -188,7 +201,7 @@ export function createTerrainView(view, state) {
             const slope = Math.abs(H[hidx(Math.min(x + 1, N), y)] - H[vi]) + Math.abs(H[hidx(x, Math.min(y + 1, N))] - H[vi]);
             const rock = clamp((slope - 0.7) * 1.2 + (h - 13) * 0.15, 0, 1);
             if (rock > 0) { r += (rR - r) * rock; g += (rG - g) * rock; b += (rB - b) * rock; }
-            const snow = Math.max(clamp((h - 17) * 0.25, 0, 1), snowAll);
+            const snow = Math.max(clamp((h - 17) * 0.25, 0, 1) * peaks, snowAll);
             if (snow > 0) { r += (sR - r) * snow; g += (sG - g) * snow; b += (sB - b) * snow; }
           }
           if (ground[ci] > 0.02) { const t = clamp(ground[ci], 0, 0.85); r += (pR - r) * t; g += (pG - g) * t; b += (pB - b) * t; }

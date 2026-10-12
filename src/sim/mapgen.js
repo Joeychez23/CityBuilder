@@ -7,6 +7,8 @@ import { gradeCells } from './grade.js';
 import { bridgeWaterRuns, bridgeConnection, bridgeLayers } from './bridges.js';
 import { planRoad, buildRoad, emptyRoads, commitRoads, rn, MAX_BRIDGE } from './roadnet.js';
 import { forgetBoxes } from './extent.js';
+import { makeIsland } from './islands.js';
+import { isLayer, fromLayer } from './layers.js';
 
 const smooth = (e0, e1, x) => {
   const t = clamp((x - e0) / (e1 - e0), 0, 1);
@@ -146,37 +148,45 @@ function startResources(state, map, noise, rnd) {
   }
 }
 
+// The height of the ground at heightmap corner (x, y) of a map, before it's smoothed and the
+// highway, railway and power line are laid: the map's island (or old terrain style), its
+// hills flattened toward town, the starting area made buildable, and its water
+function terrainShaper(map, noise, sea) {
+  // (island maps say how much of their hills' height to keep around town and further out;
+  // the old maps, how much by their terrain style)
+  const isle = map.island ? makeIsland(map, noise) : null;
+  const relief = isle ? isle.relief : [RELIEF[map.style] ?? 0.5, Math.min(1, (RELIEF[map.style] ?? 0.5) * 1.8)];
+  const [near, far] = isle ? [80, 220] : [70, 130];
+  return (x, y) => {
+    const u = 0.5 + (x - CENTER) / FEATURE, v = 0.5 + (y - CENTER) / FEATURE;
+    let h = isle ? isle.height(x, y, sea) : styleHeight(map, noise, u, v, sea, x / (HN - 1), y / (HN - 1));
+    // Most of the map is gentle, buildable land: the hills are flattened (water stays where
+    // it is), and only further from town do they keep more of their height
+    const edge = smooth(near, far, Math.max(Math.abs(x - CENTER), Math.abs(y - CENTER)));
+    const k = lerp(relief[0], relief[1], edge);
+    if (h > sea + 0.4) h = sea + 0.4 + (h - sea - 0.4) * k;
+    // Make the starting area buildable: pull the land toward gentle ground above the water,
+    // but keep rivers and lakes that run through it (towns need water for pumps and sewage)
+    const dc = Math.hypot(x - CENTER, y - CENTER);
+    const m = smooth(46, 16, dc);
+    if (h < sea - 0.15) h = lerp(h, Math.min(h, sea - 0.9), m);
+    else h = lerp(h, clamp(lerp(h, sea + 2, 0.75), sea + 0.9, sea + 3.2), m);
+    const wet = startWater(map.start, noise, x, y);
+    if (wet > 0) h = Math.min(h, lerp(h, sea - 1.3, wet)); // (out at sea it's deep enough already)
+    return clamp(h, 0, 40);
+  };
+}
+
 export function generateMap(state, map) {
   const noise = makeNoise(map.seed);
   const rnd = makeRng(map.seed * 7 + 3);
-  const sea = state.seaLevel;
   const H = state.height;
-
-  const relief = RELIEF[map.style] ?? 0.5;
-  for (let y = 0; y < HN; y++) {
-    for (let x = 0; x < HN; x++) {
-      const u = 0.5 + (x - CENTER) / FEATURE, v = 0.5 + (y - CENTER) / FEATURE;
-      let h = styleHeight(map, noise, u, v, sea, x / (HN - 1), y / (HN - 1));
-      // Most of the map is gentle, buildable land: the hills are flattened (water stays where
-      // it is), and only toward the map edges do they keep more of their height
-      const edge = smooth(70, 130, Math.max(Math.abs(x - CENTER), Math.abs(y - CENTER)));
-      const k = lerp(relief, Math.min(1, relief * 1.8), edge);
-      if (h > sea + 0.4) h = sea + 0.4 + (h - sea - 0.4) * k;
-      // Make the starting area buildable: pull the land toward gentle ground above the water,
-      // but keep rivers and lakes that run through it (towns need water for pumps and sewage)
-      const dc = Math.hypot(x - CENTER, y - CENTER);
-      const m = smooth(46, 16, dc);
-      if (h < sea - 0.15) h = lerp(h, Math.min(h, sea - 0.9), m);
-      else h = lerp(h, clamp(lerp(h, sea + 2, 0.75), sea + 0.9, sea + 3.2), m);
-      const wet = startWater(map.start, noise, x, y);
-      if (wet > 0) h = lerp(h, sea - 1.3, wet);
-      H[hidx(x, y)] = clamp(h, 0, 40);
-    }
-  }
+  const shape = terrainShaper(map, noise, state.seaLevel);
+  for (let y = 0; y < HN; y++) for (let x = 0; x < HN; x++) H[hidx(x, y)] = shape(x, y);
   softenLand(state, 3);
 
   // Dominant water current for pollution transport (rivers run "down" the map, coasts drift east)
-  state.flow = map.style === 'fjords' || map.style === 'archipelago' ? [1, 0] : [0, 1];
+  state.flow = map.flow || (map.style === 'fjords' || map.style === 'archipelago' ? [1, 0] : [0, 1]);
 
   carveHighway(state);
   recomputeWater(state);
@@ -196,6 +206,39 @@ export function generateMap(state, map) {
   bridgeWaterRuns(state, 'rail');
   commitRoads(state, { silent: true });
   forgetBoxes();
+}
+
+// A quick look at a map for the start screen, S × S pixels (RGBA), without making all of it:
+// the ground sampled under each pixel, its forests, and the highway and railway drawn in
+export function previewMap(map, S, sea = 3) {
+  const noise = makeNoise(map.seed);
+  const shape = terrainShaper(map, noise, sea);
+  const R = map.resources;
+  const data = new Uint8ClampedArray(S * S * 4);
+  const paint = (px, py, r, g, b) => { const o = (py * S + px) * 4; data[o] = r; data[o + 1] = g; data[o + 2] = b; data[o + 3] = 255; };
+  for (let py = 0; py < S; py++) {
+    for (let px = 0; px < S; px++) {
+      const x = ((px + 0.5) / S) * N, y = ((py + 0.5) / S) * N;
+      const h = shape(x, y) - sea;
+      if (h < 0) { paint(px, py, 40, 110 + h * 10, 170 + h * 8); continue; }
+      const t = Math.min(1, h / 18);
+      const u = 0.5 + (x - CENTER) / FEATURE, v = 0.5 + (y - CENTER) / FEATURE;
+      const tree = h > 0.45 && noise.fbm(u * 8 + 800, v * 8 + 800, 4) > 0.3 - R.forest * 0.4;
+      paint(px, py, 100 + t * 130 - (tree ? 40 : 0), 150 + t * 80 - (tree ? 30 : 0), 80 + t * 150 - (tree ? 20 : 0));
+    }
+  }
+  const line = (x0, y0, x1, y1, [r, g, b]) => {
+    const n = Math.ceil((Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0)) / N) * S * 2);
+    for (let k = 0; k <= n; k++) paint(Math.min(S - 1, Math.floor(((x0 + ((x1 - x0) * k) / n) / N) * S)), Math.min(S - 1, Math.floor(((y0 + ((y1 - y0) * k) / n) / N) * S)), r, g, b);
+  };
+  line(0, CENTER, HIGHWAY_END, CENTER, [60, 60, 66]);
+  if (map.connections.rail) {
+    const side = map.rail?.side || 'north', at = CENTER + (map.rail?.at ?? 10);
+    const [x0, y0] = side === 'east' ? [N - 1, at] : side === 'west' ? [0, at] : side === 'south' ? [at, N - 1] : [at, 0];
+    const [dx, dy] = DIRS[({ east: 0, south: 1, west: 2, north: 3 }[side] + 2) % 4];
+    line(x0, y0, x0 + dx * RAIL_END, y0 + dy * RAIL_END, [60, 60, 66]);
+  }
+  return data;
 }
 
 // How much of each style's relief is kept (1 = all of it). Maps are mostly flat to build on;
@@ -350,13 +393,21 @@ function highwayLine(state, a, b, type) {
     }
   }
   points.push(b);
-  for (let k = 1; k < points.length; k++) {
-    const plan = planRoad(state, spec(points[k - 1], points[k]));
-    if (!plan.ok) { console.warn('The highway could not be built:', plan.reason, plan.bad); return false; }
+  // (a piece that won't go is tried again in two halves, joined halfway)
+  const piece = (p, q, depth = 0) => {
+    const plan = planRoad(state, spec(p, q));
+    if (!plan.ok) {
+      const m = { x: (p.x + q.x) / 2, z: (p.z + q.z) / 2 };
+      if (depth < 4 && Math.hypot(q.x - p.x, q.z - p.z) > 8) return piece(p, m, depth + 1) && piece(m, q, depth + 1);
+      console.warn('The highway could not be built:', plan.reason, plan.bad);
+      return false;
+    }
     const res = buildRoad(state, plan, { free: true, silent: true });
     const X = rn(state);
     for (const id of res.segs) { const sg = X.seg.get(id); if (sg) sg.locked = 1; }
-  }
+    return true;
+  };
+  for (let k = 1; k < points.length; k++) if (!piece(points[k - 1], points[k])) return false;
   return true;
 }
 
@@ -412,23 +463,30 @@ function setupStartTiles(state) {
 function setupConnections(state, map) {
   const c = map.connections;
   if (c.rail) {
-    // A rail stub enters from the north edge; the player links it to a train station.
-    const x = CENTER + 10;
+    // A rail stub comes in from a map edge (the north, unless the map says otherwise) to the
+    // edge of the starting area; the player links it to a train station.
+    const side = map.rail?.side || 'north', at = CENTER + (map.rail?.at ?? 10);
+    const dir = { east: 0, south: 1, west: 2, north: 3 }[side];
+    const [dx, dy] = DIRS[(dir + 2) % 4]; // (inward)
+    const x0 = side === 'east' ? N - 1 : side === 'west' ? 0 : at, y0 = side === 'south' ? N - 1 : side === 'north' ? 0 : at;
     const H = state.height;
-    for (let y = 0; y <= RAIL_END; y++) {
-      state.rail[idx(x, y)] = 1;
-      state.tree[idx(x, y)] = 0;
-      state.forestMax[idx(x, y)] = 0;
-      for (const dx of [0, 1]) {
-        const i = hidx(x + dx, y);
-        H[i] = lerp(H[i], Math.max(H[i], state.seaLevel + 0.6), 0.6);
+    for (let k = 0; k <= RAIL_END; k++) {
+      const x = x0 + dx * k, y = y0 + dy * k, i = idx(x, y);
+      state.rail[i] = 1;
+      state.tree[i] = 0;
+      state.forestMax[i] = 0;
+      // (the ground under it is lifted a little out of the wet; the sea floor is left alone)
+      for (const [ox, oy] of dx ? [[0, 0], [0, 1]] : [[0, 0], [1, 0]]) {
+        const j = hidx(x + ox, y + oy);
+        if (H[j] > state.seaLevel - 0.2) H[j] = lerp(H[j], Math.max(H[j], state.seaLevel + 0.6), 0.6);
       }
     }
-    state.connections.push({ type: 'rail', x, y: 0, dir: 3, name: 'North Railway' });
+    state.connections.push({ type: 'rail', x: x0, y: y0, dir, name: `${side[0].toUpperCase()}${side.slice(1)} Railway` });
   }
   if (c.ship) {
-    // Find a water cell on any edge for the shipping lane.
-    const edges = [];
+    // The shipping lane: the middle of an edge out at sea (the east one if it can), else any
+    // water on an edge
+    const edges = [[N - 1, CENTER, 0], [CENTER, N - 1, 1], [CENTER, 0, 3], [0, CENTER, 2]];
     for (let i = 0; i < N; i++) edges.push([N - 1, i, 0], [i, N - 1, 1], [i, 0, 3], [0, i, 2]);
     const found = edges.find(([x, y]) => state.water[idx(x, y)]);
     if (found) state.connections.push({ type: 'ship', x: found[0], y: found[1], dir: found[2], name: 'Sea Lane' });
@@ -501,15 +559,12 @@ export function embedLayer(target, src, srcSide, corners = false) {
   return true;
 }
 
-// Overlay a map saved from the map editor (base64 typed-array layers) onto a fresh state.
-// Maps made for the smaller, older map size are placed in the middle.
+// Overlay a map saved from the map editor (its layers as saved: see sim/layers.js) onto a fresh
+// state. Maps made for the smaller, older map sizes are placed in the middle.
 export function applyCustomMap(state, custom) {
   for (const [k, v] of Object.entries(custom.layers || {})) {
-    if (!v || !v.$ta || !state[k]) continue;
-    const bin = atob(v.d);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    const arr = new state[k].constructor(bytes.buffer);
+    if (!isLayer(v) || !state[k]) continue;
+    const arr = fromLayer(v);
     if (arr.length === state[k].length) state[k] = arr;
     else {
       const side = Math.round(Math.sqrt(arr.length));

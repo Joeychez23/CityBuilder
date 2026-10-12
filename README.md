@@ -7,9 +7,9 @@ npm install
 npm run dev
 ```
 
-Open the URL Vite prints, pick a map and found your city. You start with the 9 tiles in the
-middle of a 33 × 33 tile map and buy more with money and expansion permits (or tick "Whole
-map from the start"). The UI uses the Interactive-Portfolio's signage style and fonts.
+Open the URL Vite prints, pick an island and found your city. You start with the 9 tiles in
+the middle of a 65 × 65 tile map and buy more with money and expansion permits (or tick
+"Whole map from the start"). The UI uses the Interactive-Portfolio's signage style and fonts.
 Hovering anything in the interface explains what it does. The right side of the screen shows
 one window at a time (the tool you're using, the building you clicked, or a panel), and
 Game → Interface size makes the whole interface smaller or bigger. Whatever you build or
@@ -55,7 +55,8 @@ cities. `npm test` runs the API tests against a temporary in-memory MongoDB. In 
 
 Add these to the URL to skip the start screen:
 
-- `?map=prairie`: start a new city on that map (use any map id from `src/data/maps.js`)
+- `?map=grand`: start a new city on that map (use any map id from `src/data/maps.js`, the old
+  ones in `LEGACY_MAPS` too)
 - `&rich`: unlimited money
 - `&unlock`: everything unlocked
 - `&demo`: lay out a small starter town
@@ -92,7 +93,7 @@ Add these to the URL to skip the start screen:
 | **Disasters** | Building fires, forest fires (lightning and drought), hail, and tornadoes. Firewatch towers, firefighting helicopters, emergency shelters and an early warning system. Destroyed buildings leave rubble and are rebuilt where they stood (insurance pays half for city services). Event journal | `sim/disasters.js`, `sim/construction.js` |
 | **Natural resources** | Fertile land, forest, ore, oil and groundwater. Renewable vs. finite, depletion, and damage from pollution. The Map strip (bottom left, or V) paints where each resource is with a legend of how much you own; it can also hide trees, buildings, traffic, power lines and alerts | `sim/mapgen.js`, `sim/environment.js`, `features/layersFeature.js` |
 | **Pollution** | Air (drifts with the wind, washed out by rain), ground, noise (with industrial noise tracked on its own), water (flows with the current) and groundwater, with effects on health, land value and trees | `sim/environment.js` |
-| **Maps** | 9 procedurally generated maps, 528 × 528 cells (about 4.2 km), with different terrain styles, climates, themes and outside connections (highway, rail, sea, air and an outside power line). The land is mostly gentle and buildable; the hills and mountains rise toward the map edges, and the incoming highway follows the lie of the land. Every starting area has a river, lake or bay with room for pumps upstream of sewage outlets, thinner forest, and patches of the map's main resources. 1,089 purchasable tiles. Cities and custom maps from the older 272-cell map are placed in the middle of the bigger one (their highway, railway and power line carried on to the new edge). Custom maps saved from the map editor | `data/maps.js`, `sim/mapgen.js`, `sim/save.js` |
+| **Maps** | 13 procedurally generated islands, 1040 × 1040 cells (about 8.3 km), each out in the open sea, which runs on to the horizon: a green isle with a river through town, twin islands split by a strait, a coral atoll round a lagoon (reached along a chain of keys), a volcano island, a fjord island, a desert island of mesas, an archipelago, a long narrow key with a barrier island, an island of lakes, a river delta, highlands cut by lochs, a broad prairie island and an alpine island. Each has its own climate, theme, resources and outside connections (the highway comes in over the sea from the west; the railway from the north, east or south, or not at all; a sea lane, an air route and an outside power line on offshore pylons). The land is mostly gentle and buildable around town, with the hills and mountains further out. Every starting area has a river, lake, bay, strait, fjord or lagoon with room for pumps upstream of sewage outlets, thinner forest, and patches of the map's main resources. 4,225 purchasable tiles. Cities and custom maps from the older, smaller maps are placed in the middle of the bigger one on their own (old) map, their highway, railway and power line carried on to the new edge. Custom maps saved from the map editor | `data/maps.js`, `sim/islands.js`, `sim/mapgen.js`, `sim/save.js` |
 | **Camera** | Zoom toward the cursor, grab-and-glide panning, rotate and tilt, double-click to fly somewhere, never dips into hills; optional edge panning | `world/camera.js` |
 | **Undo & bulldozer** | The last 20 things you built or removed can be undone for a minute each (the Undo button over the toolbar shows what and how long is left; Ctrl+Z), most recent first: everything it cost is paid back, the land and terrain go back as they were, and houses you knocked down come back with their residents. The bulldozer removes one thing per click (a whole building, or one piece of road or line) and whatever you drag across, or switch it to Area for a rectangle; it can be limited to buildings, roads & lines, zoning or trees | `sim/undo.js`, `ui/undoBar.js`, `ui/tools.js` |
 | **Interface** | One window on the right at a time: the options of the tool you're using, the building you clicked, or a panel; opening one closes the other. The build menu stays open while you use it ("Less" shrinks it to one row, and it remembers). An Interface size setting (Small, Medium, Large, Extra large); the top bar keeps to one line and the toolbar turns to icons on narrow windows | `ui/panels.js`, `ui/toolbar.js`, `ui/hud.js`, `features/metaFeature.js` |
@@ -113,14 +114,18 @@ diaries, patch notes, DLC).
   cell by cell.
 - **Old cities.** Cities from before the road network can't be opened: they're kept (never
   deleted) and listed on the start screen with a download button.
-- **Scaled numbers.** The map is 528 × 528 cells (about 4.2 km across), so coverage radii,
+- **Scaled numbers.** The map is 1040 × 1040 cells (about 8.3 km across), so coverage radii,
   capacities and prices are scaled to fit. They aren't CS2's numbers. Lightning, wildfires
   and tornadoes keep to the land around your city (at least the old 17 × 17 tiles' worth),
   so a bigger map doesn't make them rarer.
 - **Work where the city is.** On a map this size most of the land is empty, so the hourly
   passes over the grid (pollution, power and water networks, jams) only look at the part
   with something on it, land value and forest growth are worked out a slice of the map each
-  hour, and the ground and trees are drawn in chunks that are only rebuilt where they change.
+  hour, and the ground and trees are drawn in chunks that are only rebuilt where they change
+  (far from the camera, a chunk draws only some of its trees).
+- **Compact saves.** The map's number layers (heights, resources, pollution) are saved in 16
+  bits as differences from their neighbours, so a new city saves in about 2 MB. A city too big
+  for the browser's localStorage is kept in its database (IndexedDB) instead.
 - **Sampled traffic.** Each routed trip stands for many real ones, and the vehicles you see
   are a sample of them (they still queue and back up where the roads are full).
 - **Compressed lives.** The calendar is real (days, weeks, months), but a citizen ages a
@@ -142,8 +147,9 @@ diaries, patch notes, DLC).
 - `src/world`: three.js rendering. Almost everything uses instanced meshes; the ground,
   trees, roads and zoning are built in chunks of the map, so a change redraws only the chunks
   it touches and chunks out of view aren't drawn.
-- `src/ui`: HUD, toolbar, tools and panels. The start screen's map previews are made in a
-  worker (`ui/previewWorker.js`).
+- `src/ui`: HUD, toolbar, tools and panels. The start screen's map previews are sampled
+  straight from each island's shape; one from the map editor is made in a worker
+  (`ui/previewWorker.js`).
 - `src/features`: each feature registers its systems, panels, tools and menus here.
 - `src/data`: buildings, roads, zones, maps, policies, milestones and achievements as plain
   data.
