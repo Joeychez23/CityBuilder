@@ -20,7 +20,9 @@ export function createScene(canvas) {
   scene.background = DAY_SKY.clone();
   scene.fog = new THREE.Fog(DAY_SKY.clone(), 160, 420);
 
-  const camera = new THREE.PerspectiveCamera(45, 1, 0.3, 3000);
+  // (far enough that the sea out past the map fades all the way into the sky in the fog, even
+  // zoomed right out, instead of ending in a line)
+  const camera = new THREE.PerspectiveCamera(45, 1, 0.3, 9000);
 
   const hemi = new THREE.HemisphereLight('#cfe6ff', '#5a6b46', 0.9);
   scene.add(hemi);

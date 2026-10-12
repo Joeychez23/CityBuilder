@@ -48,9 +48,11 @@ export function createOverlays(app) {
             state.district[i - 1] !== dd || state.district[i + 1] !== dd || state.district[i - N] !== dd || state.district[i + N] !== dd;
           if (edge) { [r, g, b] = dcol[dd]; a = 170; }
         }
-        // Unowned map tiles are shaded; tile borders drawn faintly
+        // Unowned map tiles are shaded; tile borders drawn faintly. (Not under the water, but
+        // for buying tiles: the sea looks the same out past the map's edge, where nothing's
+        // owned.)
         const t = ((y / TILE) | 0) * TILES + ((x / TILE) | 0);
-        if (!state.tiles[t]) {
+        if (!state.tiles[t] && (ov.tileMode || !state.water[i])) {
           const k = ov.tileMode ? 0.55 : 0.32;
           r = r * (1 - k); g = g * (1 - k); b = b * (1 - k) + 10 * k; a = Math.max(a, 255 * k);
         }
